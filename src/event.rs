@@ -397,16 +397,17 @@ fn handle_mouse(app: &mut AppState, mouse: MouseEvent) {
 }
 
 fn handle_click(app: &mut AppState, col: u16, row: u16) {
-    if click_esc_quit(app, col, row) {
-        app.should_quit = true;
-        return;
-    }
     match app.step {
         crate::app::AppStep::Splash => handle_splash_click(app, col, row),
         crate::app::AppStep::ToolSelect => handle_tool_click(app, col, row),
         crate::app::AppStep::Execution => handle_execution_click(app, col, row),
         crate::app::AppStep::Analysis => handle_analysis_click(app, col, row),
-        crate::app::AppStep::Results => handle_results_click(app, col, row),
+        crate::app::AppStep::Results => {
+            handle_results_click(app, col, row);
+            if !app.show_didactic && !app.show_detail {
+                check_esc_footer_click(app, col, row);
+            }
+        }
     }
 }
 
@@ -467,18 +468,28 @@ fn handle_splash_click(app: &mut AppState, col: u16, row: u16) {
     }
 }
 
-fn click_esc_quit(app: &AppState, _col: u16, row: u16) -> bool {
-    if app.step == crate::app::AppStep::Splash {
-        let content_chunks = ratatui::layout::Layout::vertical([
-            ratatui::layout::Constraint::Min(3),
-            ratatui::layout::Constraint::Length(3),
-        ])
-        .split(app.screen_area);
-        let status_bar_y = content_chunks[1].y;
-        row >= status_bar_y && row < status_bar_y + 3
-    } else {
-        let footer_y = app.screen_area.bottom().saturating_sub(3);
-        row >= footer_y && row < app.screen_area.bottom()
+fn check_esc_footer_click(app: &mut AppState, col: u16, row: u16) {
+    let outer_chunks = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Length(3),
+        ratatui::layout::Constraint::Min(3),
+        ratatui::layout::Constraint::Length(3),
+    ])
+    .split(app.screen_area);
+    let footer_area = outer_chunks[2];
+    let bar = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::TOP)
+        .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
+    let footer_inner = bar.inner(footer_area);
+
+    if row < footer_inner.y || row >= footer_inner.y + footer_inner.height {
+        return;
+    }
+
+    let footer_right = footer_area.x + footer_area.width;
+    let esc_end = footer_right.saturating_sub(1);
+    let esc_start = esc_end.saturating_sub("Esc Quit".len() as u16);
+    if col >= esc_start && col < esc_end {
+        app.should_quit = true;
     }
 }
 
@@ -540,7 +551,18 @@ fn handle_execution_click(app: &mut AppState, col: u16, row: u16) {
     ])
     .split(app.screen_area);
     let footer_area = outer_chunks[2];
-    let _ = (col, row, footer_area);
+    let bar = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::TOP)
+        .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
+    let footer_inner = bar.inner(footer_area);
+    if row >= footer_inner.y && row < footer_inner.y + footer_inner.height {
+        let footer_right = footer_area.x + footer_area.width;
+        let esc_end = footer_right.saturating_sub(1);
+        let esc_start = esc_end.saturating_sub("Esc Quit".len() as u16);
+        if col >= esc_start && col < esc_end {
+            app.should_quit = true;
+        }
+    }
 }
 
 fn handle_analysis_click(app: &mut AppState, col: u16, row: u16) {
@@ -551,7 +573,18 @@ fn handle_analysis_click(app: &mut AppState, col: u16, row: u16) {
     ])
     .split(app.screen_area);
     let footer_area = outer_chunks[2];
-    let _ = (col, row, footer_area);
+    let bar = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::TOP)
+        .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
+    let footer_inner = bar.inner(footer_area);
+    if row >= footer_inner.y && row < footer_inner.y + footer_inner.height {
+        let footer_right = footer_area.x + footer_area.width;
+        let esc_end = footer_right.saturating_sub(1);
+        let esc_start = esc_end.saturating_sub("Esc Quit".len() as u16);
+        if col >= esc_start && col < esc_end {
+            app.should_quit = true;
+        }
+    }
 }
 
 fn handle_results_click(app: &mut AppState, col: u16, row: u16) {
