@@ -1,10 +1,10 @@
 use crate::app::{AppMode, AppState};
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Paragraph},
+    Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
@@ -156,28 +156,32 @@ fn build_logo() -> Vec<Line<'static>> {
     vec![
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  ____  ___  ___  __ _ _   _  ___  __ _  ___ ",
+            "  ███████╗███╗   ███╗ █████╗ ██████╗ ████████╗    ███████╗███████╗ ██████╗",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            " / __|/ _ \\/ __|/ _` | | | |/ _ \\/ _` |/ __|",
+            "  ██╔════╝████╗ ████║██╔══██╗██╔══██╗╚══██╔══╝    ██╔════╝██╔════╝██╔════╝",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            "| (__| (_) \\__ \\ (_| | |_| |  __/ (_| | (__ ",
+            "  ███████╗██╔████╔██║███████║██████╔╝   ██║       ███████╗█████╗  ██║     ",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            " \\___|\\___/|___/\\__,_|\\__, |\\___|\\__,_|\\___|",
+            "  ╚════██║██║╚██╔╝██║██╔══██║██╔══██╗   ██║       ╚════██║██╔══╝  ██║     ",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            "                       |___/                 ",
+            "  ███████║██║ ╚═╝ ██║██║  ██║██║  ██║   ██║       ███████║███████╗╚██████╗",
+            c1,
+        )]),
+        Line::from(vec![Span::styled(
+            "  ╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝       ╚══════╝╚══════╝ ╚═════╝",
             c1,
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "              ◆ Secure by Design ◆           ",
+            "        Security Analysis Platform         ",
             c2,
         )]),
     ]
