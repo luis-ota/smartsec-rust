@@ -400,14 +400,43 @@ fn handle_click(app: &mut AppState, col: u16, row: u16) {
     match app.step {
         crate::app::AppStep::Splash => handle_splash_click(app, col, row),
         crate::app::AppStep::ToolSelect => handle_tool_click(app, col, row),
-        crate::app::AppStep::Execution => handle_execution_click(app, col, row),
-        crate::app::AppStep::Analysis => handle_analysis_click(app, col, row),
-        crate::app::AppStep::Results => {
-            handle_results_click(app, col, row);
-            if !app.show_didactic && !app.show_detail {
-                check_esc_footer_click(app, col, row);
-            }
+        crate::app::AppStep::Execution | crate::app::AppStep::Analysis => {
+            handle_esc_click(app, col, row);
         }
+        crate::app::AppStep::Results => handle_results_click(app, col, row),
+    }
+}
+
+fn footer_inner(app: &AppState) -> ratatui::layout::Rect {
+    let outer = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Length(3),
+        ratatui::layout::Constraint::Min(3),
+        ratatui::layout::Constraint::Length(3),
+    ])
+    .split(app.screen_area);
+    let bar = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::TOP)
+        .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
+    bar.inner(outer[2])
+}
+
+fn footer_prefix_len(app: &AppState) -> u16 {
+    let mode_text = match app.mode {
+        AppMode::Auto => "AUTO",
+        AppMode::Assisted => "ASSISTED",
+    };
+    format!(" ◆ {} │ ", mode_text).len() as u16
+}
+
+fn handle_esc_click(app: &mut AppState, col: u16, row: u16) {
+    let fi = footer_inner(app);
+    if row != fi.y {
+        return;
+    }
+    let esc_end = fi.x + fi.width;
+    let esc_start = esc_end.saturating_sub("Esc Quit".len() as u16);
+    if col >= esc_start && col < esc_end {
+        app.should_quit = true;
     }
 }
 
@@ -417,8 +446,7 @@ fn handle_splash_click(app: &mut AppState, col: u16, row: u16) {
         ratatui::layout::Constraint::Length(3),
     ])
     .split(app.screen_area);
-    let content_area = content_chunks[0];
-    let center = crate::ui::centered_rect(80, 100, content_area);
+    let center = crate::ui::centered_rect(80, 100, content_chunks[0]);
 
     let chunks = ratatui::layout::Layout::vertical([
         ratatui::layout::Constraint::Length(8),
@@ -468,31 +496,6 @@ fn handle_splash_click(app: &mut AppState, col: u16, row: u16) {
     }
 }
 
-fn check_esc_footer_click(app: &mut AppState, col: u16, row: u16) {
-    let outer_chunks = ratatui::layout::Layout::vertical([
-        ratatui::layout::Constraint::Length(3),
-        ratatui::layout::Constraint::Min(3),
-        ratatui::layout::Constraint::Length(3),
-    ])
-    .split(app.screen_area);
-    let footer_area = outer_chunks[2];
-    let bar = ratatui::widgets::Block::default()
-        .borders(ratatui::widgets::Borders::TOP)
-        .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
-    let footer_inner = bar.inner(footer_area);
-
-    if row < footer_inner.y || row >= footer_inner.y + footer_inner.height {
-        return;
-    }
-
-    let footer_right = footer_area.x + footer_area.width;
-    let esc_end = footer_right.saturating_sub(1);
-    let esc_start = esc_end.saturating_sub("Esc Quit".len() as u16);
-    if col >= esc_start && col < esc_end {
-        app.should_quit = true;
-    }
-}
-
 fn handle_tool_click(app: &mut AppState, col: u16, row: u16) {
     if app.mode == AppMode::Auto || app.tool_detecting {
         return;
@@ -503,15 +506,13 @@ fn handle_tool_click(app: &mut AppState, col: u16, row: u16) {
         ratatui::layout::Constraint::Length(3),
     ])
     .split(app.screen_area);
-    let body_area = outer_chunks[1];
     let body_chunks = ratatui::layout::Layout::horizontal([
         ratatui::layout::Constraint::Percentage(55),
         ratatui::layout::Constraint::Percentage(45),
     ])
-    .split(body_area);
-    let list_block_area = body_chunks[0];
-    let list_inner_y = list_block_area.y + 1;
-    let list_inner_h = list_block_area.height.saturating_sub(2);
+    .split(outer_chunks[1]);
+    let list_inner_y = body_chunks[0].y + 1;
+    let list_inner_h = body_chunks[0].height.saturating_sub(2);
 
     if row >= list_inner_y && row < list_inner_y + list_inner_h {
         let idx = (row - list_inner_y) as usize + app.tool_scroll;
@@ -521,69 +522,20 @@ fn handle_tool_click(app: &mut AppState, col: u16, row: u16) {
         }
     }
 
-    let footer_area = outer_chunks[2];
-    let footer_inner_y = footer_area.y + 1;
-    if row == footer_inner_y {
-        let enter_label = "Enter";
-        let mode_text = match app.mode {
-            AppMode::Auto => "AUTO",
-            AppMode::Assisted => "ASSISTED",
-        };
-        let prefix = format!(" ◆ {} │ ", mode_text);
-        let nav = "↑↓ Navigate Space Toggle a Add d Remove ";
-        let enter_start_x = footer_area.x as usize + prefix.len() + nav.len();
-        let enter_end_x = enter_start_x + enter_label.len();
-        if (enter_start_x..enter_end_x).contains(&(col as usize)) {
-            let has_selected = app.tools.iter().any(|t| t.selected);
-            if has_selected {
-                app.step = crate::app::AppStep::Execution;
-                app.init_execution();
-            }
+    let fi = footer_inner(app);
+    if row == fi.y {
+        let prefix = footer_prefix_len(app);
+        let mut x = fi.x + prefix;
+        let nav_widths: &[u16] = &[12, 14, 7, 10];
+        for w in nav_widths {
+            x += w;
         }
-    }
-}
-
-fn handle_execution_click(app: &mut AppState, col: u16, row: u16) {
-    let outer_chunks = ratatui::layout::Layout::vertical([
-        ratatui::layout::Constraint::Length(3),
-        ratatui::layout::Constraint::Min(3),
-        ratatui::layout::Constraint::Length(3),
-    ])
-    .split(app.screen_area);
-    let footer_area = outer_chunks[2];
-    let bar = ratatui::widgets::Block::default()
-        .borders(ratatui::widgets::Borders::TOP)
-        .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
-    let footer_inner = bar.inner(footer_area);
-    if row >= footer_inner.y && row < footer_inner.y + footer_inner.height {
-        let footer_right = footer_area.x + footer_area.width;
-        let esc_end = footer_right.saturating_sub(1);
-        let esc_start = esc_end.saturating_sub("Esc Quit".len() as u16);
-        if col >= esc_start && col < esc_end {
-            app.should_quit = true;
+        let enter_x = x;
+        if col >= enter_x && col < enter_x + 5 && app.tools.iter().any(|t| t.selected) {
+            app.step = crate::app::AppStep::Execution;
+            app.init_execution();
         }
-    }
-}
-
-fn handle_analysis_click(app: &mut AppState, col: u16, row: u16) {
-    let outer_chunks = ratatui::layout::Layout::vertical([
-        ratatui::layout::Constraint::Length(3),
-        ratatui::layout::Constraint::Min(3),
-        ratatui::layout::Constraint::Length(3),
-    ])
-    .split(app.screen_area);
-    let footer_area = outer_chunks[2];
-    let bar = ratatui::widgets::Block::default()
-        .borders(ratatui::widgets::Borders::TOP)
-        .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
-    let footer_inner = bar.inner(footer_area);
-    if row >= footer_inner.y && row < footer_inner.y + footer_inner.height {
-        let footer_right = footer_area.x + footer_area.width;
-        let esc_end = footer_right.saturating_sub(1);
-        let esc_start = esc_end.saturating_sub("Esc Quit".len() as u16);
-        if col >= esc_start && col < esc_end {
-            app.should_quit = true;
-        }
+        handle_esc_click(app, col, row);
     }
 }
 
@@ -599,15 +551,13 @@ fn handle_results_click(app: &mut AppState, col: u16, row: u16) {
     .split(app.screen_area);
 
     if app.result_detail_vuln.is_none() {
-        let body_area = outer_chunks[1];
         let body_chunks = ratatui::layout::Layout::horizontal([
             ratatui::layout::Constraint::Percentage(35),
             ratatui::layout::Constraint::Percentage(65),
         ])
-        .split(body_area);
-        let list_block_area = body_chunks[1];
-        let list_inner_y = list_block_area.y + 1;
-        let list_inner_h = list_block_area.height.saturating_sub(2);
+        .split(outer_chunks[1]);
+        let list_inner_y = body_chunks[1].y + 1;
+        let list_inner_h = body_chunks[1].height.saturating_sub(2);
 
         if row >= list_inner_y && row < list_inner_y + list_inner_h {
             let idx = (row - list_inner_y) as usize + app.result_scroll;
@@ -618,68 +568,68 @@ fn handle_results_click(app: &mut AppState, col: u16, row: u16) {
                 app.result_action_cursor = 0;
             }
         }
-
-        let footer_area = outer_chunks[2];
-        let footer_inner_y = footer_area.y + 1;
-        if row == footer_inner_y {
-            let actions: &[crate::app::ResultAction] = &[
-                crate::app::ResultAction::ExportMd,
-                crate::app::ResultAction::ExplainDidactic,
-            ];
-            let labels = ["Export .md", "Explain Didactic"];
-            let mut x = footer_area.x + 2;
-            for (i, label) in labels.iter().enumerate() {
-                let btn_w = label.len() as u16 + 2;
-                if col >= x && col < x + btn_w {
-                    app.result_action_cursor = i;
-                    match actions[i] {
-                        crate::app::ResultAction::ExportMd => {
-                            let md = app.export_md();
-                            let _ = std::fs::write("smartsec-report.md", md);
-                            app.md_exported = true;
-                        }
-                        crate::app::ResultAction::ExplainDidactic => {
-                            app.show_didactic = true;
-                            app.didactic_scroll = 0;
-                        }
-                        _ => {}
-                    }
-                    break;
-                }
-                x += btn_w + 1;
-            }
-        }
-    } else {
-        let footer_area = outer_chunks[2];
-        let footer_inner_y = footer_area.y + 1;
-        if row == footer_inner_y {
-            let actions: &[crate::app::ResultAction] = &[
-                crate::app::ResultAction::BackToSummary,
-                crate::app::ResultAction::ExplainDidactic,
-            ];
-            let labels = ["← Back", "Explain Didactic"];
-            let mut x = footer_area.x + 2;
-            for (i, label) in labels.iter().enumerate() {
-                let btn_w = label.len() as u16 + 2;
-                if col >= x && col < x + btn_w {
-                    app.result_action_cursor = i;
-                    match actions[i] {
-                        crate::app::ResultAction::BackToSummary => {
-                            app.result_detail_vuln = None;
-                            app.result_action_cursor = 0;
-                        }
-                        crate::app::ResultAction::ExplainDidactic => {
-                            app.show_didactic = true;
-                            app.didactic_scroll = 0;
-                        }
-                        _ => {}
-                    }
-                    break;
-                }
-                x += btn_w + 1;
-            }
-        }
     }
+
+    let fi = footer_inner(app);
+    if row != fi.y {
+        return;
+    }
+
+    let actions: &[crate::app::ResultAction] = if app.result_detail_vuln.is_some() {
+        &[
+            crate::app::ResultAction::BackToSummary,
+            crate::app::ResultAction::ExplainDidactic,
+        ]
+    } else {
+        &[
+            crate::app::ResultAction::ExportMd,
+            crate::app::ResultAction::ExplainDidactic,
+        ]
+    };
+    let labels: Vec<String> = actions
+        .iter()
+        .map(|a| match a {
+            crate::app::ResultAction::ExportMd => {
+                if app.md_exported {
+                    "✓ Exported .md".to_string()
+                } else {
+                    "Export .md".to_string()
+                }
+            }
+            crate::app::ResultAction::ExplainDidactic => "Explain Didactic".to_string(),
+            crate::app::ResultAction::BackToSummary => "← Back".to_string(),
+            crate::app::ResultAction::ExplainDetail => "Detail".to_string(),
+        })
+        .collect();
+
+    let prefix = footer_prefix_len(app);
+    let mut x = fi.x + prefix;
+    for (i, label) in labels.iter().enumerate() {
+        let btn_w = label.len() as u16 + 2;
+        if col >= x && col < x + btn_w {
+            app.result_action_cursor = i;
+            match actions[i] {
+                crate::app::ResultAction::ExportMd => {
+                    let md = app.export_md();
+                    let _ = std::fs::write("smartsec-report.md", md);
+                    app.md_exported = true;
+                }
+                crate::app::ResultAction::ExplainDidactic => {
+                    app.show_didactic = true;
+                    app.didactic_scroll = 0;
+                }
+                crate::app::ResultAction::BackToSummary => {
+                    app.result_detail_vuln = None;
+                    app.result_action_cursor = 0;
+                }
+                _ => {}
+            }
+            break;
+        }
+        x += btn_w + 1;
+    }
+
+    handle_esc_click(app, col, row);
 }
 
 fn ensure_tool_visible(app: &mut AppState) {
