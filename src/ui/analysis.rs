@@ -1,11 +1,102 @@
 use crate::app::{AnalysisPhase, AppMode, AppState};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
-    Frame,
 };
+
+#[allow(dead_code)]
+struct NeuralNode {
+    layer: usize,
+    index: usize,
+    x_pct: f32,
+    y_pct: f32,
+}
+
+#[allow(dead_code)]
+struct NeuralEdge {
+    from: usize,
+    to: usize,
+}
+
+fn build_network() -> (Vec<NeuralNode>, Vec<NeuralEdge>) {
+    let layers = [("IN", 4), ("H1", 5), ("H2", 5), ("OUT", 3)];
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let num_layers = layers.len();
+    let mut layer_start = Vec::new();
+
+    for (li, (_name, count)) in layers.iter().enumerate() {
+        layer_start.push(nodes.len());
+        for ni in 0..*count {
+            let x_pct = (li as f32 + 0.5) / num_layers as f32;
+            let spacing = 1.0 / (*count as f32 + 1.0);
+            let y_pct = (ni as f32 + 1.0) * spacing;
+            nodes.push(NeuralNode {
+                layer: li,
+                index: ni,
+                x_pct,
+                y_pct,
+            });
+        }
+    }
+
+    for li in 0..num_layers - 1 {
+        let cur_start = layer_start[li];
+        let next_start = layer_start[li + 1];
+        let cur_count = layers[li].1;
+        let next_count = layers[li + 1].1;
+        for ci in 0..cur_count {
+            let targets: Vec<usize> = if next_count <= cur_count {
+                (0..next_count).collect()
+            } else {
+                let offset = (ci * next_count / cur_count).min(next_count - 1);
+                let end = (offset + 1).min(next_count - 1);
+                (offset..=end).collect()
+            };
+            for ni in targets {
+                edges.push(NeuralEdge {
+                    from: cur_start + ci,
+                    to: next_start + ni,
+                });
+            }
+        }
+    }
+
+    (nodes, edges)
+}
+
+fn line_cells(r1: f32, c1: f32, r2: f32, c2: f32) -> Vec<(usize, usize)> {
+    let dr = r2 - r1;
+    let dc = c2 - c1;
+    let steps = (dr.abs().max(dc.abs())).max(1.0).ceil() as usize;
+    let mut cells = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let t = if steps > 0 {
+            i as f32 / steps as f32
+        } else {
+            0.0
+        };
+        let r = (r1 + dr * t).round() as usize;
+        let c = (c1 + dc * t).round() as usize;
+        cells.push((r, c));
+    }
+    cells
+}
+
+fn edge_char(dr: f32, dc: f32) -> &'static str {
+    if dc.abs() < 0.01 {
+        "│"
+    } else if dr.abs() < 0.01 {
+        "─"
+    } else if (dr / dc) > 0.0 {
+        "╲"
+    } else {
+        "╱"
+    }
+}
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
@@ -43,7 +134,7 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
         Span::styled(" ◆ ", Style::default().fg(Color::Magenta)),
         Span::styled("AI Analysis", Style::default().fg(Color::White).bold()),
         Span::styled(
-            format!("  {} {}", spinner, label),
+            format!(" {} {}", spinner, label),
             Style::default().fg(color),
         ),
     ]))
@@ -59,7 +150,7 @@ fn render_body(app: &mut AppState, frame: &mut Frame, area: Rect) {
     render_analysis_text(app, frame, chunks[1]);
 }
 
-fn render_neural_viz(app: &AppState, frame: &mut Frame, area: Rect) {
+fn render_neural_viz(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::all())
         .border_type(BorderType::Rounded)
@@ -74,83 +165,120 @@ fn render_neural_viz(app: &AppState, frame: &mut Frame, area: Rect) {
 
     let h = inner.height as usize;
     let w = inner.width as usize;
+    if h < 4 || w < 6 {
+        return;
+    }
     let t = app.tick;
 
-    let nodes = [
-        (2, 3),
-        (4, 7),
-        (2, 11),
-        (6, 3),
-        (6, 11),
-        (10, 5),
-        (10, 9),
-        (14, 3),
-        (14, 7),
-        (14, 11),
-        (18, 5),
-        (18, 9),
-    ];
-    let edges = [
-        (0, 1),
-        (0, 3),
-        (1, 2),
-        (1, 4),
-        (3, 5),
-        (3, 1),
-        (4, 6),
-        (5, 7),
-        (5, 8),
-        (6, 8),
-        (6, 9),
-        (7, 10),
-        (8, 10),
-        (9, 11),
-        (10, 11),
-    ];
+    let (nodes, edges) = build_network();
+
+    let layer_labels = ["IN", "H1", "H2", "OUT"];
+
+    let margin_top = 2usize;
+    let margin_bottom = 1usize;
+    let margin_lr = 2usize;
+    let usable_h = h.saturating_sub(margin_top + margin_bottom);
+    let usable_w = w.saturating_sub(2 * margin_lr);
+    if usable_h == 0 || usable_w == 0 {
+        return;
+    }
+
+    let node_positions: Vec<(usize, usize)> = nodes
+        .iter()
+        .map(|n| {
+            let c = margin_lr + (n.x_pct * usable_w as f32).round() as usize;
+            let r = margin_top + (n.y_pct * usable_h as f32).round() as usize;
+            (r.min(h - 1), c.min(w - 1))
+        })
+        .collect();
+
+    let mut grid = vec![vec![(vec![' '], Color::Rgb(20, 10, 30)); w]; h];
+
+    for (ei, edge) in edges.iter().enumerate() {
+        let (r1, c1) = node_positions[edge.from];
+        let (r2, c2) = node_positions[edge.to];
+        let cells = line_cells(r1 as f32, c1 as f32, r2 as f32, c2 as f32);
+        let dr = (r2 as f32) - (r1 as f32);
+        let dc = (c2 as f32) - (c1 as f32);
+        let base_ch = edge_char(dr, dc);
+        let total = cells.len().max(1);
+
+        let travel_period = 30u64;
+        let speed_offset = (ei as u64 * 7) % travel_period;
+        let signal_pos =
+            ((t + speed_offset) % travel_period) as usize * total / travel_period as usize;
+
+        for (ci, &(r, c)) in cells.iter().enumerate() {
+            if r >= h || c >= w {
+                continue;
+            }
+            let is_node = node_positions.iter().any(|&(nr, nc)| nr == r && nc == c);
+            if is_node {
+                continue;
+            }
+
+            let dist_from_signal = ci.abs_diff(signal_pos);
+
+            let (ch, color) = if dist_from_signal == 0 {
+                ('◆', Color::Rgb(255, 100, 255))
+            } else if dist_from_signal <= 2 {
+                ('●', Color::Rgb(180, 50, 200))
+            } else if dist_from_signal <= 5 {
+                (base_ch.chars().next().unwrap(), Color::Rgb(100, 20, 140))
+            } else {
+                let pulse = (t + ei as u64 * 3) % 20;
+                if pulse < 10 {
+                    (base_ch.chars().next().unwrap(), Color::Rgb(50, 10, 70))
+                } else {
+                    ('·', Color::Rgb(30, 5, 45))
+                }
+            };
+            grid[r][c] = (vec![ch], color);
+        }
+    }
+
+    for (ni, &(r, c)) in node_positions.iter().enumerate() {
+        if r >= h || c >= w {
+            continue;
+        }
+        let pulse = (t + ni as u64 * 5) % 20;
+        let (ch, color) = if pulse < 5 {
+            ('●', Color::Rgb(255, 80, 255))
+        } else if pulse < 10 {
+            ('◉', Color::Rgb(200, 50, 220))
+        } else if pulse < 15 {
+            ('○', Color::Rgb(120, 30, 160))
+        } else {
+            ('◌', Color::Rgb(60, 15, 90))
+        };
+        grid[r][c] = (vec![ch], color);
+    }
+
+    for (li, label) in layer_labels.iter().enumerate() {
+        let x_pct = (li as f32 + 0.5) / layer_labels.len() as f32;
+        let c = margin_lr + (x_pct * usable_w as f32).round() as usize;
+        let c_start = c.saturating_sub(label.len() / 2);
+        if c_start + label.len() <= w && margin_top > 1 {
+            let row = 0;
+            for (i, ch) in label.chars().enumerate() {
+                let col = c_start + i;
+                if col < w {
+                    grid[row][col] = (vec![ch], Color::Rgb(60, 30, 80));
+                }
+            }
+        }
+    }
 
     let mut lines: Vec<Line> = Vec::with_capacity(h);
-    for row in 0..h {
+    for grid_row in grid.iter().take(h) {
         let mut spans: Vec<Span> = Vec::new();
-        for col in 0..w.min(30) {
-            let mut ch = " ";
-            let mut color = Color::Rgb(20, 10, 30);
-
-            for &(a, b) in &edges {
-                if a < nodes.len() && b < nodes.len() {
-                    let (ar, ac) = nodes[a];
-                    let (br, bc) = nodes[b];
-                    if ar < h && br < h && ac < 30 && bc < 30 {
-                        let mid_r = (ar + br) / 2;
-                        let mid_c = (ac + bc) / 2;
-                        if row == mid_r && col == mid_c {
-                            let pulse = (t + a as u64 * 7) % 20;
-                            if pulse < 10 {
-                                ch = "─";
-                                color =
-                                    Color::Rgb(80 + (pulse * 12) as u8, 0, 120 + (pulse * 8) as u8);
-                            } else {
-                                ch = "·";
-                                color = Color::Rgb(30, 0, 50);
-                            }
-                        }
-                    }
-                }
-            }
-
-            for (ni, &(nr, nc)) in nodes.iter().enumerate() {
-                if nr < h && nc < 30 && row == nr && col == nc {
-                    let pulse = (t + ni as u64 * 5) % 15;
-                    if pulse < 8 {
-                        ch = "●";
-                        color = Color::Magenta;
-                    } else {
-                        ch = "○";
-                        color = Color::Rgb(60, 0, 80);
-                    }
-                }
-            }
-
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+        let mut col = 0;
+        while col < w {
+            let (chars, color) = &grid_row[col];
+            let style = Style::default().fg(*color).bg(Color::Rgb(8, 4, 16));
+            let s: String = chars.iter().collect();
+            spans.push(Span::styled(s, style));
+            col += 1;
         }
         lines.push(Line::from(spans));
     }
@@ -197,7 +325,7 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
     for line in app.analysis_text.lines() {
         if !line.is_empty() {
             text_lines.push(Line::from(vec![
-                Span::styled("  ", Style::default()),
+                Span::styled(" ", Style::default()),
                 Span::styled(line, Style::default().fg(Color::Gray)),
             ]));
         } else {
@@ -208,7 +336,7 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
     if app.analysis_phase == AnalysisPhase::Complete {
         text_lines.push(Line::from(""));
         text_lines.push(Line::from(vec![
-            Span::styled("  ✓ ", Style::default().fg(Color::Green)),
+            Span::styled(" ✓ ", Style::default().fg(Color::Green)),
             Span::styled(
                 "Proceeding to results...",
                 Style::default().fg(Color::Green),

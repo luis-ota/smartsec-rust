@@ -1,10 +1,10 @@
 use crate::app::{AppMode, AppState};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Paragraph},
-    Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
@@ -29,9 +29,9 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
         Constraint::Length(3),
         Constraint::Length(2),
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Length(5),
         Constraint::Length(2),
-        Constraint::Length(1),
+        Constraint::Length(2),
     ])
     .split(center);
 
@@ -83,17 +83,17 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
 
     let cursor_char = if app.tick % 10 < 5 { "█" } else { "▎" };
     let display_url = if app.url_input.is_empty() {
-        cursor_char.to_string()
+        format!("{}{}", " ", cursor_char)
     } else {
         let before: String = app.url_input.chars().take(app.url_cursor).collect();
         let after: String = app.url_input.chars().skip(app.url_cursor).collect();
-        format!("{}{}{}", before, cursor_char, after)
+        format!(" {}{}{}", before, cursor_char, after)
     };
 
-    let url_text = Paragraph::new(Line::from(vec![
-        Span::styled("  ", Style::default()),
-        Span::styled(display_url, Style::default().fg(Color::White)),
-    ]))
+    let url_text = Paragraph::new(Line::from(vec![Span::styled(
+        display_url,
+        Style::default().fg(Color::White),
+    )]))
     .style(Style::default().bg(Color::Rgb(16, 16, 32)));
     frame.render_widget(url_text, url_inner);
 

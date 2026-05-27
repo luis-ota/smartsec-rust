@@ -1,10 +1,10 @@
 use crate::app::{AppMode, AppState, ToolStatus};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Gauge, Paragraph, Wrap},
-    Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
@@ -172,6 +172,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
     }
 
     let visible_height = inner.height.saturating_sub(2) as usize;
+    app.log_visible_height = visible_height;
     let total = app.exec_logs.len();
     let max_scroll = total.saturating_sub(visible_height);
     let scroll = app.log_scroll.min(max_scroll);

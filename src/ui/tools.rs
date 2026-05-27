@@ -1,10 +1,10 @@
 use crate::app::{AppMode, AppState, ToolStatus};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {

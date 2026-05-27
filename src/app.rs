@@ -68,13 +68,16 @@ pub struct AppState {
     pub exec_tick: u64,
     pub exec_logs: Vec<String>,
     pub log_scroll: usize,
+    pub log_visible_height: usize,
     pub analysis_phase: AnalysisPhase,
     pub analysis_tick: u64,
     pub analysis_text: String,
     pub analysis_full_text: String,
     pub result_action_cursor: usize,
+    pub result_cursor: usize,
     pub result_scroll: usize,
     pub result_detail_vuln: Option<usize>,
+    pub result_focus_list: bool,
     pub md_exported: bool,
     pub show_didactic: bool,
     pub show_detail: bool,
@@ -112,13 +115,16 @@ impl AppState {
             exec_tick: 0,
             exec_logs: Vec::new(),
             log_scroll: 0,
+            log_visible_height: 20,
             analysis_phase: AnalysisPhase::Scanning,
             analysis_tick: 0,
             analysis_text: String::new(),
             analysis_full_text: String::new(),
             result_action_cursor: 0,
+            result_cursor: 0,
             result_detail_vuln: None,
             result_scroll: 0,
+            result_focus_list: true,
             md_exported: false,
             show_didactic: false,
             show_detail: false,
@@ -140,12 +146,7 @@ impl AppState {
             return;
         }
         match self.step {
-            AppStep::Splash => {
-                if self.tool_detect_tick > 30 {
-                    self.step = AppStep::ToolSelect;
-                    self.tool_detect_tick = 0;
-                }
-            }
+            AppStep::Splash => {}
             AppStep::ToolSelect => {
                 if self.tool_detect_tick > 50 {
                     self.step = AppStep::Execution;
@@ -157,30 +158,9 @@ impl AppState {
             }
             AppStep::Execution => {
                 self.advance_execution();
-                if self
-                    .tools
-                    .iter()
-                    .all(|t| !t.selected || t.status == ToolStatus::Done)
-                    && self.exec_tick > 10
-                {
-                    self.step = AppStep::Analysis;
-                    self.analysis_phase = AnalysisPhase::Scanning;
-                    self.analysis_tick = 0;
-                    self.analysis_text.clear();
-                    self.analysis_full_text =
-                        "Analisando padrões de vulnerabilidade across multiple scan results...\n\n\
-                        Correlacionando achados com base de dados CVE/NVD...\n\n\
-                        Identificando vetores de ataque e superfícies de exposição...\n\n\
-                        Gerando recomendações de mitigação priorizadas por severidade...\n\n\
-                        Concluindo análise de risco consolidada."
-                            .to_string();
-                }
             }
             AppStep::Analysis => {
                 self.advance_analysis();
-                if self.analysis_phase == AnalysisPhase::Complete && self.analysis_tick > 20 {
-                    self.step = AppStep::Results;
-                }
             }
             AppStep::Results => {}
         }
@@ -225,14 +205,19 @@ impl AppState {
                 tool.tool.name, tool.tool.description, tool.progress
             );
             self.exec_logs.push(log_entry);
-            if self.exec_logs.len() > 200 {
-                self.log_scroll = self.exec_logs.len().saturating_sub(10);
+            let vh = self.log_visible_height.max(1);
+            if self.exec_logs.len() > vh {
+                self.log_scroll = self.exec_logs.len().saturating_sub(vh);
             }
         }
         if tool.progress >= 100 {
             tool.status = ToolStatus::Done;
             self.exec_logs
                 .push(format!("[{}] ✓ Scan complete", tool.tool.name));
+            let vh = self.log_visible_height.max(1);
+            if self.exec_logs.len() > vh {
+                self.log_scroll = self.exec_logs.len().saturating_sub(vh);
+            }
             self.exec_current += 1;
             self.exec_tick = 0;
             while self.exec_current < self.tools.len()

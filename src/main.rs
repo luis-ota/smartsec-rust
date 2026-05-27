@@ -7,9 +7,9 @@ use app::{AppMode, AppState, AppStep};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 
 fn main() -> io::Result<()> {
@@ -20,9 +20,6 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = AppState::new();
-    if app.mode == AppMode::Auto {
-        app.url_input = "http://localhost:8080".to_string();
-    }
 
     let result = run_app(&mut terminal, &mut app);
 
@@ -55,14 +52,7 @@ fn run_app(
         }
 
         match app.step {
-            AppStep::Splash => {
-                if app.mode == AppMode::Auto && app.tick > 5 {
-                    app.url_input = "http://localhost:8080".to_string();
-                    app.step = AppStep::ToolSelect;
-                    app.tool_detecting = true;
-                    app.tool_detect_tick = 0;
-                }
-            }
+            AppStep::Splash => {}
             AppStep::ToolSelect => {
                 app.tool_detect_tick += 1;
                 if app.tool_detect_tick > 30 {
@@ -74,12 +64,35 @@ fn run_app(
             }
             AppStep::Execution => {
                 app.advance_execution();
+                if app
+                    .tools
+                    .iter()
+                    .all(|t| !t.selected || t.status == crate::app::ToolStatus::Done)
+                    && app.exec_tick > 10
+                {
+                    app.step = crate::app::AppStep::Analysis;
+                    app.analysis_phase = crate::app::AnalysisPhase::Scanning;
+                    app.analysis_tick = 0;
+                    app.analysis_text.clear();
+                    app.analysis_full_text =
+                        "Analisando padrões de vulnerabilidade across multiple scan results...\n\n\
+                    Correlacionando achados com base de dados CVE/NVD...\n\n\
+                    Identificando vetores de ataque e superfícies de exposição...\n\n\
+                    Gerando recomendações de mitigação priorizadas por severidade...\n\n\
+                    Concluindo análise de risco consolidada."
+                            .to_string();
+                }
                 if app.mode == AppMode::Auto {
                     app.advance_auto();
                 }
             }
             AppStep::Analysis => {
                 app.advance_analysis();
+                if app.analysis_phase == crate::app::AnalysisPhase::Complete
+                    && app.analysis_tick > 20
+                {
+                    app.step = crate::app::AppStep::Results;
+                }
                 if app.mode == AppMode::Auto {
                     app.advance_auto();
                 }

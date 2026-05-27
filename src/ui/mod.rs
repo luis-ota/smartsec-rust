@@ -5,7 +5,7 @@ pub mod splash;
 pub mod tools;
 
 use crate::app::{AppState, AppStep};
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 
 pub fn render(app: &mut AppState, frame: &mut Frame) {
     let area = frame.area();

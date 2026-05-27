@@ -1,11 +1,11 @@
 use crate::app::{AppMode, AppState, ResultAction};
 use crate::mock::results::Vulnerability;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
@@ -185,26 +185,47 @@ fn render_vuln_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let visible_h = inner.height.saturating_sub(2) as usize;
     let max_scroll = vulns.len().saturating_sub(visible_h);
     app.result_scroll = app.result_scroll.min(max_scroll);
+    if app.result_cursor < app.result_scroll {
+        app.result_scroll = app.result_cursor;
+    } else if app.result_cursor >= app.result_scroll + visible_h {
+        app.result_scroll = app.result_cursor - visible_h + 1;
+    }
 
     let mut lines: Vec<Line> = Vec::new();
-    for (_i, v) in vulns
+    for (i, v) in vulns
         .iter()
         .enumerate()
         .skip(app.result_scroll)
         .take(visible_h)
     {
         let sev_color = Vulnerability::severity_color(v.severity);
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" [{}] ", v.severity),
-                Style::default().fg(sev_color).bold(),
-            ),
-            Span::styled(v.title, Style::default().fg(Color::White)),
-            Span::styled(
-                format!(" ({})", v.tool),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
+        let is_cursor = i == app.result_cursor;
+        let title_style = if is_cursor {
+            Style::default().fg(Color::White).bold()
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let bg = if is_cursor {
+            Color::Rgb(30, 30, 60)
+        } else {
+            Color::Rgb(12, 12, 24)
+        };
+        let prefix = if is_cursor { " > " } else { "   " };
+        lines.push(
+            Line::from(vec![
+                Span::styled(prefix.to_string(), Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("[{}] ", v.severity),
+                    Style::default().fg(sev_color).bold(),
+                ),
+                Span::styled(v.title, title_style),
+                Span::styled(
+                    format!(" ({})", v.tool),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])
+            .style(Style::default().bg(bg)),
+        );
     }
 
     let para = Paragraph::new(Text::from(lines))
@@ -441,7 +462,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect) {
         lines.push(Line::from(vec![Span::styled(
             format!("  {}", v.recommendation),
             Style::default().fg(Color::Green),
-        )        ]));
+        )]));
     }
 
     lines.push(Line::from(""));
@@ -504,7 +525,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     ];
 
     for (i, label) in action_labels.iter().enumerate() {
-        let is_sel = app.result_action_cursor == i;
+        let is_sel = !app.result_focus_list && app.result_action_cursor == i;
         let style = if is_sel {
             Style::default().fg(Color::Black).bg(Color::Cyan).bold()
         } else {
@@ -512,19 +533,31 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
         };
         spans.push(Span::styled(format!(" {} ", label), style));
         if i < action_labels.len() - 1 {
-            spans.push(Span::styled("  ", Style::default()));
+            spans.push(Span::styled(" ", Style::default()));
         }
     }
 
-    spans.push(Span::styled("  │ ", Style::default().fg(Color::DarkGray)));
-    spans.push(Span::styled("↑↓", Style::default().fg(Color::White)));
+    spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+    if app.result_focus_list && app.result_detail_vuln.is_none() {
+        spans.push(Span::styled("↑↓", Style::default().fg(Color::White)));
+        spans.push(Span::styled(
+            " Navigate ",
+            Style::default().fg(Color::DarkGray),
+        ));
+        spans.push(Span::styled("Enter", Style::default().fg(Color::White)));
+        spans.push(Span::styled(" Open ", Style::default().fg(Color::DarkGray)));
+    } else {
+        spans.push(Span::styled("↑↓", Style::default().fg(Color::White)));
+        spans.push(Span::styled(" Nav ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("Enter", Style::default().fg(Color::White)));
+        spans.push(Span::styled(
+            " Select ",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    spans.push(Span::styled("Tab", Style::default().fg(Color::White)));
     spans.push(Span::styled(
-        " Scroll  ",
-        Style::default().fg(Color::DarkGray),
-    ));
-    spans.push(Span::styled("Enter", Style::default().fg(Color::White)));
-    spans.push(Span::styled(
-        " Select  ",
+        " Switch ",
         Style::default().fg(Color::DarkGray),
     ));
     spans.push(Span::styled("Esc", Style::default().fg(Color::White)));
