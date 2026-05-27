@@ -417,27 +417,25 @@ fn handle_splash_click(app: &mut AppState, col: u16, row: u16) {
     ])
     .split(app.screen_area);
     let content_area = content_chunks[0];
-    let center = crate::ui::centered_rect(70, 70, content_area);
+    let center = crate::ui::centered_rect(80, 100, content_area);
 
-    let logo_height = 11u16;
     let chunks = ratatui::layout::Layout::vertical([
-        ratatui::layout::Constraint::Length(logo_height),
-        ratatui::layout::Constraint::Length(2),
-        ratatui::layout::Constraint::Length(3),
+        ratatui::layout::Constraint::Length(8),
+        ratatui::layout::Constraint::Length(1),
         ratatui::layout::Constraint::Length(2),
         ratatui::layout::Constraint::Length(1),
-        ratatui::layout::Constraint::Length(5),
-        ratatui::layout::Constraint::Length(2),
-        ratatui::layout::Constraint::Length(2),
+        ratatui::layout::Constraint::Length(1),
+        ratatui::layout::Constraint::Length(3),
+        ratatui::layout::Constraint::Min(1),
     ])
     .split(center);
 
     let mode_area = chunks[4];
-    let text_width = "Mode: AUTO / ASSISTED [Tab to switch]".len() as u16;
+    let text_width = "  Mode: AUTO / ASSISTED  [Tab to switch]".len() as u16;
     let text_start_x = mode_area.x + mode_area.width.saturating_sub(text_width) / 2;
 
     if row == mode_area.y {
-        let auto_start = text_start_x as usize + "Mode: ".len();
+        let auto_start = text_start_x as usize + "  Mode: ".len();
         let auto_end = auto_start + " AUTO ".len();
         let assisted_start = auto_end + " / ".len();
         let assisted_end = assisted_start + " ASSISTED ".len();
@@ -448,7 +446,7 @@ fn handle_splash_click(app: &mut AppState, col: u16, row: u16) {
         }
     }
 
-    let url_area = chunks[6];
+    let url_area = chunks[5];
     if row >= url_area.y && row < url_area.y + url_area.height {
         let inner_x = url_area.x + 1;
         let inner_w = url_area.width.saturating_sub(2) as usize;
@@ -458,7 +456,7 @@ fn handle_splash_click(app: &mut AppState, col: u16, row: u16) {
         }
     }
 
-    let hint_area = chunks[7];
+    let hint_area = chunks[6];
     if row >= hint_area.y && row < hint_area.y + hint_area.height {
         if app.url_input.is_empty() {
             app.url_input = "http://localhost:8080".to_string();
