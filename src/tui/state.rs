@@ -1,12 +1,9 @@
-use crate::mock::results::Vulnerability;
-use crate::mock::tools::SecurityTool;
+use crate::config::Configuration;
+use crate::config::execution_type::ExecutionType;
+use crate::config::llm_config::LlmProviderKind;
+use crate::domain::security_tool::ToolInfo;
+use crate::domain::vulnerability::Vulnerability;
 use ratatui::layout::Rect;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AppMode {
-    Auto,
-    Assisted,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AppStep {
@@ -25,11 +22,10 @@ pub enum ToolStatus {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
 pub enum ResultAction {
     ExportMd,
     ExplainDidactic,
-    #[allow(dead_code)]
-    ExplainDetail,
     BackToSummary,
 }
 
@@ -41,22 +37,27 @@ pub enum AnalysisPhase {
     Complete,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettingsField {
+    Provider,
+    BaseUrl,
+    ApiKey,
+    Model,
+    RealNmap,
+}
+
 pub struct ToolItem {
-    pub tool: SecurityTool,
+    pub tool: ToolInfo,
     pub selected: bool,
     pub status: ToolStatus,
     pub progress: u16,
 }
 
 pub struct AppState {
-    pub mode: AppMode,
+    pub config: Configuration,
     pub step: AppStep,
     pub screen_area: Rect,
     pub should_quit: bool,
-    pub url_input: String,
-    pub url_cursor: usize,
-    #[allow(dead_code)]
-    pub url_editing: bool,
     pub tick: u64,
     pub spinner_idx: usize,
     pub tools: Vec<ToolItem>,
@@ -82,11 +83,19 @@ pub struct AppState {
     pub show_didactic: bool,
     pub show_detail: bool,
     pub didactic_scroll: usize,
+    pub show_settings: bool,
+    pub settings_field: SettingsField,
+    pub settings_provider_idx: usize,
+    pub settings_input_base_url: String,
+    pub settings_input_api_key: String,
+    pub settings_input_model: String,
+    pub settings_real_nmap: bool,
+    pub llm_warning: Option<String>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        let tools = SecurityTool::all()
+    pub fn new(config: Configuration) -> Self {
+        let tools = ToolInfo::all()
             .iter()
             .map(|t| ToolItem {
                 tool: t.clone(),
@@ -96,14 +105,23 @@ impl AppState {
             })
             .collect();
 
+        let (provider_idx, base_url, api_key, model, real_nmap) = {
+            let llm = &config.llm;
+            let idx = match llm.provider {
+                LlmProviderKind::Mock => 0,
+                LlmProviderKind::Ollama => 1,
+                LlmProviderKind::NvidiaNim => 2,
+                LlmProviderKind::OpenAI => 3,
+                LlmProviderKind::Custom => 4,
+            };
+            (idx, llm.base_url.clone(), llm.api_key.clone(), llm.model.clone(), config.use_real_nmap)
+        };
+
         Self {
-            mode: AppMode::Assisted,
+            config,
             step: AppStep::Splash,
-            should_quit: false,
             screen_area: Rect::default(),
-            url_input: String::new(),
-            url_cursor: 0,
-            url_editing: true,
+            should_quit: false,
             tick: 0,
             spinner_idx: 0,
             tools,
@@ -122,14 +140,30 @@ impl AppState {
             analysis_full_text: String::new(),
             result_action_cursor: 0,
             result_cursor: 0,
-            result_detail_vuln: None,
             result_scroll: 0,
+            result_detail_vuln: None,
             result_focus_list: true,
             md_exported: false,
             show_didactic: false,
             show_detail: false,
             didactic_scroll: 0,
+            show_settings: false,
+            settings_field: SettingsField::Provider,
+            settings_provider_idx: provider_idx,
+            settings_input_base_url: base_url,
+            settings_input_api_key: api_key,
+            settings_input_model: model,
+            settings_real_nmap: real_nmap,
+            llm_warning: None,
         }
+    }
+
+    pub fn mode(&self) -> ExecutionType {
+        self.config.execution_type
+    }
+
+    pub fn set_mode(&mut self, mode: ExecutionType) {
+        self.config.execution_type = mode;
     }
 
     pub fn spinner_char(&self) -> &str {
@@ -141,10 +175,24 @@ impl AppState {
         Vulnerability::mock_all()
     }
 
-    pub fn advance_auto(&mut self) {
-        if self.mode != AppMode::Auto {
-            return;
+    pub fn tick(&mut self) {
+        self.tick += 1;
+        self.spinner_idx = (self.spinner_idx + 1) % 10;
+        if self.mode() == ExecutionType::Auto {
+            self.advance_auto();
         }
+    }
+
+    pub async fn step_tick(&mut self) {
+        if self.step == AppStep::Analysis && self.analysis_phase == AnalysisPhase::Complete {
+            if self.analysis_tick > 30 {
+                self.step = AppStep::Results;
+            }
+            self.analysis_tick += 1;
+        }
+    }
+
+    fn advance_auto(&mut self) {
         match self.step {
             AppStep::Splash => {}
             AppStep::ToolSelect => {
@@ -178,6 +226,11 @@ impl AppState {
         self.exec_logs.clear();
         self.log_scroll = 0;
         self.find_first_pending();
+
+        self.analysis_phase = AnalysisPhase::Scanning;
+        self.analysis_tick = 0;
+        self.analysis_text.clear();
+        self.analysis_full_text = "Scanning vulnerability patterns across tool outputs...\n\nDetected SQL injection signatures in login and search endpoints.\nCross-referencing with ZAP and SQLMap findings.\n\nCorrelating XSS findings across reflected and stored variants.\nHeader analysis reveals missing security headers.\n\nDependency scan identified 2 critical CVEs:\n- lodash 4.17.15: CVE-2021-23337 (command injection)\n- openssl-sys 0.9.72: CVE-2023-0286 (buffer overflow)\n\nNetwork analysis: SSH exposed, Docker running as root.\nSession management: cookies without HttpOnly/Secure flags.\n\nPath traversal vulnerability detected in file API.\nIDOR vulnerability in user API (sequential IDs).\nCSRF protection missing on transfer endpoint.\n\nSSRF in preview endpoint — potential cloud metadata access.\nCORS misconfigured with wildcard origin.\nJWT accepts 'none' algorithm — critical auth bypass.\n\nGenerating remediation priorities and didactic explanations...".to_string();
     }
 
     fn find_first_pending(&mut self) {
@@ -212,8 +265,7 @@ impl AppState {
         }
         if tool.progress >= 100 {
             tool.status = ToolStatus::Done;
-            self.exec_logs
-                .push(format!("[{}] ✓ Scan complete", tool.tool.name));
+            self.exec_logs.push(format!("[{}] ✓ Scan complete", tool.tool.name));
             let vh = self.log_visible_height.max(1);
             if self.exec_logs.len() > vh {
                 self.log_scroll = self.exec_logs.len().saturating_sub(vh);
@@ -226,15 +278,19 @@ impl AppState {
             {
                 self.exec_current += 1;
             }
+            if self.exec_current >= self.tools.len() {
+                self.step = AppStep::Analysis;
+                self.analysis_phase = AnalysisPhase::Scanning;
+                self.analysis_tick = 0;
+            }
         }
     }
 
-    pub fn advance_analysis(&mut self) {
+    fn advance_analysis(&mut self) {
         self.analysis_tick += 1;
         let total_chars = self.analysis_full_text.chars().count();
         let visible = (self.analysis_tick as usize * 5).min(total_chars);
         self.analysis_text = self.analysis_full_text.chars().take(visible).collect();
-
         if visible >= total_chars {
             match self.analysis_phase {
                 AnalysisPhase::Scanning => {
@@ -255,40 +311,27 @@ impl AppState {
     }
 
     pub fn export_md(&self) -> String {
-        let vulns = self.vulnerabilities();
-        let mut md = String::new();
-        md.push_str("# SmartSec - Relatório de Análise de Segurança\n\n");
-        md.push_str(&format!("**URL Alvo:** {}\n\n", self.url_input));
-        md.push_str(&format!(
-            "**Modo:** {}\n\n",
-            match self.mode {
-                AppMode::Auto => "Automático",
-                AppMode::Assisted => "Assistido",
-            }
-        ));
-        md.push_str("## Resumo\n\n");
-        md.push_str(&format!("- Total de vulnerabilidades: {}\n", vulns.len()));
-        let critical = vulns.iter().filter(|v| v.severity == "CRITICAL").count();
-        let high = vulns.iter().filter(|v| v.severity == "HIGH").count();
-        let medium = vulns.iter().filter(|v| v.severity == "MEDIUM").count();
-        let low = vulns.iter().filter(|v| v.severity == "LOW").count();
-        md.push_str(&format!(
-            "- Critical: {}\n- High: {}\n- Medium: {}\n- Low: {}\n\n",
-            critical, high, medium, low
-        ));
-        md.push_str("## Pontos Críticos\n\n");
-        for v in &vulns {
-            if v.severity == "CRITICAL" || v.severity == "HIGH" {
-                md.push_str(&format!("### [{}] {}\n\n", v.severity, v.title));
-                md.push_str(&format!("{}\n\n", v.description));
-                md.push_str(&format!("**Ferramenta:** {}\n\n", v.tool));
-                md.push_str(&format!("**Recomendação:** {}\n\n", v.recommendation));
-            }
+        crate::report::ReportGenerator::compile_report(&self.config, &self.vulnerabilities())
+    }
+
+    pub fn apply_settings(&mut self) {
+        let provider = LlmProviderKind::from_label(
+            LlmProviderKind::all_labels()[self.settings_provider_idx],
+        );
+        self.config.llm.provider = provider;
+        if self.settings_input_base_url.is_empty() {
+            self.config.llm.base_url = provider.default_base_url().to_string();
+        } else {
+            self.config.llm.base_url = self.settings_input_base_url.clone();
         }
-        md.push_str("## Todas as Vulnerabilidades\n\n");
-        for v in &vulns {
-            md.push_str(&format!("- [{}] {} - {}\n", v.severity, v.title, v.tool));
+        self.config.llm.api_key = self.settings_input_api_key.clone();
+        if self.settings_input_model.is_empty() {
+            self.config.llm.model = provider.default_model().to_string();
+        } else {
+            self.config.llm.model = self.settings_input_model.clone();
         }
-        md
+        self.config.use_real_nmap = self.settings_real_nmap;
+        self.config.save();
+        self.show_settings = false;
     }
 }

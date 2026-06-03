@@ -1,23 +1,22 @@
-use crate::app::{AppMode, AppState, ToolStatus};
+use crate::config::execution_type::ExecutionType;
+use crate::tui::state::{AppState, ToolStatus};
 use ratatui::{
-    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Gauge, Paragraph, Wrap},
+    Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
     frame.render_widget(bg, area);
-
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
         Constraint::Length(3),
     ])
     .split(area);
-
     render_header(app, frame, chunks[0]);
     render_body(app, frame, chunks[1]);
     render_footer(app, frame, chunks[2]);
@@ -48,13 +47,10 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
         Span::styled(" ◆ ", Style::default().fg(Color::Cyan)),
         Span::styled("Execution", Style::default().fg(Color::White).bold()),
         Span::styled(
-            format!("  {} Running  ", running),
+            format!(" {} Running ", running),
             Style::default().fg(Color::Yellow),
         ),
-        Span::styled(
-            format!("{} Done  ", done),
-            Style::default().fg(Color::Green),
-        ),
+        Span::styled(format!("{} Done ", done), Style::default().fg(Color::Green)),
         Span::styled(
             format!("({}% complete)", overall_pct),
             Style::default().fg(Color::DarkGray),
@@ -67,7 +63,6 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
 fn render_body(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let chunks =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
-
     render_progress_list(app, frame, chunks[0]);
     render_logs(app, frame, chunks[1]);
 }
@@ -89,7 +84,6 @@ fn render_progress_list(app: &AppState, frame: &mut Frame, area: Rect) {
     if selected_tools.is_empty() {
         return;
     }
-
     let tool_height = 3u16;
     let available = inner.height.saturating_sub(1);
     let max_visible = (available / tool_height).max(1) as usize;
@@ -111,13 +105,11 @@ fn render_progress_list(app: &AppState, frame: &mut Frame, area: Rect) {
             inner.width.saturating_sub(2),
             tool_height.min(available.saturating_sub(i as u16 * tool_height)),
         );
-
         let (icon, icon_color) = match tool.status {
             ToolStatus::Pending => ("○", Color::DarkGray),
             ToolStatus::Running => (app.spinner_char(), Color::Yellow),
             ToolStatus::Done => ("✓", Color::Green),
         };
-
         let name_line = Paragraph::new(Line::from(vec![
             Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
             Span::styled(tool.tool.name, Style::default().fg(Color::White).bold()),
@@ -217,14 +209,13 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
     } else {
         "Running security scans..."
     };
-
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(
                 " ◆ {} ",
-                match app.mode {
-                    AppMode::Auto => "AUTO",
-                    AppMode::Assisted => "ASSISTED",
+                match app.mode() {
+                    ExecutionType::Auto => "AUTO",
+                    ExecutionType::Assisted => "ASSISTED",
                 }
             ),
             Style::default().fg(Color::Cyan).bold(),

@@ -1,4 +1,5 @@
-use crate::app::{AppMode, AppState};
+use crate::config::execution_type::ExecutionType;
+use crate::tui::state::AppState;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
@@ -10,16 +11,13 @@ use ratatui::{
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
     frame.render_widget(bg, area);
-
     let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(area);
-
     render_content(app, frame, chunks[0]);
     render_status_bar(app, frame, chunks[1]);
 }
 
 fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
-    let center = super::centered_rect(80, 100, area);
-
+    let center = crate::tui::centered_rect(80, 100, area);
     let chunks = Layout::vertical([
         Constraint::Length(8),
         Constraint::Length(1),
@@ -41,24 +39,24 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
     .alignment(Alignment::Center);
     frame.render_widget(subtitle, chunks[2]);
 
-    let auto_style = if app.mode == AppMode::Auto {
+    let auto_style = if app.mode() == ExecutionType::Auto {
         Style::default().fg(Color::Black).bg(Color::Cyan).bold()
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    let assisted_style = if app.mode == AppMode::Assisted {
+    let assisted_style = if app.mode() == ExecutionType::Assisted {
         Style::default().fg(Color::Black).bg(Color::Green).bold()
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
     let mode_line = Line::from(vec![
-        Span::styled("  Mode: ", Style::default().fg(Color::White)),
+        Span::styled(" Mode: ", Style::default().fg(Color::White)),
         Span::styled(" AUTO ", auto_style),
         Span::styled(" / ", Style::default().fg(Color::DarkGray)),
         Span::styled(" ASSISTED ", assisted_style),
         Span::styled(
-            "  [Tab to switch]",
+            " [Tab to switch]",
             Style::default().fg(Color::DarkGray).italic(),
         ),
     ]);
@@ -78,7 +76,7 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(url_block, chunks[5]);
 
     let cursor_char = if app.tick % 10 < 5 { "█" } else { "▎" };
-    let display_url = if app.url_input.is_empty() {
+    let display_url = if app.config.target_url.is_empty() {
         format!(
             " {}{}",
             cursor_char,
@@ -88,12 +86,9 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
                 .collect::<String>()
         )
     } else {
-        let before: String = app.url_input.chars().take(app.url_cursor).collect();
-        let after: String = app.url_input.chars().skip(app.url_cursor).collect();
-        format!(" {}{}{}", before, cursor_char, after)
+        format!(" {}{}", cursor_char, app.config.target_url)
     };
-
-    let cursor_color = if app.url_input.is_empty() {
+    let cursor_color = if app.config.target_url.is_empty() {
         Color::Rgb(60, 60, 80)
     } else {
         Color::White
@@ -105,10 +100,14 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
     .style(Style::default().bg(Color::Rgb(16, 16, 32)));
     frame.render_widget(url_text, url_inner);
 
-    let hint = Paragraph::new(Line::from(Span::styled(
-        "Press Enter to start analysis",
-        Style::default().fg(Color::DarkGray),
-    )))
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("Enter", Style::default().fg(Color::White)),
+        Span::styled(" Start  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("c", Style::default().fg(Color::White)),
+        Span::styled(" Settings  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::White)),
+        Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
+    ]))
     .alignment(Alignment::Center);
     frame.render_widget(hint, chunks[6]);
 }
@@ -121,13 +120,13 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
     let inner = bar.inner(area);
     frame.render_widget(bar, area);
 
-    let mode_text = match app.mode {
-        AppMode::Auto => "AUTO",
-        AppMode::Assisted => "ASSISTED",
+    let mode_text = match app.mode() {
+        ExecutionType::Auto => "AUTO",
+        ExecutionType::Assisted => "ASSISTED",
     };
-    let mode_color = match app.mode {
-        AppMode::Auto => Color::Cyan,
-        AppMode::Assisted => Color::Green,
+    let mode_color = match app.mode() {
+        ExecutionType::Auto => Color::Cyan,
+        ExecutionType::Assisted => Color::Green,
     };
 
     let status = Paragraph::new(Line::from(vec![
@@ -135,13 +134,13 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
             " SMARTSEC ",
             Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
         ),
-        Span::styled(" v0.1.0 ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" v0.2.0 ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!(" ◆ {} ", mode_text),
             Style::default().fg(mode_color).bold(),
         ),
         Span::styled(
-            " │ Esc: Quit  Tab: Switch Mode  Enter: Start ",
+            " │ Esc: Quit Tab: Switch Mode Enter: Start c: Settings ",
             Style::default().fg(Color::DarkGray),
         ),
     ]))
@@ -152,37 +151,33 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
 fn build_logo() -> Vec<Line<'static>> {
     let c1 = Style::default().fg(Color::Cyan).bold();
     let c2 = Style::default().fg(Color::Rgb(0, 100, 120));
-
     vec![
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  ███████╗███╗   ███╗ █████╗ ██████╗ ████████╗    ███████╗███████╗ ██████╗",
+            " ███████╗███╗ ███╗ █████╗ ██████╗ ████████╗ ███████╗███████╗ ██████╗",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            "  ██╔════╝████╗ ████║██╔══██╗██╔══██╗╚══██╔══╝    ██╔════╝██╔════╝██╔════╝",
+            " ██╔════╝████╗ ████║██╔══██╗██╔══██╗╚══██╔══╝ ██╔════╝██╔════╝██╔════╝",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            "  ███████╗██╔████╔██║███████║██████╔╝   ██║       ███████╗█████╗  ██║     ",
+            " ███████╗██╔████╔██║███████║██████╔╝ ██║ ███████╗█████╗ ██║ ",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            "  ╚════██║██║╚██╔╝██║██╔══██║██╔══██╗   ██║       ╚════██║██╔══╝  ██║     ",
+            " ╚════██║██║╚██╔╝██║██╔══██║██╔══██╗ ██║ ╚════██║██╔══╝ ██║ ",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            "  ███████║██║ ╚═╝ ██║██║  ██║██║  ██║   ██║       ███████║███████╗╚██████╗",
+            " ███████║██║ ╚═╝ ██║██║ ██║██║ ██║ ██║ ███████║███████╗╚██████╗",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            "  ╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝       ╚══════╝╚══════╝ ╚═════╝",
+            " ╚══════╝╚═╝     ╚═╝╚═╝ ╚═╝╚═╝ ╚═╝ ╚═╝ ╚══════╝╚══════╝ ╚═════╝",
             c1,
         )]),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "        Security Analysis Platform         ",
-            c2,
-        )]),
+        Line::from(vec![Span::styled(" Security Analysis Platform ", c2)]),
     ]
 }

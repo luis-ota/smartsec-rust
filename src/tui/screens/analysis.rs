@@ -1,10 +1,11 @@
-use crate::app::{AnalysisPhase, AppMode, AppState};
+use crate::config::execution_type::ExecutionType;
+use crate::tui::state::{AnalysisPhase, AppState};
 use ratatui::{
-    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    Frame,
 };
 
 #[allow(dead_code)]
@@ -27,7 +28,6 @@ fn build_network() -> (Vec<NeuralNode>, Vec<NeuralEdge>) {
     let mut edges = Vec::new();
     let num_layers = layers.len();
     let mut layer_start = Vec::new();
-
     for (li, (_name, count)) in layers.iter().enumerate() {
         layer_start.push(nodes.len());
         for ni in 0..*count {
@@ -42,7 +42,6 @@ fn build_network() -> (Vec<NeuralNode>, Vec<NeuralEdge>) {
             });
         }
     }
-
     for li in 0..num_layers - 1 {
         let cur_start = layer_start[li];
         let next_start = layer_start[li + 1];
@@ -64,7 +63,6 @@ fn build_network() -> (Vec<NeuralNode>, Vec<NeuralEdge>) {
             }
         }
     }
-
     (nodes, edges)
 }
 
@@ -101,14 +99,12 @@ fn edge_char(dr: f32, dc: f32) -> &'static str {
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
     frame.render_widget(bg, area);
-
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
         Constraint::Length(3),
     ])
     .split(area);
-
     render_header(app, frame, chunks[0]);
     render_body(app, frame, chunks[1]);
     render_footer(app, frame, chunks[2]);
@@ -129,7 +125,6 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
         AnalysisPhase::Generating => ("Generating recommendations", Color::Magenta),
         AnalysisPhase::Complete => ("Analysis complete", Color::Green),
     };
-
     let header = Paragraph::new(Line::from(vec![
         Span::styled(" ◆ ", Style::default().fg(Color::Magenta)),
         Span::styled("AI Analysis", Style::default().fg(Color::White).bold()),
@@ -145,7 +140,6 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
 fn render_body(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let chunks =
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
-
     render_neural_viz(app, frame, chunks[0]);
     render_analysis_text(app, frame, chunks[1]);
 }
@@ -168,12 +162,10 @@ fn render_neural_viz(app: &mut AppState, frame: &mut Frame, area: Rect) {
     if h < 4 || w < 6 {
         return;
     }
+
     let t = app.tick;
-
     let (nodes, edges) = build_network();
-
     let layer_labels = ["IN", "H1", "H2", "OUT"];
-
     let margin_top = 2usize;
     let margin_bottom = 1usize;
     let margin_lr = 2usize;
@@ -202,7 +194,6 @@ fn render_neural_viz(app: &mut AppState, frame: &mut Frame, area: Rect) {
         let dc = (c2 as f32) - (c1 as f32);
         let base_ch = edge_char(dr, dc);
         let total = cells.len().max(1);
-
         let travel_period = 30u64;
         let speed_offset = (ei as u64 * 7) % travel_period;
         let signal_pos =
@@ -216,9 +207,7 @@ fn render_neural_viz(app: &mut AppState, frame: &mut Frame, area: Rect) {
             if is_node {
                 continue;
             }
-
             let dist_from_signal = ci.abs_diff(signal_pos);
-
             let (ch, color) = if dist_from_signal == 0 {
                 ('◆', Color::Rgb(255, 100, 255))
             } else if dist_from_signal <= 2 {
@@ -272,17 +261,13 @@ fn render_neural_viz(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let mut lines: Vec<Line> = Vec::with_capacity(h);
     for grid_row in grid.iter().take(h) {
         let mut spans: Vec<Span> = Vec::new();
-        let mut col = 0;
-        while col < w {
-            let (chars, color) = &grid_row[col];
+        for (chars, color) in grid_row.iter().take(w) {
             let style = Style::default().fg(*color).bg(Color::Rgb(8, 4, 16));
             let s: String = chars.iter().collect();
             spans.push(Span::styled(s, style));
-            col += 1;
         }
         lines.push(Line::from(spans));
     }
-
     let viz = Paragraph::new(Text::from(lines)).style(Style::default().bg(Color::Rgb(8, 4, 16)));
     frame.render_widget(viz, inner);
 }
@@ -312,7 +297,6 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
         AnalysisPhase::Generating => Color::Magenta,
         AnalysisPhase::Complete => Color::Green,
     };
-
     let spinner = app.spinner_char();
     let mut text_lines = vec![
         Line::from(vec![
@@ -321,7 +305,6 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
         ]),
         Line::from(""),
     ];
-
     for line in app.analysis_text.lines() {
         if !line.is_empty() {
             text_lines.push(Line::from(vec![
@@ -332,7 +315,6 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
             text_lines.push(Line::from(""));
         }
     }
-
     if app.analysis_phase == AnalysisPhase::Complete {
         text_lines.push(Line::from(""));
         text_lines.push(Line::from(vec![
@@ -343,7 +325,6 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
             ),
         ]));
     }
-
     let para = Paragraph::new(Text::from(text_lines))
         .style(Style::default().bg(Color::Rgb(12, 12, 24)))
         .wrap(Wrap { trim: true });
@@ -363,14 +344,13 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
         AnalysisPhase::Complete => "Analysis finished",
         _ => "AI is processing scan results...",
     };
-
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(
                 " ◆ {} ",
-                match app.mode {
-                    AppMode::Auto => "AUTO",
-                    AppMode::Assisted => "ASSISTED",
+                match app.mode() {
+                    ExecutionType::Auto => "AUTO",
+                    ExecutionType::Assisted => "ASSISTED",
                 }
             ),
             Style::default().fg(Color::Cyan).bold(),
