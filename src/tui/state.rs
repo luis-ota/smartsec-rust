@@ -1,8 +1,10 @@
-use crate::config::Configuration;
+use crate::ai::agent::AIAgent;
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmProviderKind;
+use crate::config::Configuration;
 use crate::domain::security_tool::ToolInfo;
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::Orchestrator;
 use ratatui::layout::Rect;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -19,6 +21,8 @@ pub enum ToolStatus {
     Pending,
     Running,
     Done,
+    #[allow(dead_code)]
+    Failed,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -55,6 +59,8 @@ pub struct ToolItem {
 
 pub struct AppState {
     pub config: Configuration,
+    pub orchestrator: Orchestrator,
+    pub agent: AIAgent,
     pub step: AppStep,
     pub screen_area: Rect,
     pub should_quit: bool,
@@ -91,10 +97,18 @@ pub struct AppState {
     pub settings_input_model: String,
     pub settings_real_nmap: bool,
     pub llm_warning: Option<String>,
+    pub exec_paused: bool,
+    pub exec_cancelled: bool,
+    pub pending_ctrl_x: bool,
+    pub pending_ctrl_x_tick: u64,
+    pub command_palette_hint: Option<String>,
 }
 
 impl AppState {
     pub fn new(config: Configuration) -> Self {
+        let orchestrator = Orchestrator::new(config.clone());
+        let agent = orchestrator.agent_handle();
+
         let tools = ToolInfo::all()
             .iter()
             .map(|t| ToolItem {
@@ -114,11 +128,19 @@ impl AppState {
                 LlmProviderKind::OpenAI => 3,
                 LlmProviderKind::Custom => 4,
             };
-            (idx, llm.base_url.clone(), llm.api_key.clone(), llm.model.clone(), config.use_real_nmap)
+            (
+                idx,
+                llm.base_url.clone(),
+                llm.api_key.clone(),
+                llm.model.clone(),
+                config.use_real_nmap,
+            )
         };
 
         Self {
             config,
+            orchestrator,
+            agent,
             step: AppStep::Splash,
             screen_area: Rect::default(),
             should_quit: false,
@@ -155,6 +177,11 @@ impl AppState {
             settings_input_model: model,
             settings_real_nmap: real_nmap,
             llm_warning: None,
+            exec_paused: false,
+            exec_cancelled: false,
+            pending_ctrl_x: false,
+            pending_ctrl_x_tick: 0,
+            command_palette_hint: None,
         }
     }
 
@@ -172,14 +199,36 @@ impl AppState {
     }
 
     pub fn vulnerabilities(&self) -> Vec<Vulnerability> {
-        Vulnerability::mock_all()
+        if self.orchestrator.findings.is_empty() {
+            Vulnerability::mock_all()
+        } else {
+            self.orchestrator.findings.clone()
+        }
+    }
+
+    pub fn ai_summary(&self) -> &str {
+        if self.agent.last_analysis.is_empty() {
+            "[AI analysis will run after execution completes]"
+        } else {
+            &self.agent.last_analysis
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn agent_last_analysis(&self) -> &str {
+        self.ai_summary()
     }
 
     pub fn tick(&mut self) {
         self.tick += 1;
         self.spinner_idx = (self.spinner_idx + 1) % 10;
-        if self.mode() == ExecutionType::Auto {
-            self.advance_auto();
+        if self.pending_ctrl_x && self.tick.saturating_sub(self.pending_ctrl_x_tick) > 20 {
+            self.pending_ctrl_x = false;
+            self.command_palette_hint = None;
+        }
+        match self.mode() {
+            ExecutionType::Auto => self.advance_auto(),
+            ExecutionType::Assisted => self.advance_assisted(),
         }
     }
 
@@ -196,7 +245,11 @@ impl AppState {
         match self.step {
             AppStep::Splash => {}
             AppStep::ToolSelect => {
+                if self.tool_detecting {
+                    self.tool_detect_tick += 1;
+                }
                 if self.tool_detect_tick > 50 {
+                    self.tool_detecting = false;
                     self.step = AppStep::Execution;
                     self.tool_detect_tick = 0;
                     self.exec_current = 0;
@@ -214,6 +267,21 @@ impl AppState {
         }
     }
 
+    fn advance_assisted(&mut self) {
+        if self.step == AppStep::ToolSelect && self.tool_detecting {
+            self.tool_detect_tick += 1;
+            if self.tool_detect_tick > 50 {
+                self.tool_detecting = false;
+                self.tool_detect_tick = 0;
+            }
+        }
+        match self.step {
+            AppStep::Execution => self.advance_execution(),
+            AppStep::Analysis => self.advance_analysis(),
+            _ => {}
+        }
+    }
+
     pub fn init_execution(&mut self) {
         for t in &mut self.tools {
             if t.selected {
@@ -225,6 +293,11 @@ impl AppState {
         self.exec_tick = 0;
         self.exec_logs.clear();
         self.log_scroll = 0;
+        self.exec_paused = false;
+        self.exec_cancelled = false;
+        self.orchestrator.paused = false;
+        self.orchestrator.cancelled = false;
+        self.orchestrator.execution_history.clear();
         self.find_first_pending();
 
         self.analysis_phase = AnalysisPhase::Scanning;
@@ -242,6 +315,13 @@ impl AppState {
     }
 
     pub fn advance_execution(&mut self) {
+        if self.exec_paused || self.orchestrator.paused {
+            return;
+        }
+        if self.exec_cancelled || self.orchestrator.cancelled {
+            self.step = AppStep::ToolSelect;
+            return;
+        }
         self.exec_tick += 1;
         if self.exec_current >= self.tools.len() {
             return;
@@ -265,7 +345,8 @@ impl AppState {
         }
         if tool.progress >= 100 {
             tool.status = ToolStatus::Done;
-            self.exec_logs.push(format!("[{}] ✓ Scan complete", tool.tool.name));
+            self.exec_logs
+                .push(format!("[{}] ✓ Scan complete", tool.tool.name));
             let vh = self.log_visible_height.max(1);
             if self.exec_logs.len() > vh {
                 self.log_scroll = self.exec_logs.len().saturating_sub(vh);
@@ -279,6 +360,8 @@ impl AppState {
                 self.exec_current += 1;
             }
             if self.exec_current >= self.tools.len() {
+                self.orchestrator.build_findings();
+                self.sync_agent_from_orchestrator();
                 self.step = AppStep::Analysis;
                 self.analysis_phase = AnalysisPhase::Scanning;
                 self.analysis_tick = 0;
@@ -315,9 +398,8 @@ impl AppState {
     }
 
     pub fn apply_settings(&mut self) {
-        let provider = LlmProviderKind::from_label(
-            LlmProviderKind::all_labels()[self.settings_provider_idx],
-        );
+        let provider =
+            LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
         self.config.llm.provider = provider;
         if self.settings_input_base_url.is_empty() {
             self.config.llm.base_url = provider.default_base_url().to_string();
@@ -333,5 +415,40 @@ impl AppState {
         self.config.use_real_nmap = self.settings_real_nmap;
         self.config.save();
         self.show_settings = false;
+    }
+
+    pub fn pause_or_resume(&mut self) {
+        if self.step != AppStep::Execution {
+            return;
+        }
+        self.exec_paused = !self.exec_paused;
+        if self.exec_paused {
+            self.orchestrator.pause_execution();
+            self.exec_logs.push("⏸ Execution PAUSED".to_string());
+        } else {
+            self.orchestrator.resume_execution();
+            self.exec_logs.push("▶ Execution RESUMED".to_string());
+        }
+        let vh = self.log_visible_height.max(1);
+        if self.exec_logs.len() > vh {
+            self.log_scroll = self.exec_logs.len().saturating_sub(vh);
+        }
+    }
+
+    pub fn cancel_run(&mut self) {
+        if self.step != AppStep::Execution {
+            return;
+        }
+        self.exec_cancelled = true;
+        self.orchestrator.cancel_execution();
+        self.exec_logs.push("✖ Execution CANCELLED".to_string());
+        let vh = self.log_visible_height.max(1);
+        if self.exec_logs.len() > vh {
+            self.log_scroll = self.exec_logs.len().saturating_sub(vh);
+        }
+    }
+
+    pub fn sync_agent_from_orchestrator(&mut self) {
+        self.agent.last_analysis = self.orchestrator.last_log.clone();
     }
 }

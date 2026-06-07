@@ -143,6 +143,7 @@ fn render_tool_detail(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::Yellow),
         ),
         ToolStatus::Done => Span::styled("✓ Complete", Style::default().fg(Color::Green)),
+        ToolStatus::Failed => Span::styled("✗ Failed", Style::default().fg(Color::Red)),
     };
 
     let detail = ratatui::text::Text::from(vec![

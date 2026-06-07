@@ -1,2 +1,2 @@
-pub mod nmap;
 pub mod mocks;
+pub mod nmap;

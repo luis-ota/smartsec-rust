@@ -1,9 +1,15 @@
-pub mod state;
 pub mod event;
 pub mod screens;
+pub mod state;
 
 use crate::tui::state::AppState;
-use ratatui::{Frame, layout::Rect};
+use ratatui::{
+    layout::Rect,
+    style::{Color, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Paragraph, Wrap},
+    Frame,
+};
 
 pub fn render(app: &mut AppState, frame: &mut Frame) {
     let area = frame.area();
@@ -11,16 +17,38 @@ pub fn render(app: &mut AppState, frame: &mut Frame) {
 
     if app.show_settings {
         screens::settings::render(app, frame, area);
-        return;
+    } else {
+        match app.step {
+            AppStep::Splash => screens::splash::render(app, frame, area),
+            AppStep::ToolSelect => screens::tools::render(app, frame, area),
+            AppStep::Execution => screens::execution::render(app, frame, area),
+            AppStep::Analysis => screens::analysis::render(app, frame, area),
+            AppStep::Results => screens::results::render(app, frame, area),
+        }
     }
 
-    match app.step {
-        AppStep::Splash => screens::splash::render(app, frame, area),
-        AppStep::ToolSelect => screens::tools::render(app, frame, area),
-        AppStep::Execution => screens::execution::render(app, frame, area),
-        AppStep::Analysis => screens::analysis::render(app, frame, area),
-        AppStep::Results => screens::results::render(app, frame, area),
+    if app.command_palette_hint.is_some() {
+        render_command_palette(app, frame, area);
     }
+}
+
+fn render_command_palette(app: &AppState, frame: &mut Frame, area: Rect) {
+    let hint = app.command_palette_hint.as_deref().unwrap_or("C-x _");
+    let palette_height: u16 = 3;
+    let palette_area = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(palette_height),
+        width: area.width,
+        height: palette_height,
+    };
+    let line = Line::from(vec![
+        Span::styled(" ▸ ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(hint, Style::default().fg(Color::White).bold()),
+    ]);
+    let para = Paragraph::new(line)
+        .style(Style::default().bg(Color::Rgb(20, 20, 40)))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(para, palette_area);
 }
 
 use crate::tui::state::AppStep;

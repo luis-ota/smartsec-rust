@@ -1,22 +1,48 @@
+use crate::config::llm_config::LlmConfig;
+use crate::config::llm_config::LlmProviderKind;
 use crate::domain::vulnerability::Vulnerability;
+use crate::llm::mock_provider::MockProvider;
+use crate::llm::nvidia_nim::nvidia_nim_provider;
+use crate::llm::ollama_provider::ollama_provider;
+use crate::llm::openai_provider::OpenAIProvider;
 use crate::llm::LLMProvider;
 
-#[allow(dead_code)]
 pub struct AIAgent {
-    provider: Box<dyn LLMProvider>,
-    model: String,
+    #[allow(dead_code)]
+    pub provider: Box<dyn LLMProvider>,
+    #[allow(dead_code)]
+    pub model: String,
+    pub last_analysis: String,
+    #[allow(dead_code)]
+    pub execution_history: Vec<String>,
 }
 
 impl AIAgent {
-    #[allow(dead_code)]
-    pub fn new(provider: Box<dyn LLMProvider>, model: String) -> Self {
-        Self { provider, model }
+    pub fn from_config(cfg: &LlmConfig) -> Self {
+        let provider: Box<dyn LLMProvider> = match cfg.provider {
+            LlmProviderKind::Mock => Box::new(MockProvider),
+            LlmProviderKind::Ollama => Box::new(ollama_provider(&cfg.base_url)),
+            LlmProviderKind::NvidiaNim => Box::new(nvidia_nim_provider(&cfg.api_key)),
+            LlmProviderKind::OpenAI => Box::new(OpenAIProvider {
+                base_url: cfg.base_url.clone(),
+                api_key: cfg.api_key.clone(),
+            }),
+            LlmProviderKind::Custom => Box::new(OpenAIProvider {
+                base_url: cfg.base_url.clone(),
+                api_key: cfg.api_key.clone(),
+            }),
+        };
+        Self {
+            provider,
+            model: cfg.model.clone(),
+            last_analysis: String::new(),
+            execution_history: Vec::new(),
+        }
     }
 
-    #[allow(dead_code)]
-    pub async fn analyze_logs(&self, vulns: &[Vulnerability]) -> String {
+    pub async fn analyze_logs(&mut self, vulns: &[Vulnerability]) -> String {
         let prompt = format!(
-            "Analyze these security vulnerabilities and provide a summary:\n{}",
+            "You are a senior security analyst. Analyze these vulnerabilities and provide a concise summary with priorities:\n{}",
             vulns
                 .iter()
                 .map(|v| format!("- [{}] {} ({})", v.severity.label(), v.title, v.tool))
@@ -24,10 +50,12 @@ impl AIAgent {
                 .join("\n")
         );
 
-        match self.provider.execute_prompt(&prompt, &self.model).await {
-            Ok(result) => Self::parse_llm_response(&result),
+        let result = match self.provider.execute_prompt(&prompt, &self.model).await {
+            Ok(r) => Self::parse_llm_response(&r),
             Err(_) => Self::mock_analysis(vulns),
-        }
+        };
+        self.last_analysis = result.clone();
+        result
     }
 
     #[allow(dead_code)]
@@ -36,8 +64,15 @@ impl AIAgent {
     }
 
     #[allow(dead_code)]
-    pub fn generate_didactic(vuln: &Vulnerability) -> String {
-        vuln.didactic.to_string()
+    pub async fn generate_didactic(&self, vuln: &Vulnerability) -> String {
+        let prompt = format!(
+            "Explain the following security vulnerability in an educational way for a junior developer:\n\nTitle: {}\nSeverity: {}\nTool: {}\nDescription: {}\n\nProvide: 1) what it is, 2) attack flow example, 3) defense strategies.",
+            vuln.title, vuln.severity.label(), vuln.tool, vuln.description
+        );
+        match self.provider.execute_prompt(&prompt, &self.model).await {
+            Ok(r) => Self::parse_llm_response(&r),
+            Err(_) => vuln.didactic.to_string(),
+        }
     }
 
     fn parse_llm_response(raw: &str) -> String {
@@ -48,16 +83,30 @@ impl AIAgent {
             if let Some(content) = parsed.get("content").and_then(|v| v.as_str()) {
                 return content.to_string();
             }
+            if let Some(content) = parsed
+                .get("choices")
+                .and_then(|v| v.get(0))
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.get("content"))
+                .and_then(|v| v.as_str())
+            {
+                return content.to_string();
+            }
         }
         raw.to_string()
     }
 
     fn mock_analysis(vulns: &[Vulnerability]) -> String {
-        let crit = vulns.iter().filter(|v| v.severity == crate::domain::Severity::Critical).count();
-        let high = vulns.iter().filter(|v| v.severity == crate::domain::Severity::High).count();
+        let crit = vulns
+            .iter()
+            .filter(|v| v.severity == crate::domain::Severity::Critical)
+            .count();
+        let high = vulns
+            .iter()
+            .filter(|v| v.severity == crate::domain::Severity::High)
+            .count();
         format!(
-            "Analysis complete: {} critical and {} high severity vulnerabilities detected.\n\
-             Immediate remediation recommended for critical findings.",
+            "Analysis complete: {} critical and {} high severity vulnerabilities detected.\nImmediate remediation recommended for critical findings.\nReview authentication, input validation, and dependency surface first.",
             crit, high
         )
     }

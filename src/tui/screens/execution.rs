@@ -109,6 +109,7 @@ fn render_progress_list(app: &AppState, frame: &mut Frame, area: Rect) {
             ToolStatus::Pending => ("○", Color::DarkGray),
             ToolStatus::Running => (app.spinner_char(), Color::Yellow),
             ToolStatus::Done => ("✓", Color::Green),
+            ToolStatus::Failed => ("✗", Color::Red),
         };
         let name_line = Paragraph::new(Line::from(vec![
             Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
@@ -204,12 +205,20 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
         .tools
         .iter()
         .all(|t| !t.selected || t.status == ToolStatus::Done);
-    let status = if all_done {
-        "All scans complete — proceeding to analysis..."
+    let status = if app.exec_cancelled {
+        ("✖ CANCELLED — returning to tool selection", Color::Red)
+    } else if app.exec_paused {
+        ("⏸ PAUSED — press C-x p to resume", Color::Yellow)
+    } else if all_done {
+        (
+            "All scans complete — proceeding to analysis...",
+            Color::Green,
+        )
     } else {
-        "Running security scans..."
+        ("Running security scans...", Color::Yellow)
     };
-    let footer = Paragraph::new(Line::from(vec![
+
+    let spans = vec![
         Span::styled(
             format!(
                 " ◆ {} ",
@@ -221,8 +230,23 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::Cyan).bold(),
         ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(status, Style::default().fg(Color::Yellow)),
-    ]))
-    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+        Span::styled(status.0, Style::default().fg(status.1).bold()),
+        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("C-x p", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(
+            if app.exec_paused {
+                " Resume  "
+            } else {
+                " Pause  "
+            },
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled("C-x c", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" Cancel  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("C-x q", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
+    ];
+    let footer =
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(20, 20, 40)));
     frame.render_widget(footer, inner);
 }

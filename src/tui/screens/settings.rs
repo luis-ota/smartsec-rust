@@ -48,7 +48,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         ),
         (
             "API Key",
-            &mask_key(&app.settings_input_api_key),
+            &app.settings_input_api_key,
             SettingsField::ApiKey,
         ),
         ("Model", &app.settings_input_model, SettingsField::Model),
@@ -111,14 +111,4 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Left);
     frame.render_widget(para, inner);
-}
-
-fn mask_key(key: &str) -> String {
-    if key.is_empty() {
-        return "(empty)".to_string();
-    }
-    if key.len() <= 8 {
-        return "••••••••".to_string();
-    }
-    format!("{}••••{}", &key[..4], &key[key.len() - 4..])
 }

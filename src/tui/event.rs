@@ -2,7 +2,7 @@ use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmProviderKind;
 use crate::tui::state::{AppState, AppStep, SettingsField};
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use std::time::Duration;
 
@@ -32,16 +32,102 @@ pub fn handle_events(app: &mut AppState) -> std::io::Result<bool> {
 }
 
 fn handle_key(app: &mut AppState, key: event::KeyEvent) -> bool {
+    if let KeyCode::Char('v') | KeyCode::Char('V') = key.code {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        if ctrl && shift {
+            paste_from_clipboard(app);
+            return false;
+        }
+        if ctrl {
+            paste_from_clipboard(app);
+            return false;
+        }
+    }
+
     if app.show_settings {
         return handle_settings_key(app, key);
     }
+
+    if app.pending_ctrl_x {
+        app.pending_ctrl_x = false;
+        app.command_palette_hint = None;
+        if let KeyCode::Char(c) = key.code {
+            return dispatch_ctrl_x(app, c, key.modifiers);
+        }
+        return false;
+    }
+
+    if let KeyCode::Char('x') = key.code {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.pending_ctrl_x = true;
+            app.pending_ctrl_x_tick = app.tick;
+            app.command_palette_hint =
+                Some("C-x _  (s)ettings (q)uit (p)ause (c)ancel (r)un".to_string());
+            return false;
+        }
+    }
+
     match app.step {
         AppStep::Splash => handle_splash_key(app, key),
         AppStep::ToolSelect => handle_tool_select_key(app, key),
-        AppStep::Execution => handle_execution_key(key),
+        AppStep::Execution => handle_execution_key(app, key),
         AppStep::Analysis => handle_analysis_key(key),
         AppStep::Results => handle_results_key(app, key),
     }
+}
+
+fn paste_from_clipboard(app: &mut AppState) {
+    let text = match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    if app.show_settings {
+        handle_settings_paste(app, &text);
+    } else if app.step == AppStep::Splash {
+        app.config.target_url.push_str(&text);
+    }
+}
+
+fn dispatch_ctrl_x(app: &mut AppState, c: char, _modifiers: KeyModifiers) -> bool {
+    match c {
+        's' | 'S' => {
+            app.show_settings = true;
+        }
+        'q' | 'Q' => {
+            return true;
+        }
+        'p' | 'P' => {
+            if app.step == AppStep::Execution {
+                app.pause_or_resume();
+            }
+        }
+        'c' | 'C' => {
+            if app.step == AppStep::Execution {
+                app.cancel_run();
+            }
+        }
+        'r' | 'R' => {
+            if app.step == AppStep::ToolSelect {
+                if !app.tool_detecting {
+                    let has_selected = app.tools.iter().any(|t| t.selected);
+                    if has_selected {
+                        app.step = AppStep::Execution;
+                        app.init_execution();
+                    }
+                }
+            } else if app.step == AppStep::Splash {
+                if app.config.target_url.is_empty() {
+                    app.config.target_url = "http://localhost:8080".to_string();
+                }
+                app.step = AppStep::ToolSelect;
+                app.tool_detecting = true;
+                app.tool_detect_tick = 0;
+            }
+        }
+        _ => {}
+    }
+    false
 }
 
 fn handle_splash_key(app: &mut AppState, key: event::KeyEvent) -> bool {
@@ -51,9 +137,6 @@ fn handle_splash_key(app: &mut AppState, key: event::KeyEvent) -> bool {
                 ExecutionType::Auto => ExecutionType::Assisted,
                 ExecutionType::Assisted => ExecutionType::Auto,
             });
-        }
-        KeyCode::Char('c') => {
-            app.show_settings = true;
         }
         KeyCode::Enter => {
             if app.config.target_url.is_empty() {
@@ -119,7 +202,7 @@ fn handle_tool_select_key(app: &mut AppState, key: event::KeyEvent) -> bool {
     false
 }
 
-fn handle_execution_key(key: event::KeyEvent) -> bool {
+fn handle_execution_key(_app: &mut AppState, key: event::KeyEvent) -> bool {
     if key.code == KeyCode::Esc {
         return true;
     }

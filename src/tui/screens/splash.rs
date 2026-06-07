@@ -103,8 +103,10 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
     let hint = Paragraph::new(Line::from(vec![
         Span::styled("Enter", Style::default().fg(Color::White)),
         Span::styled(" Start  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("c", Style::default().fg(Color::White)),
-        Span::styled(" Settings  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Tab", Style::default().fg(Color::White)),
+        Span::styled(" Mode  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("C-x", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" Commands  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::White)),
         Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
     ]))
@@ -140,7 +142,7 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(mode_color).bold(),
         ),
         Span::styled(
-            " │ Esc: Quit Tab: Switch Mode Enter: Start c: Settings ",
+            " │ Esc: Quit Tab: Switch Mode Enter: Start C-x: Commands ",
             Style::default().fg(Color::DarkGray),
         ),
     ]))

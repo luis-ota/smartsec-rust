@@ -1,45 +1,48 @@
 use async_trait::async_trait;
 
 #[async_trait]
-#[allow(dead_code)]
 pub trait SandboxManager: Send + Sync {
-    fn is_available(&self) -> bool;
-    async fn prepare(&self) -> Result<(), anyhow::Error>;
-    async fn cleanup(&self) -> Result<(), anyhow::Error>;
+    fn create_isolated_environment(&self, image_name: &str) -> Result<String, anyhow::Error>;
+
+    fn run_command(&self, container_id: &str, command: &str) -> Result<String, anyhow::Error>;
+
+    fn destroy_environment(&self, container_id: &str) -> Result<(), anyhow::Error>;
 }
 
-#[allow(dead_code)]
 pub struct LocalSandbox;
 
 #[async_trait]
+#[allow(dead_code)]
 impl SandboxManager for LocalSandbox {
-    fn is_available(&self) -> bool {
-        true
+    fn create_isolated_environment(&self, image_name: &str) -> Result<String, anyhow::Error> {
+        Ok(format!(
+            "local-{}",
+            image_name.replace(':', "-").replace('/', "_")
+        ))
     }
 
-    async fn prepare(&self) -> Result<(), anyhow::Error> {
-        Ok(())
+    fn run_command(&self, _container_id: &str, command: &str) -> Result<String, anyhow::Error> {
+        Ok(format!("[local-sandbox] $ {}", command))
     }
 
-    async fn cleanup(&self) -> Result<(), anyhow::Error> {
+    fn destroy_environment(&self, _container_id: &str) -> Result<(), anyhow::Error> {
         Ok(())
     }
 }
 
-#[allow(dead_code)]
 pub struct MockSandbox;
 
 #[async_trait]
 impl SandboxManager for MockSandbox {
-    fn is_available(&self) -> bool {
-        true
+    fn create_isolated_environment(&self, image_name: &str) -> Result<String, anyhow::Error> {
+        Ok(format!("mock-{}", image_name))
     }
 
-    async fn prepare(&self) -> Result<(), anyhow::Error> {
-        Ok(())
+    fn run_command(&self, container_id: &str, command: &str) -> Result<String, anyhow::Error> {
+        Ok(format!("[mock-sandbox:{}] $ {}", container_id, command))
     }
 
-    async fn cleanup(&self) -> Result<(), anyhow::Error> {
+    fn destroy_environment(&self, _container_id: &str) -> Result<(), anyhow::Error> {
         Ok(())
     }
 }
