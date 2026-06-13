@@ -26,9 +26,9 @@ impl ToolInfo {
                 category: "DAST",
             },
             ToolInfo {
-                name: "Nmap",
-                description: "Network port scanner",
-                category: "Recon",
+                name: "Nuclei",
+                description: "Vulnerability scanner (CVEs)",
+                category: "DAST",
             },
             ToolInfo {
                 name: "BurpSuite",
@@ -53,8 +53,8 @@ impl ToolInfo {
         ]
     }
 
-    pub fn is_nmap(&self) -> bool {
-        self.name == "Nmap"
+    pub fn is_nuclei(&self) -> bool {
+        self.name == "Nuclei"
     }
 }
 

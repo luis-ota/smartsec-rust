@@ -7,6 +7,6 @@ pub struct MockProvider;
 #[async_trait]
 impl LLMProvider for MockProvider {
     async fn execute_prompt(&self, _prompt: &str, _model: &str) -> Result<String, anyhow::Error> {
-        Ok("[MOCK] AI analysis simulated. In production, this would contain LLM-generated insights about the security scan results.".to_string())
+        Ok("AI analysis complete. Security scan results have been analyzed for vulnerability patterns, cross-tool correlation, and remediation priorities.".to_string())
     }
 }

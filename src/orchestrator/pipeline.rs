@@ -3,7 +3,7 @@ use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
 use crate::tools::mocks::MockTool;
-use crate::tools::nmap::NmapTool;
+use crate::tools::nuclei::NucleiTool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Orchestrator {
@@ -85,8 +85,8 @@ impl Orchestrator {
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
         let runner: Box<dyn SecurityToolRunner> =
-            if tool_info.is_nmap() && self.config.use_real_nmap {
-                Box::new(NmapTool)
+            if tool_info.is_nuclei() && self.config.use_real_nuclei {
+                Box::new(NucleiTool)
             } else {
                 Box::new(MockTool {
                     name: tool_info.name,
@@ -121,8 +121,9 @@ impl Orchestrator {
     pub fn build_findings(&mut self) {
         let mut real_findings: Vec<Vulnerability> = Vec::new();
         for exec in &self.execution_history {
-            if exec.tool_name == "Nmap" && !exec.output.is_empty() {
-                let parsed = crate::orchestrator::nmap_parser::parse_nmap_findings(&exec.output);
+            if exec.tool_name == "Nuclei" && !exec.output.is_empty() {
+                let parsed =
+                    crate::orchestrator::nuclei_parser::parse_nuclei_findings(&exec.output);
                 real_findings.extend(parsed);
             }
         }

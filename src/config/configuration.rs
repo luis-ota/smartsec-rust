@@ -10,7 +10,7 @@ pub struct Configuration {
     pub provider_mode: String,
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
-    pub use_real_nmap: bool,
+    pub use_real_nuclei: bool,
 }
 
 impl Configuration {
@@ -22,7 +22,7 @@ impl Configuration {
             provider_mode: format!("{:?}", persisted.llm.provider),
             execution_type: persisted.execution_type,
             llm: persisted.llm.clone(),
-            use_real_nmap: persisted.use_real_nmap,
+            use_real_nuclei: persisted.use_real_nuclei,
         })
     }
 
@@ -91,7 +91,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             provider_mode: format!("{:?}", llm.provider),
             execution_type: p.execution_type,
             llm,
-            use_real_nmap: p.use_real_nmap,
+            use_real_nuclei: p.use_real_nuclei,
         }
     }
 }

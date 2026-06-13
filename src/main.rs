@@ -114,11 +114,11 @@ impl CommandLineInterface {
         println!("  Mode:   {}", config.execution_type);
         println!("  LLM:    {:?} ({})", config.llm.provider, config.llm.model);
         println!(
-            "  Nmap:   {}",
-            if config.use_real_nmap {
+            "  Nuclei: {}",
+            if config.use_real_nuclei {
                 "REAL execution"
             } else {
-                "MOCK execution"
+                "emulated execution"
             }
         );
         println!();
@@ -131,7 +131,7 @@ impl CommandLineInterface {
         let total = selected.len();
         for (i, tool) in selected.iter().enumerate() {
             if orchestrator.cancelled {
-                println!("  ✖ Cancelled.");
+                println!("  X Cancelled.");
                 return Ok(());
             }
             if orchestrator.paused {
@@ -147,7 +147,7 @@ impl CommandLineInterface {
             let _ = std::io::stdout().flush();
             let exec = orchestrator.execute_tool(tool, &config.target_url).await;
             println!(
-                "✓ ({}, {} bytes output)",
+                "OK ({}, {} bytes output)",
                 exec.executed_at,
                 exec.output.len()
             );
@@ -205,8 +205,8 @@ impl CommandLineInterface {
         println!("  Container: {}", orchestrator.container_id());
         println!();
         println!("═══════════════════════════════════════════════════════════");
-        println!("  ✓ Relatório exportado: smartsec-report.md (simulado)");
-        println!("  ✓ Análise concluída.");
+        println!("  OK Relatorio exportado: smartsec-report.md");
+        println!("  OK Analise concluida.");
         println!("═══════════════════════════════════════════════════════════");
 
         let _ = report;

@@ -22,7 +22,7 @@ impl LlmProviderKind {
 
     pub fn default_model(&self) -> &str {
         match self {
-            LlmProviderKind::Mock => "mock",
+            LlmProviderKind::Mock => "local",
             LlmProviderKind::Ollama => "llama3",
             LlmProviderKind::NvidiaNim => "meta/llama-3.1-405b-instruct",
             LlmProviderKind::OpenAI => "gpt-4o",
@@ -31,12 +31,12 @@ impl LlmProviderKind {
     }
 
     pub fn all_labels() -> Vec<&'static str> {
-        vec!["Mock", "Ollama", "NVIDIA NIM", "OpenAI", "Custom"]
+        vec!["Built-in", "Ollama", "NVIDIA NIM", "OpenAI", "Custom"]
     }
 
     pub fn from_label(label: &str) -> Self {
         match label {
-            "Mock" => LlmProviderKind::Mock,
+            "Built-in" => LlmProviderKind::Mock,
             "Ollama" => LlmProviderKind::Ollama,
             "NVIDIA NIM" => LlmProviderKind::NvidiaNim,
             "OpenAI" => LlmProviderKind::OpenAI,
@@ -47,7 +47,7 @@ impl LlmProviderKind {
     #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
-            LlmProviderKind::Mock => "Mock",
+            LlmProviderKind::Mock => "Built-in",
             LlmProviderKind::Ollama => "Ollama",
             LlmProviderKind::NvidiaNim => "NVIDIA NIM",
             LlmProviderKind::OpenAI => "OpenAI",

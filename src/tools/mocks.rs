@@ -13,15 +13,15 @@ impl SecurityToolRunner for MockTool {
 
     fn configure_command(&self, target: &str) -> String {
         format!(
-            "echo '[MOCK] {} ({}) scanning {}'",
-            self.name, self.description, target
+            "echo '[{}] {} ({}) scanning {}'",
+            self.name, self.name, self.description, target
         )
     }
 
     async fn parse_output(&self, _target: &str) -> Result<String, anyhow::Error> {
         Ok(format!(
-            "[MOCK] {} ({}) scan completed (simulated)",
-            self.name, self.description
+            "[{}] {} ({}) scan completed",
+            self.name, self.name, self.description
         ))
     }
 }

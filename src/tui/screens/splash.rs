@@ -16,7 +16,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     render_status_bar(app, frame, chunks[1]);
 }
 
-fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
+fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let center = crate::tui::centered_rect(80, 100, area);
     let chunks = Layout::vertical([
         Constraint::Length(8),
@@ -24,6 +24,7 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
         Constraint::Length(2),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Min(1),
     ])
@@ -33,7 +34,7 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(logo, chunks[0]);
 
     let subtitle = Paragraph::new(Line::from(Span::styled(
-        "Security Analysis Platform — Rust TUI Prototype",
+        "Security Analysis Platform - Rust TUI Prototype",
         Style::default().fg(Color::DarkGray).italic(),
     )))
     .alignment(Alignment::Center);
@@ -63,6 +64,45 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
     let mode_para = Paragraph::new(mode_line).alignment(Alignment::Center);
     frame.render_widget(mode_para, chunks[4]);
 
+    let mode_total_w = 42u16;
+    let mode_center_offset = (chunks[4].width.saturating_sub(mode_total_w)) / 2;
+    app.splash_auto_rect = Rect::new(chunks[4].x + mode_center_offset, chunks[4].y, 6, 1);
+    app.splash_assisted_rect = Rect::new(chunks[4].x + mode_center_offset + 17, chunks[4].y, 10, 1);
+
+    let provider_label =
+        crate::config::llm_config::LlmProviderKind::all_labels()[app.settings_provider_idx];
+    let model_display = if app.config.llm.model.is_empty() {
+        "not configured".to_string()
+    } else {
+        app.config.llm.model.clone()
+    };
+
+    let ai_block = Block::default()
+        .borders(Borders::all())
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(Line::from(vec![Span::styled(
+            " AI Model ",
+            Style::default().fg(Color::Yellow).bold(),
+        )]))
+        .style(Style::default().bg(Color::Rgb(16, 16, 32)));
+    let ai_inner = ai_block.inner(chunks[5]);
+    frame.render_widget(ai_block, chunks[5]);
+
+    let ai_text = Paragraph::new(Line::from(vec![
+        Span::styled(provider_label, Style::default().fg(Color::White).bold()),
+        Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+        Span::styled(model_display, Style::default().fg(Color::Cyan)),
+        Span::styled(
+            "  [click to configure]",
+            Style::default().fg(Color::DarkGray).italic(),
+        ),
+    ]))
+    .style(Style::default().bg(Color::Rgb(16, 16, 32)));
+    frame.render_widget(ai_text, ai_inner);
+
+    app.ai_model_area = chunks[5];
+
     let url_block = Block::default()
         .borders(Borders::all())
         .border_type(BorderType::Rounded)
@@ -72,21 +112,21 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::Cyan).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(16, 16, 32)));
-    let url_inner = url_block.inner(chunks[5]);
-    frame.render_widget(url_block, chunks[5]);
+    let url_inner = url_block.inner(chunks[6]);
+    frame.render_widget(url_block, chunks[6]);
 
-    let cursor_char = if app.tick % 10 < 5 { "█" } else { "▎" };
+    let cursor_char = if app.tick % 10 < 5 { "|" } else { " " };
     let display_url = if app.config.target_url.is_empty() {
         format!(
-            " {}{}",
-            cursor_char,
+            "{}{}",
             "http://example.com"
                 .chars()
-                .take(url_inner.width.saturating_sub(3) as usize)
-                .collect::<String>()
+                .take(url_inner.width.saturating_sub(2) as usize)
+                .collect::<String>(),
+            cursor_char
         )
     } else {
-        format!(" {}{}", cursor_char, app.config.target_url)
+        format!("{}{}", app.config.target_url, cursor_char)
     };
     let cursor_color = if app.config.target_url.is_empty() {
         Color::Rgb(60, 60, 80)
@@ -100,6 +140,9 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
     .style(Style::default().bg(Color::Rgb(16, 16, 32)));
     frame.render_widget(url_text, url_inner);
 
+    app.splash_url_rect = chunks[6];
+    app.splash_start_rect = chunks[7];
+
     let hint = Paragraph::new(Line::from(vec![
         Span::styled("Enter", Style::default().fg(Color::White)),
         Span::styled(" Start  ", Style::default().fg(Color::DarkGray)),
@@ -111,7 +154,7 @@ fn render_content(app: &AppState, frame: &mut Frame, area: Rect) {
         Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
     ]))
     .alignment(Alignment::Center);
-    frame.render_widget(hint, chunks[6]);
+    frame.render_widget(hint, chunks[7]);
 }
 
 fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -131,6 +174,14 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         ExecutionType::Assisted => Color::Green,
     };
 
+    let provider_label =
+        crate::config::llm_config::LlmProviderKind::all_labels()[app.settings_provider_idx];
+    let model_short = if app.config.llm.model.len() > 20 {
+        format!("{}...", &app.config.llm.model[..17])
+    } else {
+        app.config.llm.model.clone()
+    };
+
     let status = Paragraph::new(Line::from(vec![
         Span::styled(
             " SMARTSEC ",
@@ -138,11 +189,19 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         ),
         Span::styled(" v0.2.0 ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            format!(" ◆ {} ", mode_text),
+            format!(" * {} ", mode_text),
             Style::default().fg(mode_color).bold(),
         ),
         Span::styled(
-            " │ Esc: Quit Tab: Switch Mode Enter: Start C-x: Commands ",
+            format!("| AI: {} ", model_short),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            format!("({}) ", provider_label),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "| Esc: Quit Tab: Mode Enter: Start C-x: Cmds ",
             Style::default().fg(Color::DarkGray),
         ),
     ]))
@@ -156,30 +215,33 @@ fn build_logo() -> Vec<Line<'static>> {
     vec![
         Line::from(""),
         Line::from(vec![Span::styled(
-            " ███████╗███╗ ███╗ █████╗ ██████╗ ████████╗ ███████╗███████╗ ██████╗",
+            "  ███████╗███╗   ███╗ █████╗ ██████╗ ████████╗    ███████╗███████╗ ██████╗",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            " ██╔════╝████╗ ████║██╔══██╗██╔══██╗╚══██╔══╝ ██╔════╝██╔════╝██╔════╝",
+            "  ██╔════╝████╗ ████║██╔══██╗██╔══██╗╚══██╔══╝    ██╔════╝██╔════╝██╔════╝",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            " ███████╗██╔████╔██║███████║██████╔╝ ██║ ███████╗█████╗ ██║ ",
+            "  ███████╗██╔████╔██║███████║██████╔╝   ██║       ███████╗█████╗  ██║     ",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            " ╚════██║██║╚██╔╝██║██╔══██║██╔══██╗ ██║ ╚════██║██╔══╝ ██║ ",
+            "  ╚════██║██║╚██╔╝██║██╔══██║██╔══██╗   ██║       ╚════██║██╔══╝  ██║     ",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            " ███████║██║ ╚═╝ ██║██║ ██║██║ ██║ ██║ ███████║███████╗╚██████╗",
+            "  ███████║██║ ╚═╝ ██║██║  ██║██║  ██║   ██║       ███████║███████╗╚██████╗",
             c1,
         )]),
         Line::from(vec![Span::styled(
-            " ╚══════╝╚═╝     ╚═╝╚═╝ ╚═╝╚═╝ ╚═╝ ╚═╝ ╚══════╝╚══════╝ ╚═════╝",
+            "  ╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝       ╚══════╝╚══════╝ ╚═════╝",
             c1,
         )]),
         Line::from(""),
-        Line::from(vec![Span::styled(" Security Analysis Platform ", c2)]),
+        Line::from(vec![Span::styled(
+            "        Security Analysis Platform         ",
+            c2,
+        )]),
     ]
 }

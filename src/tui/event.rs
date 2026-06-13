@@ -4,6 +4,7 @@ use crate::tui::state::{AppState, AppStep, SettingsField};
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use ratatui::layout::Rect;
 use std::time::Duration;
 
 pub fn handle_events(app: &mut AppState) -> std::io::Result<bool> {
@@ -311,30 +312,8 @@ fn handle_results_detail_key(app: &mut AppState, key: event::KeyEvent) -> bool {
                 }
             }
         }
-        KeyCode::Left => {
-            if app.result_action_cursor > 0 {
-                app.result_action_cursor -= 1;
-            }
-        }
-        KeyCode::Right => {
-            if app.result_action_cursor < 1 {
-                app.result_action_cursor += 1;
-            }
-        }
-        KeyCode::Enter => match app.result_action_cursor {
-            0 => {
-                app.result_detail_vuln = None;
-                app.result_action_cursor = 0;
-            }
-            1 => {
-                app.show_didactic = true;
-                app.didactic_scroll = 0;
-            }
-            _ => {}
-        },
         KeyCode::Esc | KeyCode::Backspace => {
             app.result_detail_vuln = None;
-            app.result_action_cursor = 0;
         }
         _ => {}
     }
@@ -351,17 +330,17 @@ fn handle_settings_key(app: &mut AppState, key: event::KeyEvent) -> bool {
                 SettingsField::Provider => SettingsField::BaseUrl,
                 SettingsField::BaseUrl => SettingsField::ApiKey,
                 SettingsField::ApiKey => SettingsField::Model,
-                SettingsField::Model => SettingsField::RealNmap,
-                SettingsField::RealNmap => SettingsField::Provider,
+                SettingsField::Model => SettingsField::RealNuclei,
+                SettingsField::RealNuclei => SettingsField::Provider,
             };
         }
         KeyCode::BackTab => {
             app.settings_field = match app.settings_field {
-                SettingsField::Provider => SettingsField::RealNmap,
+                SettingsField::Provider => SettingsField::RealNuclei,
                 SettingsField::BaseUrl => SettingsField::Provider,
                 SettingsField::ApiKey => SettingsField::BaseUrl,
                 SettingsField::Model => SettingsField::ApiKey,
-                SettingsField::RealNmap => SettingsField::Model,
+                SettingsField::RealNuclei => SettingsField::Model,
             };
         }
         KeyCode::Enter => match app.settings_field {
@@ -372,8 +351,8 @@ fn handle_settings_key(app: &mut AppState, key: event::KeyEvent) -> bool {
                 app.settings_input_base_url = provider.default_base_url().to_string();
                 app.settings_input_model = provider.default_model().to_string();
             }
-            SettingsField::RealNmap => {
-                app.settings_real_nmap = !app.settings_real_nmap;
+            SettingsField::RealNuclei => {
+                app.settings_real_nuclei = !app.settings_real_nuclei;
             }
             _ => {
                 app.apply_settings();
@@ -405,9 +384,9 @@ fn handle_settings_key(app: &mut AppState, key: event::KeyEvent) -> bool {
             SettingsField::BaseUrl => app.settings_input_base_url.push(c),
             SettingsField::ApiKey => app.settings_input_api_key.push(c),
             SettingsField::Model => app.settings_input_model.push(c),
-            SettingsField::RealNmap => {
+            SettingsField::RealNuclei => {
                 if c == ' ' {
-                    app.settings_real_nmap = !app.settings_real_nmap;
+                    app.settings_real_nuclei = !app.settings_real_nuclei;
                 }
             }
             SettingsField::Provider => {}
@@ -506,19 +485,167 @@ fn handle_mouse(app: &mut AppState, mouse: MouseEvent) {
 
 fn handle_click(app: &mut AppState, col: u16, row: u16) {
     if app.show_settings {
+        handle_settings_click(app, col, row);
         return;
     }
     match app.step {
         AppStep::Splash => handle_splash_click(app, col, row),
+        AppStep::ToolSelect => handle_tool_select_click(app, col, row),
+        AppStep::Execution => handle_execution_click(app, col, row),
+        AppStep::Analysis => handle_analysis_click(app, col, row),
         AppStep::Results => handle_results_click(app, col, row),
-        _ => {}
     }
 }
 
-fn handle_splash_click(_app: &mut AppState, _col: u16, _row: u16) {}
+fn handle_splash_click(app: &mut AppState, col: u16, row: u16) {
+    if in_rect(col, row, app.splash_url_rect) {
+        return;
+    }
+    if in_rect(col, row, app.splash_start_rect) {
+        if app.config.target_url.is_empty() {
+            app.config.target_url = "http://localhost:8080".to_string();
+        }
+        app.step = AppStep::ToolSelect;
+        app.tool_detecting = true;
+        app.tool_detect_tick = 0;
+        return;
+    }
+    if in_rect(col, row, app.splash_auto_rect) {
+        app.set_mode(ExecutionType::Auto);
+        return;
+    }
+    if in_rect(col, row, app.splash_assisted_rect) {
+        app.set_mode(ExecutionType::Assisted);
+        return;
+    }
+    if in_rect(col, row, app.ai_model_area) {
+        app.show_settings = true;
+    }
+}
 
-fn handle_results_click(app: &mut AppState, _col: u16, _row: u16) {
-    if app.show_didactic || app.show_detail {}
+fn in_rect(col: u16, row: u16, r: Rect) -> bool {
+    col >= r.x
+        && col < r.x.saturating_add(r.width)
+        && row >= r.y
+        && row < r.y.saturating_add(r.height)
+}
+
+fn handle_tool_select_click(app: &mut AppState, col: u16, row: u16) {
+    if app.tool_detecting {
+        return;
+    }
+    if in_rect(col, row, app.tools_back_rect) {
+        app.step = AppStep::Splash;
+        app.tool_detecting = true;
+        app.tool_detect_tick = 0;
+        return;
+    }
+    if in_rect(col, row, app.tools_list_rect) {
+        let inner_y = app.tools_list_rect.y + 1;
+        let _item_h = 1u16;
+        let relative_row = row.saturating_sub(inner_y);
+        let idx = relative_row / _item_h;
+        let idx = idx as usize;
+        if idx < app.tools.len() {
+            app.tool_cursor = idx;
+            app.tools[idx].selected = !app.tools[idx].selected;
+        }
+        return;
+    }
+    if in_rect(col, row, app.tools_run_rect) {
+        let has_selected = app.tools.iter().any(|t| t.selected);
+        if has_selected {
+            app.step = AppStep::Execution;
+            app.init_execution();
+        }
+    }
+}
+
+fn handle_execution_click(app: &mut AppState, col: u16, row: u16) {
+    if in_rect(col, row, app.exec_back_rect) {
+        app.cancel_run();
+        return;
+    }
+    if in_rect(col, row, app.exec_pause_rect) {
+        app.pause_or_resume();
+        return;
+    }
+    if in_rect(col, row, app.exec_cancel_rect) {
+        app.cancel_run();
+    }
+}
+
+fn handle_analysis_click(app: &mut AppState, col: u16, row: u16) {
+    if in_rect(col, row, app.analysis_back_rect) {
+        app.orchestrator.cancelled = true;
+        app.step = AppStep::ToolSelect;
+        app.tool_detecting = false;
+    }
+}
+
+fn handle_results_click(app: &mut AppState, col: u16, row: u16) {
+    if app.show_didactic {
+        if in_rect(col, row, app.didactic_back_rect) {
+            app.show_didactic = false;
+            app.didactic_scroll = 0;
+        }
+        return;
+    }
+    if app.show_detail {
+        return;
+    }
+    if app.result_detail_vuln.is_some() {
+        if in_rect(col, row, app.results_back_rect) {
+            app.result_detail_vuln = None;
+            app.result_action_cursor = 0;
+            return;
+        }
+        if in_rect(col, row, app.results_didactic_rect) {
+            app.show_didactic = true;
+            app.didactic_scroll = 0;
+            return;
+        }
+        return;
+    }
+    if in_rect(col, row, app.results_new_scan_rect) {
+        app.step = AppStep::Splash;
+        app.result_detail_vuln = None;
+        app.show_didactic = false;
+        app.md_exported = false;
+        return;
+    }
+    if in_rect(col, row, app.results_export_rect) {
+        let md = app.export_md();
+        let _ = std::fs::write("smartsec-report.md", md);
+        app.md_exported = true;
+        return;
+    }
+    if in_rect(col, row, app.results_didactic_rect) {
+        app.show_didactic = true;
+        app.didactic_scroll = 0;
+        return;
+    }
+    if in_rect(col, row, app.results_list_rect) {
+        let inner_y = app.results_list_rect.y + 1;
+        let relative_row = row.saturating_sub(inner_y);
+        let idx = relative_row as usize;
+        let vulns = app.vulnerabilities();
+        if idx < vulns.len() {
+            app.result_cursor = idx;
+            app.result_focus_list = true;
+            app.result_detail_vuln = Some(idx);
+        }
+    }
+}
+
+fn handle_settings_click(app: &mut AppState, col: u16, row: u16) {
+    if in_rect(col, row, app.settings_save_rect) {
+        app.apply_settings();
+        return;
+    }
+    if in_rect(col, row, app.settings_cancel_rect) {
+        app.show_settings = false;
+    }
 }
 
 fn ensure_tool_visible(app: &mut AppState) {

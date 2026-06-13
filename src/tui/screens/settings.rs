@@ -19,7 +19,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(Line::from(vec![Span::styled(
-            " ⚙ Settings ",
+            " Settings ",
             Style::default().fg(Color::Cyan).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(12, 12, 24)));
@@ -28,12 +28,12 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
     let labels = LlmProviderKind::all_labels();
     let provider_label = labels[app.settings_provider_idx];
-    let nmap_status = if app.settings_real_nmap {
-        "● Enabled"
+    let nuclei_status = if app.settings_real_nuclei {
+        "[X] Enabled"
     } else {
-        "○ Disabled"
+        "[ ] Disabled"
     };
-    let _nmap_color = if app.settings_real_nmap {
+    let _nuclei_color = if app.settings_real_nuclei {
         Color::Green
     } else {
         Color::DarkGray
@@ -52,7 +52,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
             SettingsField::ApiKey,
         ),
         ("Model", &app.settings_input_model, SettingsField::Model),
-        ("Real Nmap", nmap_status, SettingsField::RealNmap),
+        ("Real Nuclei", nuclei_status, SettingsField::RealNuclei),
     ];
 
     let mut lines: Vec<Line> = vec![Line::from("")];
@@ -80,28 +80,19 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(
-            " Tab ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
-        ),
-        Span::styled(" Switch Field  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            " Enter ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
-        ),
-        Span::styled(" Select/Apply  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            " Esc ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
-        ),
-        Span::styled(" Close", Style::default().fg(Color::DarkGray)),
-    ]));
+    let save_w = 10u16;
+    let cancel_w = 12u16;
+    let buttons_y = inner.y + inner.height.saturating_sub(3);
+    let save_x = inner.x + inner.width.saturating_sub(save_w + cancel_w + 4);
+    let cancel_x = save_x + save_w + 2;
+    app.settings_save_rect = Rect::new(save_x, buttons_y, save_w, 1);
+    app.settings_cancel_rect = Rect::new(cancel_x, buttons_y, cancel_w, 1);
+    lines.push(Line::from(""));
 
     if let Some(ref warning) = app.llm_warning {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled(" ⚠ ", Style::default().fg(Color::Yellow)),
+            Span::styled(" WARN: ", Style::default().fg(Color::Yellow)),
             Span::styled(warning.clone(), Style::default().fg(Color::Yellow)),
         ]));
     }
@@ -111,4 +102,24 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Left);
     frame.render_widget(para, inner);
+
+    let save_btn = Paragraph::new(Line::from(vec![Span::styled(
+        " [ Save ] ",
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(0, 120, 0))
+            .bold(),
+    )]))
+    .style(Style::default().bg(Color::Rgb(12, 12, 24)));
+    frame.render_widget(save_btn, app.settings_save_rect);
+
+    let cancel_btn = Paragraph::new(Line::from(vec![Span::styled(
+        " [ Cancel ] ",
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(160, 30, 30))
+            .bold(),
+    )]))
+    .style(Style::default().bg(Color::Rgb(12, 12, 24)));
+    frame.render_widget(cancel_btn, app.settings_cancel_rect);
 }

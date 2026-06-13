@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::domain::severity::Severity;
 use crate::domain::vulnerability::Vulnerability;
 

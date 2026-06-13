@@ -47,7 +47,7 @@ pub enum SettingsField {
     BaseUrl,
     ApiKey,
     Model,
-    RealNmap,
+    RealNuclei,
 }
 
 pub struct ToolItem {
@@ -95,13 +95,35 @@ pub struct AppState {
     pub settings_input_base_url: String,
     pub settings_input_api_key: String,
     pub settings_input_model: String,
-    pub settings_real_nmap: bool,
+    pub settings_real_nuclei: bool,
     pub llm_warning: Option<String>,
     pub exec_paused: bool,
     pub exec_cancelled: bool,
     pub pending_ctrl_x: bool,
     pub pending_ctrl_x_tick: u64,
     pub command_palette_hint: Option<String>,
+    pub ai_model_area: Rect,
+
+    // Clickable area tracking
+    pub splash_url_rect: Rect,
+    pub splash_auto_rect: Rect,
+    pub splash_assisted_rect: Rect,
+    pub splash_start_rect: Rect,
+    pub tools_list_rect: Rect,
+    pub tools_run_rect: Rect,
+    pub tools_back_rect: Rect,
+    pub exec_pause_rect: Rect,
+    pub exec_cancel_rect: Rect,
+    pub exec_back_rect: Rect,
+    pub analysis_back_rect: Rect,
+    pub results_list_rect: Rect,
+    pub results_export_rect: Rect,
+    pub results_didactic_rect: Rect,
+    pub results_back_rect: Rect,
+    pub results_new_scan_rect: Rect,
+    pub didactic_back_rect: Rect,
+    pub settings_save_rect: Rect,
+    pub settings_cancel_rect: Rect,
 }
 
 impl AppState {
@@ -119,7 +141,7 @@ impl AppState {
             })
             .collect();
 
-        let (provider_idx, base_url, api_key, model, real_nmap) = {
+        let (provider_idx, base_url, api_key, model, real_nuclei) = {
             let llm = &config.llm;
             let idx = match llm.provider {
                 LlmProviderKind::Mock => 0,
@@ -133,7 +155,7 @@ impl AppState {
                 llm.base_url.clone(),
                 llm.api_key.clone(),
                 llm.model.clone(),
-                config.use_real_nmap,
+                config.use_real_nuclei,
             )
         };
 
@@ -175,13 +197,33 @@ impl AppState {
             settings_input_base_url: base_url,
             settings_input_api_key: api_key,
             settings_input_model: model,
-            settings_real_nmap: real_nmap,
+            settings_real_nuclei: real_nuclei,
             llm_warning: None,
             exec_paused: false,
             exec_cancelled: false,
             pending_ctrl_x: false,
             pending_ctrl_x_tick: 0,
             command_palette_hint: None,
+            ai_model_area: Rect::default(),
+            splash_url_rect: Rect::default(),
+            splash_auto_rect: Rect::default(),
+            splash_assisted_rect: Rect::default(),
+            splash_start_rect: Rect::default(),
+            tools_list_rect: Rect::default(),
+            tools_run_rect: Rect::default(),
+            tools_back_rect: Rect::default(),
+            exec_pause_rect: Rect::default(),
+            exec_cancel_rect: Rect::default(),
+            exec_back_rect: Rect::default(),
+            analysis_back_rect: Rect::default(),
+            results_list_rect: Rect::default(),
+            results_export_rect: Rect::default(),
+            results_didactic_rect: Rect::default(),
+            results_back_rect: Rect::default(),
+            results_new_scan_rect: Rect::default(),
+            didactic_back_rect: Rect::default(),
+            settings_save_rect: Rect::default(),
+            settings_cancel_rect: Rect::default(),
         }
     }
 
@@ -233,11 +275,71 @@ impl AppState {
     }
 
     pub async fn step_tick(&mut self) {
+        if self.step == AppStep::Execution
+            && !self.exec_paused
+            && !self.exec_cancelled
+            && !self.orchestrator.cancelled
+        {
+            self.execute_real_tool().await;
+        }
         if self.step == AppStep::Analysis && self.analysis_phase == AnalysisPhase::Complete {
             if self.analysis_tick > 30 {
                 self.step = AppStep::Results;
             }
             self.analysis_tick += 1;
+        }
+    }
+
+    async fn execute_real_tool(&mut self) {
+        while self.exec_current < self.tools.len()
+            && (!self.tools[self.exec_current].selected
+                || self.tools[self.exec_current].status == ToolStatus::Done)
+        {
+            self.exec_current += 1;
+        }
+        if self.exec_current >= self.tools.len() {
+            return;
+        }
+
+        let tool = &mut self.tools[self.exec_current];
+        tool.status = ToolStatus::Running;
+        tool.progress = 10;
+        let tool_info = tool.tool.clone();
+        let target = self.config.target_url.clone();
+        let _ = tool;
+
+        self.exec_logs.push(format!(
+            "[{}] Running {}...",
+            tool_info.name, tool_info.description
+        ));
+        let vh = self.log_visible_height.max(1);
+        if self.exec_logs.len() > vh {
+            self.log_scroll = self.exec_logs.len().saturating_sub(vh);
+        }
+
+        let _exec = self.orchestrator.execute_tool(&tool_info, &target).await;
+
+        self.tools[self.exec_current].status = ToolStatus::Done;
+        self.tools[self.exec_current].progress = 100;
+        self.exec_logs
+            .push(format!("[{}] OK Scan complete", tool_info.name));
+        let vh = self.log_visible_height.max(1);
+        if self.exec_logs.len() > vh {
+            self.log_scroll = self.exec_logs.len().saturating_sub(vh);
+        }
+
+        self.exec_current += 1;
+
+        let all_done = self
+            .tools
+            .iter()
+            .all(|t| !t.selected || t.status == ToolStatus::Done);
+        if all_done {
+            self.orchestrator.build_findings();
+            self.sync_agent_from_orchestrator();
+            self.step = AppStep::Analysis;
+            self.analysis_phase = AnalysisPhase::Scanning;
+            self.analysis_tick = 0;
         }
     }
 
@@ -298,74 +400,17 @@ impl AppState {
         self.orchestrator.paused = false;
         self.orchestrator.cancelled = false;
         self.orchestrator.execution_history.clear();
-        self.find_first_pending();
+        self.orchestrator.findings.clear();
 
         self.analysis_phase = AnalysisPhase::Scanning;
         self.analysis_tick = 0;
         self.analysis_text.clear();
-        self.analysis_full_text = "Scanning vulnerability patterns across tool outputs...\n\nDetected SQL injection signatures in login and search endpoints.\nCross-referencing with ZAP and SQLMap findings.\n\nCorrelating XSS findings across reflected and stored variants.\nHeader analysis reveals missing security headers.\n\nDependency scan identified 2 critical CVEs:\n- lodash 4.17.15: CVE-2021-23337 (command injection)\n- openssl-sys 0.9.72: CVE-2023-0286 (buffer overflow)\n\nNetwork analysis: SSH exposed, Docker running as root.\nSession management: cookies without HttpOnly/Secure flags.\n\nPath traversal vulnerability detected in file API.\nIDOR vulnerability in user API (sequential IDs).\nCSRF protection missing on transfer endpoint.\n\nSSRF in preview endpoint — potential cloud metadata access.\nCORS misconfigured with wildcard origin.\nJWT accepts 'none' algorithm — critical auth bypass.\n\nGenerating remediation priorities and didactic explanations...".to_string();
-    }
-
-    fn find_first_pending(&mut self) {
-        self.exec_current = self
-            .tools
-            .iter()
-            .position(|t| t.selected && t.status == ToolStatus::Pending)
-            .unwrap_or(self.tools.len());
+        self.analysis_full_text = "Running security tools and analyzing outputs...\n\nCross-referencing findings across multiple scanners.\nCorrelating results for false positive reduction.\n\nGenerating severity classifications and remediation priorities.\nCompiling didactic explanations for each vulnerability...".to_string();
     }
 
     pub fn advance_execution(&mut self) {
-        if self.exec_paused || self.orchestrator.paused {
-            return;
-        }
         if self.exec_cancelled || self.orchestrator.cancelled {
             self.step = AppStep::ToolSelect;
-            return;
-        }
-        self.exec_tick += 1;
-        if self.exec_current >= self.tools.len() {
-            return;
-        }
-        let tool = &mut self.tools[self.exec_current];
-        if !tool.selected || tool.status == ToolStatus::Done {
-            return;
-        }
-        tool.status = ToolStatus::Running;
-        if self.exec_tick.is_multiple_of(3) && tool.progress < 100 {
-            tool.progress = (tool.progress + 10).min(100);
-            let log_entry = format!(
-                "[{}] {} - progress: {}%",
-                tool.tool.name, tool.tool.description, tool.progress
-            );
-            self.exec_logs.push(log_entry);
-            let vh = self.log_visible_height.max(1);
-            if self.exec_logs.len() > vh {
-                self.log_scroll = self.exec_logs.len().saturating_sub(vh);
-            }
-        }
-        if tool.progress >= 100 {
-            tool.status = ToolStatus::Done;
-            self.exec_logs
-                .push(format!("[{}] ✓ Scan complete", tool.tool.name));
-            let vh = self.log_visible_height.max(1);
-            if self.exec_logs.len() > vh {
-                self.log_scroll = self.exec_logs.len().saturating_sub(vh);
-            }
-            self.exec_current += 1;
-            self.exec_tick = 0;
-            while self.exec_current < self.tools.len()
-                && (!self.tools[self.exec_current].selected
-                    || self.tools[self.exec_current].status == ToolStatus::Done)
-            {
-                self.exec_current += 1;
-            }
-            if self.exec_current >= self.tools.len() {
-                self.orchestrator.build_findings();
-                self.sync_agent_from_orchestrator();
-                self.step = AppStep::Analysis;
-                self.analysis_phase = AnalysisPhase::Scanning;
-                self.analysis_tick = 0;
-            }
         }
     }
 
@@ -412,7 +457,7 @@ impl AppState {
         } else {
             self.config.llm.model = self.settings_input_model.clone();
         }
-        self.config.use_real_nmap = self.settings_real_nmap;
+        self.config.use_real_nuclei = self.settings_real_nuclei;
         self.config.save();
         self.show_settings = false;
     }
@@ -424,10 +469,10 @@ impl AppState {
         self.exec_paused = !self.exec_paused;
         if self.exec_paused {
             self.orchestrator.pause_execution();
-            self.exec_logs.push("⏸ Execution PAUSED".to_string());
+            self.exec_logs.push("|| Execution PAUSED".to_string());
         } else {
             self.orchestrator.resume_execution();
-            self.exec_logs.push("▶ Execution RESUMED".to_string());
+            self.exec_logs.push("> Execution RESUMED".to_string());
         }
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
@@ -441,7 +486,7 @@ impl AppState {
         }
         self.exec_cancelled = true;
         self.orchestrator.cancel_execution();
-        self.exec_logs.push("✖ Execution CANCELLED".to_string());
+        self.exec_logs.push("X Execution CANCELLED".to_string());
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);

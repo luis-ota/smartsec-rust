@@ -126,7 +126,7 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
         AnalysisPhase::Complete => ("Analysis complete", Color::Green),
     };
     let header = Paragraph::new(Line::from(vec![
-        Span::styled(" ◆ ", Style::default().fg(Color::Magenta)),
+        Span::styled(" | ", Style::default().fg(Color::Magenta)),
         Span::styled("AI Analysis", Style::default().fg(Color::White).bold()),
         Span::styled(
             format!(" {} {}", spinner, label),
@@ -289,7 +289,7 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
         AnalysisPhase::Scanning => "▸ Phase 1: Vulnerability Pattern Scanning",
         AnalysisPhase::Correlating => "▸ Phase 2: Cross-tool Result Correlation",
         AnalysisPhase::Generating => "▸ Phase 3: Recommendation Generation",
-        AnalysisPhase::Complete => "✓ Analysis Complete",
+        AnalysisPhase::Complete => "OK Analysis Complete",
     };
     let phase_color = match app.analysis_phase {
         AnalysisPhase::Scanning => Color::Cyan,
@@ -318,7 +318,7 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
     if app.analysis_phase == AnalysisPhase::Complete {
         text_lines.push(Line::from(""));
         text_lines.push(Line::from(vec![
-            Span::styled(" ✓ ", Style::default().fg(Color::Green)),
+            Span::styled(" OK ", Style::default().fg(Color::Green)),
             Span::styled(
                 "Proceeding to results...",
                 Style::default().fg(Color::Green),
@@ -331,7 +331,7 @@ fn render_analysis_text(app: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(para, inner);
 }
 
-fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
+fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let bar = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(Color::DarkGray))
@@ -339,15 +339,19 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
     let inner = bar.inner(area);
     frame.render_widget(bar, area);
 
+    let cancel_btn_w = 10u16;
+    let cancel_x = area.x + area.width.saturating_sub(cancel_btn_w + 2);
+    app.analysis_back_rect = Rect::new(cancel_x, area.y + 1, cancel_btn_w, 1);
+
     let spinner = app.spinner_char();
     let msg = match app.analysis_phase {
         AnalysisPhase::Complete => "Analysis finished",
-        _ => "AI is processing scan results...",
+        _ => "AI processing scan results...",
     };
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(
-                " ◆ {} ",
+                " | {} ",
                 match app.mode() {
                     ExecutionType::Auto => "AUTO",
                     ExecutionType::Assisted => "ASSISTED",
@@ -355,10 +359,20 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
             ),
             Style::default().fg(Color::Cyan).bold(),
         ),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{} ", spinner), Style::default().fg(Color::Magenta)),
         Span::styled(msg, Style::default().fg(Color::Magenta)),
     ]))
     .style(Style::default().bg(Color::Rgb(20, 20, 40)));
     frame.render_widget(footer, inner);
+
+    let cancel_btn = Paragraph::new(Line::from(vec![Span::styled(
+        " Cancel ",
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(160, 30, 30))
+            .bold(),
+    )]))
+    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+    frame.render_widget(cancel_btn, app.analysis_back_rect);
 }

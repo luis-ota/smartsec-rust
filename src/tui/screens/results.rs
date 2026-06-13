@@ -52,7 +52,7 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
         .filter(|v| v.severity == Severity::High)
         .count();
     let header = Paragraph::new(Line::from(vec![
-        Span::styled(" ◆ ", Style::default().fg(Color::Green)),
+        Span::styled(" | ", Style::default().fg(Color::Green)),
         Span::styled("Results", Style::default().fg(Color::White).bold()),
         Span::styled(
             format!(" {} vulns found", vulns.len()),
@@ -159,7 +159,7 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                " ⚠ Immediate action required for ",
+                "WARN: Immediate action required for ",
                 Style::default().fg(Color::Red),
             ),
             Span::styled(
@@ -176,6 +176,7 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_vuln_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    app.results_list_rect = area;
     let block = Block::default()
         .borders(Borders::all())
         .border_type(BorderType::Rounded)
@@ -263,21 +264,6 @@ fn render_vuln_detail(app: &AppState, frame: &mut Frame, area: Rect, idx: usize)
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let action_labels = ["← Back", "Explain Didactic"];
-    let mut action_spans: Vec<Span> = Vec::new();
-    for (i, label) in action_labels.iter().enumerate() {
-        let is_selected = app.result_action_cursor == i;
-        let style = if is_selected {
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        action_spans.push(Span::styled(format!(" {} ", label), style));
-        if i < action_labels.len() - 1 {
-            action_spans.push(Span::styled(" ", Style::default()));
-        }
-    }
-
     let detail = Text::from(vec![
         Line::from(""),
         Line::from(vec![
@@ -306,8 +292,6 @@ fn render_vuln_detail(app: &AppState, frame: &mut Frame, area: Rect, idx: usize)
             format!(" {}", v.recommendation),
             Style::default().fg(Color::Green),
         )]),
-        Line::from(""),
-        Line::from(action_spans),
     ]);
     let para = Paragraph::new(detail)
         .style(Style::default().bg(Color::Rgb(12, 12, 24)))
@@ -390,15 +374,9 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         }
     }
 
-    lines.push(Line::from(vec![
-        Span::styled(
-            " Esc ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
-        ),
-        Span::styled(" to go back", Style::default().fg(Color::DarkGray)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(" ", Style::default())]));
 
-    let visible_h = inner.height.saturating_sub(2) as usize;
+    let visible_h = inner.height.saturating_sub(3) as usize;
     let max_scroll = lines.len().saturating_sub(visible_h);
     app.didactic_scroll = app.didactic_scroll.min(max_scroll);
     let visible: Vec<Line> = lines
@@ -410,6 +388,20 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .style(Style::default().bg(Color::Rgb(12, 12, 24)))
         .wrap(Wrap { trim: false });
     frame.render_widget(para, inner);
+
+    let btn_w = 8u16;
+    let btn_x = area.x + area.width.saturating_sub(btn_w + 3);
+    let btn_y = area.y + area.height.saturating_sub(2);
+    app.didactic_back_rect = Rect::new(btn_x, btn_y, btn_w, 1);
+    let back_btn = Paragraph::new(Line::from(vec![Span::styled(
+        " Back ",
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(0, 120, 140))
+            .bold(),
+    )]))
+    .style(Style::default().bg(Color::Rgb(12, 12, 24)));
+    frame.render_widget(back_btn, app.didactic_back_rect);
 }
 
 fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect) {
@@ -480,23 +472,32 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let inner = bar.inner(area);
     frame.render_widget(bar, area);
 
-    let action_labels: Vec<&str> = if app.result_detail_vuln.is_some() {
-        vec!["← Back", "Explain Didactic"]
-    } else {
-        vec![
-            if app.md_exported {
-                "✓ Exported .md"
-            } else {
-                "Export .md"
-            },
-            "Explain Didactic",
-        ]
-    };
+    let in_detail = app.result_detail_vuln.is_some();
 
-    let mut spans: Vec<Span> = vec![
+    let export_w = 12u16;
+    let didactic_w = 10u16;
+    let new_scan_w = 12u16;
+    let didactic_x = area.x + area.width.saturating_sub(didactic_w + 2);
+    let export_x = didactic_x.saturating_sub(export_w + 2);
+    let new_scan_x = export_x.saturating_sub(new_scan_w + 2);
+    let back_w = 8u16;
+    let didactic_w = 10u16;
+    let didactic_x = area.x + area.width.saturating_sub(didactic_w + 2);
+    let back_x = didactic_x.saturating_sub(back_w + 4);
+
+    if in_detail {
+        app.results_back_rect = Rect::new(back_x, area.y + 1, back_w, 1);
+        app.results_didactic_rect = Rect::new(didactic_x, area.y + 1, didactic_w, 1);
+    } else {
+        app.results_new_scan_rect = Rect::new(new_scan_x, area.y + 1, new_scan_w, 1);
+        app.results_export_rect = Rect::new(export_x, area.y + 1, export_w, 1);
+        app.results_didactic_rect = Rect::new(didactic_x, area.y + 1, didactic_w, 1);
+    }
+
+    let spans = vec![
         Span::styled(
             format!(
-                " ◆ {} ",
+                " | {} ",
                 match app.mode() {
                     ExecutionType::Auto => "AUTO",
                     ExecutionType::Assisted => "ASSISTED",
@@ -505,39 +506,63 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::Cyan).bold(),
         ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("↑↓", Style::default().fg(Color::White)),
+        Span::styled(" Nav ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::White)),
+        Span::styled(" Select ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::White)),
+        Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
     ];
-    for (i, label) in action_labels.iter().enumerate() {
-        let is_sel = !app.result_focus_list && app.result_action_cursor == i;
-        let style = if is_sel {
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        spans.push(Span::styled(format!(" {} ", label), style));
-        if i < action_labels.len() - 1 {
-            spans.push(Span::styled(" ", Style::default()));
-        }
-    }
-    spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
-    spans.push(Span::styled("↑↓", Style::default().fg(Color::White)));
-    spans.push(Span::styled(
-        " Navigate ",
-        Style::default().fg(Color::DarkGray),
-    ));
-    spans.push(Span::styled("Enter", Style::default().fg(Color::White)));
-    spans.push(Span::styled(
-        " Select ",
-        Style::default().fg(Color::DarkGray),
-    ));
-    spans.push(Span::styled("Tab", Style::default().fg(Color::White)));
-    spans.push(Span::styled(
-        " Switch ",
-        Style::default().fg(Color::DarkGray),
-    ));
-    spans.push(Span::styled("Esc", Style::default().fg(Color::White)));
-    spans.push(Span::styled(" Quit", Style::default().fg(Color::DarkGray)));
-
     let footer =
         Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(20, 20, 40)));
     frame.render_widget(footer, inner);
+
+    let export_label = if app.md_exported {
+        " OK Exported "
+    } else {
+        " Export .md "
+    };
+    let didactic_label = " Didactic ";
+
+    if in_detail {
+        let back_btn = Paragraph::new(Line::from(vec![Span::styled(
+            " Back ",
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(0, 120, 140))
+                .bold(),
+        )]))
+        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+        frame.render_widget(back_btn, app.results_back_rect);
+    } else {
+        let new_scan_btn = Paragraph::new(Line::from(vec![Span::styled(
+            " New Scan ",
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(0, 80, 140))
+                .bold(),
+        )]))
+        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+        frame.render_widget(new_scan_btn, app.results_new_scan_rect);
+
+        let export_btn = Paragraph::new(Line::from(vec![Span::styled(
+            export_label,
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(0, 120, 0))
+                .bold(),
+        )]))
+        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+        frame.render_widget(export_btn, app.results_export_rect);
+    }
+
+    let didactic_btn = Paragraph::new(Line::from(vec![Span::styled(
+        didactic_label,
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(120, 40, 120))
+            .bold(),
+    )]))
+    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+    frame.render_widget(didactic_btn, app.results_didactic_rect);
 }

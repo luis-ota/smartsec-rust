@@ -44,7 +44,7 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
     let overall_pct = if total > 0 { done * 100 / total } else { 0 };
 
     let header = Paragraph::new(Line::from(vec![
-        Span::styled(" ◆ ", Style::default().fg(Color::Cyan)),
+        Span::styled(" | ", Style::default().fg(Color::Cyan)),
         Span::styled("Execution", Style::default().fg(Color::White).bold()),
         Span::styled(
             format!(" {} Running ", running),
@@ -106,10 +106,10 @@ fn render_progress_list(app: &AppState, frame: &mut Frame, area: Rect) {
             tool_height.min(available.saturating_sub(i as u16 * tool_height)),
         );
         let (icon, icon_color) = match tool.status {
-            ToolStatus::Pending => ("○", Color::DarkGray),
+            ToolStatus::Pending => ("[ ]", Color::DarkGray),
             ToolStatus::Running => (app.spinner_char(), Color::Yellow),
-            ToolStatus::Done => ("✓", Color::Green),
-            ToolStatus::Failed => ("✗", Color::Red),
+            ToolStatus::Done => ("OK", Color::Green),
+            ToolStatus::Failed => ("FAIL", Color::Red),
         };
         let name_line = Paragraph::new(Line::from(vec![
             Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
@@ -176,7 +176,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .skip(scroll)
         .take(visible_height)
         .map(|log| {
-            let is_done = log.contains("✓");
+            let is_done = log.contains("OK");
             let color = if is_done {
                 Color::Green
             } else {
@@ -193,7 +193,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(logs, inner);
 }
 
-fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
+fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let bar = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(Color::DarkGray))
@@ -206,9 +206,9 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
         .iter()
         .all(|t| !t.selected || t.status == ToolStatus::Done);
     let status = if app.exec_cancelled {
-        ("✖ CANCELLED — returning to tool selection", Color::Red)
+        ("X CANCELLED - returning to tool selection", Color::Red)
     } else if app.exec_paused {
-        ("⏸ PAUSED — press C-x p to resume", Color::Yellow)
+        ("|| PAUSED - press C-x p to resume", Color::Yellow)
     } else if all_done {
         (
             "All scans complete — proceeding to analysis...",
@@ -218,10 +218,20 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
         ("Running security scans...", Color::Yellow)
     };
 
+    let cancel_btn_w = 9u16;
+    let pause_btn_w = 9u16;
+    let back_btn_w = 7u16;
+    let cancel_x = area.x + area.width.saturating_sub(cancel_btn_w + 2);
+    let pause_x = cancel_x.saturating_sub(pause_btn_w + 2);
+    let back_x = pause_x.saturating_sub(back_btn_w + 2);
+    app.exec_cancel_rect = Rect::new(cancel_x, area.y + 1, cancel_btn_w, 1);
+    app.exec_pause_rect = Rect::new(pause_x, area.y + 1, pause_btn_w, 1);
+    app.exec_back_rect = Rect::new(back_x, area.y + 1, back_btn_w, 1);
+
     let spans = vec![
         Span::styled(
             format!(
-                " ◆ {} ",
+                " | {} ",
                 match app.mode() {
                     ExecutionType::Auto => "AUTO",
                     ExecutionType::Assisted => "ASSISTED",
@@ -231,22 +241,43 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
         ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(status.0, Style::default().fg(status.1).bold()),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("C-x p", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(
-            if app.exec_paused {
-                " Resume  "
-            } else {
-                " Pause  "
-            },
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled("C-x c", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(" Cancel  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("C-x q", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
     ];
     let footer =
         Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(20, 20, 40)));
     frame.render_widget(footer, inner);
+
+    let back_btn = Paragraph::new(Line::from(vec![Span::styled(
+        " Back ",
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(80, 80, 100))
+            .bold(),
+    )]))
+    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+    frame.render_widget(back_btn, app.exec_back_rect);
+
+    let pause_label = if app.exec_paused {
+        " Resume "
+    } else {
+        " Pause  "
+    };
+    let pause_btn = Paragraph::new(Line::from(vec![Span::styled(
+        pause_label,
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(140, 120, 0))
+            .bold(),
+    )]))
+    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+    frame.render_widget(pause_btn, app.exec_pause_rect);
+
+    let cancel_btn = Paragraph::new(Line::from(vec![Span::styled(
+        " Cancel ",
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(160, 30, 30))
+            .bold(),
+    )]))
+    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
+    frame.render_widget(cancel_btn, app.exec_cancel_rect);
 }
