@@ -61,27 +61,6 @@ src/
   report/              Gerador de relatorio Markdown
   utils/               Auxiliares de texto
 ```
-
-## O que e real vs mock
-
-| Componente        | Status |
-|-------------------|--------|
-| Scanner Nuclei    | **Real** — executa binario `nuclei`, faz parsing da saida JSONL |
-| Outros scanners   | Mock — emulados com saida placeholder |
-| Sandbox           | Mock — gera IDs de container falsos |
-| Analise IA        | Configuravel — mock por padrao, real via OpenAI/Ollama/NIM |
-| Relatorio         | Real — gera arquivo `smartsec-report.md` |
-| Configuracao      | Real — persistida em `~/.config/smartsec/config.toml`, API key no keyring do SO |
-
-## Como o Nuclei funciona no SmartSec
-
-1. Quando `Real Nuclei` esta ativado nas configuracoes, o orquestrador executa o binario `nuclei`
-2. Templates de `~/nuclei-templates/http/misconfiguration/` sao usados (~968 templates)
-3. O scan roda com `-c 200 -timeout 2` para performance
-4. A saida JSONL e parseada em structs `Vulnerability` com classificacao de severidade
-5. Os findings reais sao mesclados com a biblioteca interna de vulnerabilidades (16 CVEs mock para demonstracao)
-6. Todos os findings aparecem na lista de resultados e sao incluidos no relatorio exportado
-
 ## Navegacao
 
 | Tecla     | Acao                     |
