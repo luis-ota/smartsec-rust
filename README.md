@@ -4,13 +4,13 @@ Plataforma de analise de seguranca — prototipo escrito em Rust com interface d
 
 # Demonstracao
 ## Modo Assitido
-<video src="docs/assistido.mp4" controls width="720"></video>
+[▶ Assistir demonstracao do modo assistido](./docs/assistido.mp4)
 
 ## Modo Automatico
-<video src="docs/auto.mp4" controls width="720"></video>
+[▶ Assistir demonstracao do modo automatico](./docs/auto.mp4)
 
 ## Modo Headless (CI/CD)
-<video src="docs/headless.mp4" controls width="720"></video>
+[▶ Assistir demonstracao do modo headless](./docs/headless.mp4)
 
 
 ## Aviso
