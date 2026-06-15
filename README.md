@@ -4,13 +4,13 @@ Plataforma de analise de seguranca — prototipo escrito em Rust com interface d
 
 # Demonstracao
 ## Modo Assitido
-![SmartSec modo assistido](docs/assistido.mp4)
+<video src="docs/assistido.mp4" controls width="720"></video>
 
 ## Modo Automatico
-![SmartSec modo assistido](docs/auto.mp4)
+<video src="docs/auto.mp4" controls width="720"></video>
 
 ## Modo Headless (CI/CD)
-![SmartSec modo assistido](docs/headless.mp4)
+<video src="docs/headless.mp4" controls width="720"></video>
 
 
 ## Aviso
