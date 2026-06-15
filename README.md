@@ -2,6 +2,17 @@
 
 Plataforma de analise de seguranca — prototipo escrito em Rust com interface de terminal.
 
+# Demonstracao
+## Modo Assitido
+![SmartSec modo assistido](docs/assistido.mp4)
+
+## Modo Automatico
+![SmartSec modo assistido](docs/auto.mp4)
+
+## Modo Headless (CI/CD)
+![SmartSec modo assistido](docs/headless.mp4)
+
+
 ## Aviso
 
 Este e um **prototipo / prova de conceito**. A maioria das ferramentas de seguranca sao emuladas (mock), mas o **Nuclei executa de verdade** — roda o binario real contra o alvo e faz parsing dos findings a partir da saida JSON.

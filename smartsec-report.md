@@ -1,16 +1,16 @@
 # SmartSec - Relatório de Análise de Segurança
 
-**URL Alvo:** http://localhost:8080
+**URL Alvo:** https://httpbin.org
 
 **Modo:** Assistido
 
 ## Resumo
 
-- Total de vulnerabilidades: 16
+- Total de vulnerabilidades: 27
 - Critical: 6
 - High: 5
 - Medium: 4
-- Low: 1
+- Low: 12
 
 ## Pontos Críticos
 
@@ -104,6 +104,17 @@ A API aceita tokens JWT com algoritmo 'none', permitindo forjar tokens de admin 
 
 ## Todas as Vulnerabilidades
 
+- [LOW] Missing Subresource Integrity -  - Nuclei
+- [LOW] HTTP Missing Security Headers - strict-transport-security - Nuclei
+- [LOW] HTTP Missing Security Headers - content-security-policy - Nuclei
+- [LOW] HTTP Missing Security Headers - x-content-type-options - Nuclei
+- [LOW] HTTP Missing Security Headers - x-permitted-cross-domain-policies - Nuclei
+- [LOW] HTTP Missing Security Headers - referrer-policy - Nuclei
+- [LOW] HTTP Missing Security Headers - cross-origin-embedder-policy - Nuclei
+- [LOW] HTTP Missing Security Headers - cross-origin-resource-policy - Nuclei
+- [LOW] HTTP Missing Security Headers - permissions-policy - Nuclei
+- [LOW] HTTP Missing Security Headers - x-frame-options - Nuclei
+- [LOW] HTTP Missing Security Headers - cross-origin-opener-policy - Nuclei
 - [CRITICAL] SQL Injection no formulário de login - SQLMap
 - [CRITICAL] SQL Injection no parâmetro de busca - SQLMap
 - [HIGH] XSS refletido no campo de busca - ZAP
