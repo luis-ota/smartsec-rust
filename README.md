@@ -4,13 +4,13 @@ Plataforma de analise de seguranca — prototipo escrito em Rust com interface d
 
 # Demonstracao
 ## Modo Assitido
-[▶ Assistir demonstracao do modo assistido](./docs/assistido.mp4)
+[▶ Assistir demonstracao do modo assistido](https://github.com/luis-ota/smartsec-rust/releases/download/demo/assistido.mp4)
 
 ## Modo Automatico
-[▶ Assistir demonstracao do modo automatico](./docs/auto.mp4)
+[▶ Assistir demonstracao do modo automatico](https://github.com/luis-ota/smartsec-rust/releases/download/demo/auto.mp4)
 
 ## Modo Headless (CI/CD)
-[▶ Assistir demonstracao do modo headless](./docs/headless.mp4)
+[▶ Assistir demonstracao do modo headless](https://github.com/luis-ota/smartsec-rust/releases/download/demo/headless.mp4)
 
 
 ## Aviso
