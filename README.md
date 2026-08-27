@@ -2,6 +2,12 @@
 
 Plataforma de analise de seguranca — prototipo escrito em Rust com interface de terminal.
 
+## Documentacao do TCC
+
+- [Especificacao completa, requisitos, sprints e metas](TCC_SPEC.md)
+- [Regras para agentes, branches, PRs e Definition of Done](AGENTS.md)
+- [Distribuicao atual da Sprint 1](docs/PLANO_DE_DISTRIBUICAO.md)
+
 # Demonstracao
 ## Modo Assitido
 ![Modo Assistido](docs/assistido.gif)
