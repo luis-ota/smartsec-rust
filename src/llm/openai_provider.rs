@@ -1,6 +1,7 @@
 use crate::llm::LLMProvider;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Serialize)]
 #[allow(dead_code)]
@@ -33,12 +34,17 @@ struct ChatChoice {
 pub struct OpenAIProvider {
     pub base_url: String,
     pub api_key: String,
+    pub timeout_secs: u64,
+    pub max_retries: u8,
+    pub send_auth: bool,
 }
 
 #[async_trait]
 impl LLMProvider for OpenAIProvider {
     async fn execute_prompt(&self, prompt: &str, model: &str) -> Result<String, anyhow::Error> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(self.timeout_secs))
+            .build()?;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let body = ChatRequest {
@@ -50,26 +56,115 @@ impl LLMProvider for OpenAIProvider {
             temperature: 0.7,
         };
 
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        for attempt in 0..=self.max_retries {
+            let mut request = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body);
+            if self.send_auth {
+                request = request.bearer_auth(&self.api_key);
+            }
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("LLM API error {}: {}", status, text));
+            match request.send().await {
+                Ok(response) if response.status().is_success() => {
+                    let chat_response: ChatResponse = response.json().await?;
+                    return chat_response
+                        .choices
+                        .first()
+                        .map(|choice| choice.message.content.clone())
+                        .ok_or_else(|| anyhow::anyhow!("No response from LLM"));
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let retryable = status.is_server_error()
+                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                    let text = response.text().await.unwrap_or_default();
+                    if !retryable || attempt == self.max_retries {
+                        return Err(anyhow::anyhow!("LLM API error {}: {}", status, text));
+                    }
+                }
+                Err(error) if attempt == self.max_retries => return Err(error.into()),
+                Err(_) => {}
+            }
         }
 
-        let chat_resp: ChatResponse = resp.json().await?;
+        unreachable!("retry loop always returns on its last attempt")
+    }
+}
 
-        if let Some(choice) = chat_resp.choices.first() {
-            Ok(choice.message.content.clone())
-        } else {
-            Err(anyhow::anyhow!("No response from LLM"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn mock_server(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buffer = vec![0; 8192];
+                let size = stream.read(&mut buffer).await.unwrap();
+                requests.push(String::from_utf8_lossy(&buffer[..size]).into_owned());
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+            requests
+        });
+        (format!("http://{address}/v1"), handle)
+    }
+
+    fn provider(base_url: String) -> OpenAIProvider {
+        OpenAIProvider {
+            base_url,
+            api_key: "test-token".to_string(),
+            timeout_secs: 2,
+            max_retries: 0,
+            send_auth: true,
         }
+    }
+
+    #[tokio::test]
+    async fn sends_openai_request_to_http_mock() {
+        let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}";
+        let (base_url, server) = mock_server(vec![("200 OK", body)]).await;
+
+        let result = provider(base_url)
+            .execute_prompt("inspect logs", "gpt-4o")
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+
+        assert_eq!(result, "ok");
+        assert!(requests[0].contains("POST /v1/chat/completions"));
+        assert!(requests[0].contains("authorization: Bearer test-token"));
+        assert!(requests[0].contains("\"model\":\"gpt-4o\""));
+    }
+
+    #[tokio::test]
+    async fn retries_transient_server_error_with_limit() {
+        let success =
+            "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"recovered\"}}]}";
+        let (base_url, server) = mock_server(vec![
+            ("503 Service Unavailable", "busy"),
+            ("200 OK", success),
+        ])
+        .await;
+        let mut client = provider(base_url);
+        client.max_retries = 1;
+
+        let result = client.execute_prompt("logs", "gpt-4o").await.unwrap();
+        let requests = server.await.unwrap();
+
+        assert_eq!(result, "recovered");
+        assert_eq!(requests.len(), 2);
     }
 }
