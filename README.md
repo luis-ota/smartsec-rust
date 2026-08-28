@@ -27,6 +27,7 @@ Este e um **prototipo / prova de conceito**. A maioria das ferramentas de segura
 
 - **TUI** construida com [ratatui](https://crates.io/crates/ratatui) + [crossterm](https://crates.io/crates/crossterm)
 - **Modo headless** via `--auto --url <alvo>`
+- **Nmap real** via Podman rootless, com portas e serviços extraídos do XML
 - **Suporte a mouse** — todos os botoes e listas sao clicaveis
 - **Nuclei real** — escaneia alvos usando 968+ templates de misconfiguracao, extrai findings com classificacao de severidade
 - **Analise IA** (integracao com LLM — mock por padrao, suporta OpenAI / Ollama / NVIDIA NIM)
@@ -35,6 +36,7 @@ Este e um **prototipo / prova de conceito**. A maioria das ferramentas de segura
 ## Requisitos
 
 - Rust 1.80+
+- [Podman](https://podman.io/) configurado em modo rootless
 - [Nuclei](https://github.com/projectdiscovery/nuclei) (para escaneamento real)
 - Templates do Nuclei (`nuclei -update-templates`)
 
@@ -47,9 +49,14 @@ cargo run
 # Headless — scan automatico com relatorio
 cargo run -- --auto --url https://httpbin.org
 
+# Headless — executar apenas o Nmap
+cargo run -- --auto --url https://example.com --tools Nmap
+
 # Para ativar o Nuclei real:
 # Na TUI: C-x s → Real Nuclei → Enable → Save
 # Depois execute normalmente que o Nuclei vai rodar de verdade
+
+# Na TUI em modo assistido, marque ou desmarque Nmap com Espaco
 ```
 
 ## Arquitetura
