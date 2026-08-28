@@ -72,14 +72,14 @@ impl LLMProvider for OpenAIProvider {
                         .choices
                         .first()
                         .map(|choice| choice.message.content.clone())
-                        .ok_or_else(|| anyhow::anyhow!("No response from LLM"));
+                        .ok_or_else(|| anyhow::anyhow!("A LLM não retornou uma resposta"));
                 }
                 Ok(response) => {
                     let status = response.status();
                     let retryable = status.is_server_error()
                         || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
                     if !retryable || attempt == self.max_retries {
-                        return Err(anyhow::anyhow!("LLM API returned status {status}"));
+                        return Err(anyhow::anyhow!("A API da LLM retornou o status {status}"));
                     }
                 }
                 Err(error) if attempt == self.max_retries => return Err(error.into()),
@@ -87,7 +87,7 @@ impl LLMProvider for OpenAIProvider {
             }
         }
 
-        unreachable!("retry loop always returns on its last attempt")
+        unreachable!("o laço de tentativas sempre retorna na última tentativa")
     }
 }
 
