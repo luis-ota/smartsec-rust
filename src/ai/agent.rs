@@ -21,15 +21,29 @@ impl AIAgent {
     pub fn from_config(cfg: &LlmConfig) -> Self {
         let provider: Box<dyn LLMProvider> = match cfg.provider {
             LlmProviderKind::Mock => Box::new(MockProvider),
-            LlmProviderKind::Ollama => Box::new(ollama_provider(&cfg.base_url)),
-            LlmProviderKind::NvidiaNim => Box::new(nvidia_nim_provider(&cfg.api_key)),
+            LlmProviderKind::Ollama => Box::new(ollama_provider(
+                &cfg.base_url,
+                cfg.timeout_secs,
+                cfg.max_retries,
+            )),
+            LlmProviderKind::NvidiaNim => Box::new(nvidia_nim_provider(
+                &cfg.api_key,
+                cfg.timeout_secs,
+                cfg.max_retries,
+            )),
             LlmProviderKind::OpenAI => Box::new(OpenAIProvider {
                 base_url: cfg.base_url.clone(),
                 api_key: cfg.api_key.clone(),
+                timeout_secs: cfg.timeout_secs,
+                max_retries: cfg.max_retries,
+                send_auth: true,
             }),
             LlmProviderKind::Custom => Box::new(OpenAIProvider {
                 base_url: cfg.base_url.clone(),
                 api_key: cfg.api_key.clone(),
+                timeout_secs: cfg.timeout_secs,
+                max_retries: cfg.max_retries,
+                send_auth: !cfg.api_key.is_empty(),
             }),
         };
         Self {
