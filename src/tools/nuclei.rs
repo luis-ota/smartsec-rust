@@ -1,5 +1,6 @@
 use crate::config::nuclei_config::NucleiConfig;
 use anyhow::{anyhow, bail, Context};
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -62,6 +63,21 @@ impl NucleiTool {
                 self.config.templates_directory.display()
             );
         }
+        let revision_file = self.config.templates_directory.join(".git/HEAD");
+        let revision = fs::read_to_string(&revision_file).with_context(|| {
+            format!(
+                "Não foi possível confirmar a versão dos templates em '{}'. Instale-os pelo checkout documentado",
+                revision_file.display()
+            )
+        })?;
+        if revision.trim() != crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT {
+            bail!(
+                "Versão incorreta dos templates do Nuclei em '{}': esperado o commit {}, encontrado '{}'",
+                self.config.templates_directory.display(),
+                crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT,
+                revision.trim()
+            );
+        }
         for template in &self.config.templates {
             let path = self.config.templates_directory.join(template);
             if !path.exists() {
@@ -112,6 +128,21 @@ fn validate_template_selection(template: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn templates_directory(revision: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "smartsec-nuclei-templates-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(directory.join(".git")).unwrap();
+        fs::write(directory.join(".git/HEAD"), revision).unwrap();
+        directory
+    }
 
     #[test]
     fn builds_configurable_container_arguments_without_a_host_shell() {
@@ -180,5 +211,37 @@ mod tests {
             crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT,
             "8adc92372034777469dcef575af21ba56e336f9d"
         );
+    }
+
+    #[test]
+    fn rejects_an_unpinned_template_revision() {
+        let directory = templates_directory("commit-incorreto");
+        let config = NucleiConfig {
+            templates_directory: directory.clone(),
+            ..NucleiConfig::default()
+        };
+        let tool = NucleiTool::new(config).unwrap();
+
+        let error = tool.validate_templates().unwrap_err();
+
+        fs::remove_dir_all(directory).unwrap();
+        assert!(error.to_string().contains("Versão incorreta"));
+    }
+
+    #[test]
+    fn reports_a_missing_selected_template() {
+        let directory = templates_directory(crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT);
+        let config = NucleiConfig {
+            templates_directory: directory.clone(),
+            templates: vec!["http/ausente.yaml".to_owned()],
+            ..NucleiConfig::default()
+        };
+        let tool = NucleiTool::new(config).unwrap();
+
+        let error = tool.validate_templates().unwrap_err();
+
+        fs::remove_dir_all(directory).unwrap();
+        assert!(error.to_string().contains("não encontrado"));
+        assert!(error.to_string().contains("http/ausente.yaml"));
     }
 }
