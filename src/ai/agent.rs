@@ -85,7 +85,7 @@ impl AIAgent {
             Ok(response) => Self::parse_llm_response(&response),
             Err(error) => {
                 self.execution_history
-                    .push(format!("LLM analysis unavailable: {error}"));
+                    .push(format!("Análise por LLM indisponível: {error}"));
                 Self::local_analysis(vulns)
             }
         };
@@ -136,13 +136,13 @@ impl AIAgent {
 
     async fn execute_with_fallback(&mut self, prompt: &str) -> Result<String, anyhow::Error> {
         if let Some(error) = &self.configuration_error {
-            return Err(anyhow::anyhow!("invalid LLM configuration: {error}"));
+            return Err(anyhow::anyhow!("configuração inválida da LLM: {error}"));
         }
         let primary_result = if self.remote_allowed {
             self.provider.execute_prompt(prompt, &self.model).await
         } else {
             Err(anyhow::anyhow!(
-                "remote request blocked because explicit consent was not granted"
+                "solicitação remota bloqueada por falta de consentimento explícito"
             ))
         };
 
@@ -150,18 +150,18 @@ impl AIAgent {
             Ok(response) => Ok(response),
             Err(primary_error) => {
                 self.execution_history
-                    .push(format!("Primary LLM failed: {primary_error}"));
+                    .push(format!("A LLM principal falhou: {primary_error}"));
                 let Some(fallback) = &self.fallback_provider else {
                     return Err(primary_error);
                 };
                 self.execution_history
-                    .push("Using configured local Ollama fallback".to_string());
+                    .push("Usando o Ollama local configurado como alternativa".to_string());
                 fallback
                     .execute_prompt(prompt, &self.fallback_model)
                     .await
                     .map_err(|fallback_error| {
                         anyhow::anyhow!(
-                            "primary LLM failed ({primary_error}); local fallback failed ({fallback_error})"
+                            "a LLM principal falhou ({primary_error}); a alternativa local falhou ({fallback_error})"
                         )
                     })
             }
@@ -198,7 +198,7 @@ mod tests {
             _prompt: &str,
             _model: &str,
         ) -> Result<String, anyhow::Error> {
-            Err(anyhow::anyhow!("provider unavailable"))
+            Err(anyhow::anyhow!("provedor indisponível"))
         }
     }
 
@@ -233,7 +233,7 @@ mod tests {
         assert!(agent
             .execution_history
             .iter()
-            .any(|entry| entry.contains("consent")));
+            .any(|entry| entry.contains("consentimento")));
     }
 
     #[tokio::test]
@@ -255,10 +255,10 @@ mod tests {
         assert!(agent
             .execution_history
             .iter()
-            .any(|entry| entry.contains("Primary LLM failed")));
+            .any(|entry| entry.contains("LLM principal falhou")));
         assert!(agent
             .execution_history
             .iter()
-            .any(|entry| entry.contains("local Ollama fallback")));
+            .any(|entry| entry.contains("Ollama local configurado")));
     }
 }
