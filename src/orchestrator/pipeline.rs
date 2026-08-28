@@ -2,9 +2,10 @@ use crate::ai::agent::AIAgent;
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::mocks::MockTool;
-use crate::tools::nuclei::NucleiTool;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct Orchestrator {
     pub config: Configuration,
@@ -84,19 +85,32 @@ impl Orchestrator {
     }
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
-        let runner: Box<dyn SecurityToolRunner> =
-            if tool_info.is_nuclei() && self.config.use_real_nuclei {
-                Box::new(NucleiTool)
-            } else {
-                Box::new(MockTool {
-                    name: tool_info.name,
-                    description: tool_info.description,
-                })
-            };
+        let real_nuclei = tool_info.is_nuclei() && self.config.use_real_nuclei;
+        let runner: Box<dyn SecurityToolRunner> = if real_nuclei {
+            Box::new(NucleiTool)
+        } else {
+            Box::new(MockTool {
+                name: tool_info.name,
+                description: tool_info.description,
+            })
+        };
 
         let arguments = runner.configure_command(target);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
         exec.executed_at = chrono_like_now();
+
+        if real_nuclei {
+            let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+            exec.output = match executor
+                .execute(NUCLEI_IMAGE, &NucleiTool::container_arguments(target))
+                .await
+            {
+                Ok(result) => podman_output(result),
+                Err(error) => format!("[ERROR] Real scan could not start: {error:#}"),
+            };
+            self.execution_history.push(exec.clone());
+            return exec;
+        }
 
         let container_id = self
             .sandbox
@@ -156,6 +170,32 @@ impl Orchestrator {
         let analysis = self.agent.analyze_logs(&self.findings).await;
         self.last_log = analysis;
         Ok(self.findings.clone())
+    }
+}
+
+fn podman_output(result: ExecutionResult) -> String {
+    let cleanup_error = result
+        .cleanup_error
+        .map(|error| format!(" Cleanup failed: {error}"))
+        .unwrap_or_default();
+    match result.status {
+        ExecutionStatus::Succeeded if cleanup_error.is_empty() => result.stdout,
+        ExecutionStatus::Succeeded => format!(
+            "[ERROR] Scanner completed in {:.2?}, but its container {} was not cleaned up.{}",
+            result.duration, result.container_id, cleanup_error
+        ),
+        ExecutionStatus::Failed(code) => format!(
+            "[ERROR] Scanner container {} exited with status {} after {:.2?}: {}{}",
+            result.container_id,
+            code.map_or_else(|| "unknown".to_owned(), |code| code.to_string()),
+            result.duration,
+            result.stderr.trim(),
+            cleanup_error
+        ),
+        ExecutionStatus::TimedOut => format!(
+            "[ERROR] Scanner container {} exceeded the 15 minute timeout after {:.2?}.{}",
+            result.container_id, result.duration, cleanup_error
+        ),
     }
 }
 
