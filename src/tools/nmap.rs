@@ -36,11 +36,7 @@ impl SecurityToolRunner for NmapTool {
     }
 
     fn configure_command(&self, target: &str) -> String {
-        let (host, port) = split_host_port(target);
-        match port {
-            Some(p) => format!("nmap -sV -sC -oX - -p {} {}", p, host),
-            None => format!("nmap -sV -sC -oX - {}", host),
-        }
+        format!("nmap {}", Self::container_arguments(target).join(" "))
     }
 
     async fn parse_output(&self, target: &str) -> Result<String, anyhow::Error> {
@@ -89,6 +85,16 @@ mod tests {
         assert_eq!(
             arguments,
             ["-sT", "-sV", "-oX", "-", "-p", "8443", "example.test"]
+        );
+    }
+
+    #[test]
+    fn records_the_command_executed_in_the_container() {
+        let tool = NmapTool;
+
+        assert_eq!(
+            tool.configure_command("example.test"),
+            "nmap -sT -sV -oX - example.test"
         );
     }
 
