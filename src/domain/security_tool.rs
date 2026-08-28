@@ -11,6 +11,11 @@ impl ToolInfo {
     pub fn all() -> Vec<Self> {
         vec![
             ToolInfo {
+                name: "Nmap",
+                description: "Mapeamento de hosts, portas e serviços",
+                category: "RECON",
+            },
+            ToolInfo {
                 name: "ZAP",
                 description: "OWASP ZAP - Web app scanner",
                 category: "DAST",
@@ -55,6 +60,10 @@ impl ToolInfo {
 
     pub fn is_nuclei(&self) -> bool {
         self.name == "Nuclei"
+    }
+
+    pub fn is_nmap(&self) -> bool {
+        self.name == "Nmap"
     }
 }
 
@@ -102,4 +111,18 @@ pub trait SecurityToolRunner: Send + Sync {
     fn tool_name(&self) -> &str;
     fn configure_command(&self, target: &str) -> String;
     async fn parse_output(&self, target: &str) -> Result<String, anyhow::Error>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_catalog_contains_nmap() {
+        let tools = ToolInfo::all();
+
+        let nmap = tools.iter().find(|tool| tool.is_nmap()).unwrap();
+        assert_eq!(nmap.name, "Nmap");
+        assert_eq!(nmap.category, "RECON");
+    }
 }
