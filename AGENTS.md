@@ -33,6 +33,12 @@ Se a tarefa exigir alteracao fora do escopo, parar e registrar a necessidade na 
 - Nao adicionar dependencia sem justificar no PR e verificar licenca, versao e impacto.
 - Nao alterar arquivos de credenciais, secrets, keyring real ou configuracoes pessoais.
 
+## Idioma do projeto
+
+- Escrever em portugues brasileiro todas as strings de interface, mensagens de erro, logs, textos operacionais e relatorios produzidos pelo SmartSec.
+- Manter em ingles nomes de variaveis, funcoes, tipos, traits, modulos, campos, APIs e demais identificadores de codigo.
+- Nao traduzir protocolos, comandos, nomes proprios nem saidas recebidas de ferramentas e servicos externos.
+
 ## Seguranca operacional
 
 - Executar scanners somente contra alvos locais, ambientes controlados ou alvos com autorizacao explicita.
