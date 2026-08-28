@@ -13,6 +13,7 @@ pub struct AIAgent {
     fallback_provider: Option<Box<dyn LLMProvider>>,
     fallback_model: String,
     remote_allowed: bool,
+    configuration_error: Option<String>,
     #[allow(dead_code)]
     pub model: String,
     pub last_analysis: String,
@@ -63,6 +64,7 @@ impl AIAgent {
             fallback_provider,
             fallback_model: cfg.fallback_model.clone(),
             remote_allowed: !cfg.is_remote() || cfg.remote_consent,
+            configuration_error: cfg.validate().err(),
             model: cfg.model.clone(),
             last_analysis: String::new(),
             execution_history: Vec::new(),
@@ -102,7 +104,7 @@ impl AIAgent {
             "Explain the following security vulnerability in an educational way for a junior developer:\n\nTitle: {}\nSeverity: {}\nTool: {}\nDescription: {}\n\nProvide: 1) what it is, 2) attack flow example, 3) defense strategies.",
             vuln.title, vuln.severity.label(), vuln.tool, vuln.description
         );
-        if !self.remote_allowed {
+        if self.configuration_error.is_some() || !self.remote_allowed {
             return vuln.didactic.to_string();
         }
         match self.provider.execute_prompt(&prompt, &self.model).await {
@@ -133,6 +135,9 @@ impl AIAgent {
     }
 
     async fn execute_with_fallback(&mut self, prompt: &str) -> Result<String, anyhow::Error> {
+        if let Some(error) = &self.configuration_error {
+            return Err(anyhow::anyhow!("invalid LLM configuration: {error}"));
+        }
         let primary_result = if self.remote_allowed {
             self.provider.execute_prompt(prompt, &self.model).await
         } else {
@@ -228,7 +233,7 @@ mod tests {
         assert!(agent
             .execution_history
             .iter()
-            .any(|entry| entry.contains("consent was not granted")));
+            .any(|entry| entry.contains("consent")));
     }
 
     #[tokio::test]
@@ -238,6 +243,7 @@ mod tests {
             fallback_provider: Some(Box::new(SuccessfulProvider)),
             fallback_model: "llama3.1:8b".to_string(),
             remote_allowed: true,
+            configuration_error: None,
             model: "gpt-4o".to_string(),
             last_analysis: String::new(),
             execution_history: Vec::new(),

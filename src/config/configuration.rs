@@ -15,7 +15,9 @@ pub struct Configuration {
 
 impl Configuration {
     pub fn load(_args: &[String]) -> Result<Self> {
-        Ok(crate::config::persistence::load_config_file().into())
+        let config: Self = crate::config::persistence::load_config_file().into();
+        config.llm.validate().map_err(anyhow::Error::msg)?;
+        Ok(config)
     }
 
     pub fn validate_target(&self) -> Result<(), String> {
