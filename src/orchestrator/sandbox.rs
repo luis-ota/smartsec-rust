@@ -92,6 +92,9 @@ impl PodmanExecutor {
             Ok(output) => output.with_context(|| self.unavailable_message())?,
             Err(_) => {
                 let cleanup = self.remove_container(&name).await.err();
+                if cleanup.is_none() {
+                    cleanup_guard.disarm();
+                }
                 return Err(anyhow!(
                     "Podman did not create image '{image}' within {:.2?}. {}",
                     self.timeout,
@@ -124,6 +127,9 @@ impl PodmanExecutor {
             .to_owned();
         if container_id.is_empty() {
             let cleanup = self.remove_container(&name).await.err();
+            if cleanup.is_none() {
+                cleanup_guard.disarm();
+            }
             return Err(anyhow!(
                 "Podman created container '{name}' but returned no container ID. Cleanup result: {}",
                 cleanup.map_or_else(
