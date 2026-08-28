@@ -2,6 +2,8 @@ use crate::domain::security_tool::SecurityToolRunner;
 
 pub struct NucleiTool;
 
+pub const NUCLEI_IMAGE: &str = "docker.io/projectdiscovery/nuclei:v3.4.10";
+
 fn split_host_port(target: &str) -> (String, Option<String>) {
     let mut t = target.trim().to_string();
     for prefix in ["http://", "https://", "HTTP://", "HTTPS://"] {
@@ -88,5 +90,51 @@ impl SecurityToolRunner for NucleiTool {
                 Err(anyhow::anyhow!("Nuclei error: {}", stderr))
             }
         }
+    }
+}
+
+impl NucleiTool {
+    pub fn container_arguments(target: &str) -> Vec<String> {
+        let (host, port) = split_host_port(target);
+        let target_arg = match port {
+            Some(port) => format!("{host}:{port}"),
+            None => host,
+        };
+        vec![
+            "-u".to_owned(),
+            target_arg,
+            "-jsonl".to_owned(),
+            "-silent".to_owned(),
+            "-c".to_owned(),
+            "25".to_owned(),
+            "-timeout".to_owned(),
+            "2".to_owned(),
+            "-disable-update-check".to_owned(),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_container_arguments_without_a_host_shell() {
+        let arguments = NucleiTool::container_arguments("https://example.test:8443/path");
+
+        assert_eq!(
+            arguments,
+            [
+                "-u",
+                "example.test:8443",
+                "-jsonl",
+                "-silent",
+                "-c",
+                "25",
+                "-timeout",
+                "2",
+                "-disable-update-check"
+            ]
+        );
     }
 }
