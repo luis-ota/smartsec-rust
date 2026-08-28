@@ -401,17 +401,13 @@ impl SandboxManager for MockSandbox {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
     use std::path::Path;
-    use std::sync::{Mutex, MutexGuard};
-
-    static FAKE_PODMAN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct FakePodman {
         directory: PathBuf,
         binary: PathBuf,
         log: PathBuf,
-        _test_lock: MutexGuard<'static, ()>,
     }
 
     impl FakePodman {
@@ -424,9 +420,6 @@ mod tests {
         }
 
         fn with_scripts(create_script: &str, start_script: &str, cleanup_script: &str) -> Self {
-            let test_lock = FAKE_PODMAN_TEST_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let directory = std::env::temp_dir().join(format!(
                 "smartsec-podman-test-{}-{}",
                 std::process::id(),
@@ -434,25 +427,19 @@ mod tests {
             ));
             fs::create_dir_all(&directory).unwrap();
             let binary = directory.join("podman");
-            let pending_binary = directory.join("podman.tmp");
             let log = directory.join("calls.log");
-            let script = format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  info) printf 'true\\n' ;;\n  create) {} ;;\n  start) {} ;;\n  kill) exit 0 ;;\n  rm) {} ;;\nesac\n",
-                log.display(),
-                create_script,
-                start_script,
-                cleanup_script
-            );
-            fs::write(&pending_binary, script).unwrap();
-            let mut permissions = fs::metadata(&pending_binary).unwrap().permissions();
-            permissions.set_mode(0o700);
-            fs::set_permissions(&pending_binary, permissions).unwrap();
-            fs::rename(pending_binary, &binary).unwrap();
+            fs::write(directory.join("create.sh"), create_script).unwrap();
+            fs::write(directory.join("start.sh"), start_script).unwrap();
+            fs::write(directory.join("cleanup.sh"), cleanup_script).unwrap();
+            symlink(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_podman"),
+                &binary,
+            )
+            .unwrap();
             Self {
                 directory,
                 binary,
                 log,
-                _test_lock: test_lock,
             }
         }
 
