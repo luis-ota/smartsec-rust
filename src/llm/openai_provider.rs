@@ -133,7 +133,7 @@ mod tests {
 
     #[tokio::test]
     async fn sends_openai_request_to_http_mock() {
-        let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}";
+        let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"análise concluída\"}}]}";
         let (base_url, server) = mock_server(vec![("200 OK", body)]).await;
 
         let result = provider(base_url)
@@ -142,7 +142,7 @@ mod tests {
             .unwrap();
         let requests = server.await.unwrap();
 
-        assert_eq!(result, "ok");
+        assert_eq!(result, "análise concluída");
         assert!(requests[0].contains("POST /v1/chat/completions"));
         assert!(requests[0].contains("authorization: Bearer test-token"));
         assert!(requests[0].contains("\"model\":\"gpt-4o\""));
@@ -150,8 +150,7 @@ mod tests {
 
     #[tokio::test]
     async fn retries_transient_server_error_with_limit() {
-        let success =
-            "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"recovered\"}}]}";
+        let success = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"serviço recuperado\"}}]}";
         let (base_url, server) = mock_server(vec![
             ("503 Service Unavailable", "busy"),
             ("200 OK", success),
@@ -163,7 +162,7 @@ mod tests {
         let result = client.execute_prompt("logs", "gpt-4o").await.unwrap();
         let requests = server.await.unwrap();
 
-        assert_eq!(result, "recovered");
+        assert_eq!(result, "serviço recuperado");
         assert_eq!(requests.len(), 2);
     }
 

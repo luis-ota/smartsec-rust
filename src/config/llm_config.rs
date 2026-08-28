@@ -50,12 +50,18 @@ impl LlmProviderKind {
     }
 
     pub fn all_labels() -> Vec<&'static str> {
-        vec!["Built-in", "Ollama", "NVIDIA NIM", "OpenAI", "Custom"]
+        vec![
+            "Integrado",
+            "Ollama",
+            "NVIDIA NIM",
+            "OpenAI",
+            "Personalizado",
+        ]
     }
 
     pub fn from_label(label: &str) -> Self {
         match label {
-            "Built-in" => LlmProviderKind::Mock,
+            "Integrado" => LlmProviderKind::Mock,
             "Ollama" => LlmProviderKind::Ollama,
             "NVIDIA NIM" => LlmProviderKind::NvidiaNim,
             "OpenAI" => LlmProviderKind::OpenAI,
@@ -66,11 +72,11 @@ impl LlmProviderKind {
     #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
-            LlmProviderKind::Mock => "Built-in",
+            LlmProviderKind::Mock => "Integrado",
             LlmProviderKind::Ollama => "Ollama",
             LlmProviderKind::NvidiaNim => "NVIDIA NIM",
             LlmProviderKind::OpenAI => "OpenAI",
-            LlmProviderKind::Custom => "Custom",
+            LlmProviderKind::Custom => "Personalizado",
         }
     }
 }
@@ -240,6 +246,19 @@ mod tests {
             ..LlmConfig::default()
         };
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn exposes_provider_labels_in_portuguese() {
+        let labels = LlmProviderKind::all_labels();
+
+        assert_eq!(labels[0], "Integrado");
+        assert_eq!(labels[4], "Personalizado");
+        assert_eq!(
+            LlmProviderKind::from_label("Integrado"),
+            LlmProviderKind::Mock
+        );
+        assert_eq!(LlmProviderKind::Custom.label(), "Personalizado");
     }
 
     #[test]
