@@ -167,4 +167,23 @@ mod tests {
         assert_eq!(result, "recovered");
         assert_eq!(requests.len(), 2);
     }
+
+    #[tokio::test]
+    async fn aborts_request_at_configured_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        let mut client = provider(format!("http://{address}/v1"));
+        client.timeout_secs = 1;
+
+        let error = client.execute_prompt("logs", "gpt-4o").await.unwrap_err();
+
+        assert!(error
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout));
+        server.abort();
+    }
 }
