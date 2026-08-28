@@ -485,14 +485,14 @@ impl AppState {
         let timeout = match self.settings_input_timeout.parse() {
             Ok(value) => value,
             Err(_) => {
-                self.llm_warning = Some("Timeout must be a whole number".to_string());
+                self.llm_warning = Some("O tempo limite deve ser um número inteiro".to_string());
                 return;
             }
         };
         let retries = match self.settings_input_retries.parse() {
             Ok(value) => value,
             Err(_) => {
-                self.llm_warning = Some("Retries must be a whole number".to_string());
+                self.llm_warning = Some("As tentativas devem ser um número inteiro".to_string());
                 return;
             }
         };
