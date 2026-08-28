@@ -75,6 +75,8 @@ pub struct SecurityTool {
     pub arguments: String,
     pub executed_at: String,
     pub output: String,
+    pub tool_version: Option<String>,
+    pub execution_error: Option<String>,
 }
 
 impl SecurityTool {
@@ -84,6 +86,8 @@ impl SecurityTool {
             arguments: arguments.to_string(),
             executed_at: chrono_like_now(),
             output: String::new(),
+            tool_version: None,
+            execution_error: None,
         }
     }
 
