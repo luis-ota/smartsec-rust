@@ -78,9 +78,8 @@ impl LLMProvider for OpenAIProvider {
                     let status = response.status();
                     let retryable = status.is_server_error()
                         || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
-                    let text = response.text().await.unwrap_or_default();
                     if !retryable || attempt == self.max_retries {
-                        return Err(anyhow::anyhow!("LLM API error {}: {}", status, text));
+                        return Err(anyhow::anyhow!("LLM API returned status {status}"));
                     }
                 }
                 Err(error) if attempt == self.max_retries => return Err(error.into()),
@@ -185,5 +184,25 @@ mod tests {
             .downcast_ref::<reqwest::Error>()
             .is_some_and(reqwest::Error::is_timeout));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn excludes_remote_error_body_from_error() {
+        let (base_url, server) = mock_server(vec![(
+            "401 Unauthorized",
+            "request echoed secret-token and sensitive logs",
+        )])
+        .await;
+
+        let error = provider(base_url)
+            .execute_prompt("sensitive logs", "gpt-4o")
+            .await
+            .unwrap_err()
+            .to_string();
+        server.await.unwrap();
+
+        assert!(error.contains("401 Unauthorized"));
+        assert!(!error.contains("secret-token"));
+        assert!(!error.contains("sensitive logs"));
     }
 }
