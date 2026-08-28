@@ -106,7 +106,9 @@ impl Orchestrator {
                 .await
             {
                 Ok(result) => podman_output(result),
-                Err(error) => format!("[ERROR] Real scan could not start: {error:#}"),
+                Err(error) => {
+                    format!("[ERRO] Não foi possível iniciar a varredura real: {error:#}")
+                }
             };
             self.execution_history.push(exec.clone());
             return exec;
@@ -176,24 +178,24 @@ impl Orchestrator {
 fn podman_output(result: ExecutionResult) -> String {
     let cleanup_error = result
         .cleanup_error
-        .map(|error| format!(" Cleanup failed: {error}"))
+        .map(|error| format!(" Falha na limpeza: {error}"))
         .unwrap_or_default();
     match result.status {
         ExecutionStatus::Succeeded if cleanup_error.is_empty() => result.stdout,
         ExecutionStatus::Succeeded => format!(
-            "[ERROR] Scanner completed in {:.2?}, but its container {} was not cleaned up.{}",
+            "[ERRO] Scanner concluído em {:.2?}, mas o container {} não foi removido.{}",
             result.duration, result.container_id, cleanup_error
         ),
         ExecutionStatus::Failed(code) => format!(
-            "[ERROR] Scanner container {} exited with status {} after {:.2?}: {}{}",
+            "[ERRO] O container {} do scanner encerrou com status {} após {:.2?}: {}{}",
             result.container_id,
-            code.map_or_else(|| "unknown".to_owned(), |code| code.to_string()),
+            code.map_or_else(|| "desconhecido".to_owned(), |code| code.to_string()),
             result.duration,
             result.stderr.trim(),
             cleanup_error
         ),
         ExecutionStatus::TimedOut => format!(
-            "[ERROR] Scanner container {} exceeded the 15 minute timeout after {:.2?}.{}",
+            "[ERRO] O container {} do scanner excedeu o tempo limite de 15 minutos após {:.2?}.{}",
             result.container_id, result.duration, cleanup_error
         ),
     }
@@ -207,4 +209,30 @@ fn chrono_like_now() -> String {
     let mins = (secs / 60) % 60;
     let hours = (secs / 3600) % 24;
     format!("2026-01-01T{:02}:{:02}:00Z", hours, mins)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(status: ExecutionStatus) -> ExecutionResult {
+        ExecutionResult {
+            stdout: String::new(),
+            stderr: "saída externa".to_owned(),
+            status,
+            duration: Duration::from_secs(2),
+            container_id: "container-123".to_owned(),
+            cleanup_error: None,
+        }
+    }
+
+    #[test]
+    fn formats_podman_failures_in_brazilian_portuguese() {
+        let failed = podman_output(result(ExecutionStatus::Failed(None)));
+        let timed_out = podman_output(result(ExecutionStatus::TimedOut));
+
+        assert!(failed.contains("[ERRO]"));
+        assert!(failed.contains("status desconhecido após"));
+        assert!(timed_out.contains("excedeu o tempo limite de 15 minutos"));
+    }
 }
