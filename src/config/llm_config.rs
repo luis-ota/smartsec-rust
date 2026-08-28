@@ -118,17 +118,18 @@ impl LlmConfig {
     pub fn is_remote(&self) -> bool {
         match self.provider {
             LlmProviderKind::OpenAI | LlmProviderKind::NvidiaNim => true,
-            LlmProviderKind::Mock | LlmProviderKind::Ollama => false,
-            LlmProviderKind::Custom => !is_loopback_endpoint(&self.base_url),
+            LlmProviderKind::Mock => false,
+            LlmProviderKind::Ollama | LlmProviderKind::Custom => {
+                !is_loopback_endpoint(&self.base_url)
+            }
         }
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.provider == LlmProviderKind::Mock {
-            return Ok(());
+        if self.provider != LlmProviderKind::Mock {
+            validate_endpoint(&self.base_url, !self.is_remote())?;
+            validate_model(&self.model)?;
         }
-        validate_endpoint(&self.base_url, !self.is_remote())?;
-        validate_model(&self.model)?;
         if self.timeout_secs == 0 || self.timeout_secs > DEFAULT_TIMEOUT_SECS {
             return Err("LLM timeout must be between 1 and 45 seconds".to_string());
         }
@@ -145,6 +146,9 @@ impl LlmConfig {
         }
         if self.fallback_enabled {
             validate_endpoint(&self.fallback_base_url, true)?;
+            if !is_loopback_endpoint(&self.fallback_base_url) {
+                return Err("Ollama fallback endpoint must be local".to_string());
+            }
             validate_model(&self.fallback_model)?;
         }
         Ok(())
@@ -226,6 +230,33 @@ mod tests {
             ..LlmConfig::default()
         };
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn treats_non_loopback_ollama_as_remote() {
+        let mut config = LlmConfig {
+            provider: LlmProviderKind::Ollama,
+            base_url: "https://ollama.example/v1".to_string(),
+            model: "llama3.1:8b".to_string(),
+            ..LlmConfig::default()
+        };
+
+        assert!(config.validate().unwrap_err().contains("credentials"));
+        config.api_key = "test-key".to_string();
+        assert!(config.validate().unwrap_err().contains("consent"));
+        config.remote_consent = true;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_non_local_fallback_endpoint() {
+        let config = LlmConfig {
+            fallback_enabled: true,
+            fallback_base_url: "https://ollama.example/v1".to_string(),
+            ..LlmConfig::default()
+        };
+
+        assert!(config.validate().unwrap_err().contains("must be local"));
     }
 
     #[test]

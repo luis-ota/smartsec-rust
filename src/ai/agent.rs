@@ -26,6 +26,7 @@ impl AIAgent {
             LlmProviderKind::Mock => Box::new(MockProvider),
             LlmProviderKind::Ollama => Box::new(ollama_provider(
                 &cfg.base_url,
+                &cfg.api_key,
                 cfg.timeout_secs,
                 cfg.max_retries,
             )),
@@ -52,6 +53,7 @@ impl AIAgent {
         let fallback_provider = cfg.fallback_enabled.then(|| {
             Box::new(ollama_provider(
                 &cfg.fallback_base_url,
+                "",
                 cfg.timeout_secs,
                 cfg.max_retries,
             )) as Box<dyn LLMProvider>
