@@ -121,12 +121,11 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
             Span::styled(format!("{:<23}", format!("{}:", label)), label_style),
             Span::styled(value.clone(), value_style),
         ]));
-        lines.push(Line::from(""));
     }
 
     lines.push(Line::from(""));
-    let save_w = 10u16;
-    let cancel_w = 12u16;
+    let save_w = 12u16;
+    let cancel_w = 14u16;
     let buttons_y = inner.y + inner.height.saturating_sub(3);
     let save_x = inner.x + inner.width.saturating_sub(save_w + cancel_w + 4);
     let cancel_x = save_x + save_w + 2;
@@ -200,7 +199,7 @@ mod tests {
             use_real_nuclei: false,
         };
         let mut app = AppState::new(config);
-        let backend = TestBackend::new(100, 40);
+        let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal
@@ -213,5 +212,8 @@ mod tests {
         assert!(screen.contains("Configurações"));
         assert!(screen.contains("Consentimento remoto"));
         assert!(screen.contains("Alternativa local"));
+        assert!(screen.contains("Nuclei real"));
+        assert!(screen.contains("[ Salvar ]"));
+        assert!(screen.contains("[ Cancelar ]"));
     }
 }
