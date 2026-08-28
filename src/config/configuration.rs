@@ -49,9 +49,7 @@ impl Configuration {
         crate::config::persistence::save_config_file(
             &crate::config::persistence::PersistedConfig::from(self),
         )?;
-        if !self.llm.api_key.is_empty()
-            && self.llm.provider != crate::config::llm_config::LlmProviderKind::Mock
-        {
+        if self.llm.is_remote() {
             crate::config::persistence::save_api_key(&self.llm.api_key)?;
         }
         Ok(())
@@ -72,9 +70,7 @@ impl Default for Configuration {
 impl From<crate::config::persistence::PersistedConfig> for Configuration {
     fn from(p: crate::config::persistence::PersistedConfig) -> Self {
         let mut llm = p.llm.clone();
-        if llm.api_key.is_empty()
-            && llm.provider != crate::config::llm_config::LlmProviderKind::Mock
-        {
+        if llm.api_key.is_empty() && llm.is_remote() {
             if let Ok(key) = crate::config::persistence::load_api_key() {
                 llm.api_key = key;
             }

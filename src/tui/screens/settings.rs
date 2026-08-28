@@ -13,7 +13,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
     frame.render_widget(bg, area);
 
-    let popup = crate::tui::centered_rect(70, 70, area);
+    let popup = crate::tui::centered_rect(78, 94, area);
     let block = Block::default()
         .borders(Borders::all())
         .border_type(BorderType::Rounded)
@@ -39,20 +39,57 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Color::DarkGray
     };
 
-    let fields = [
-        ("Provider", provider_label, SettingsField::Provider),
+    let api_key = if app.settings_input_api_key.is_empty() {
+        "(not set)".to_string()
+    } else {
+        "*".repeat(app.settings_input_api_key.chars().count().min(24))
+    };
+    let consent = checkbox(app.settings_remote_consent);
+    let fallback = checkbox(app.settings_fallback_enabled);
+    let fields = vec![
+        (
+            "Provider",
+            provider_label.to_string(),
+            SettingsField::Provider,
+        ),
         (
             "Base URL",
-            &app.settings_input_base_url,
+            app.settings_input_base_url.clone(),
             SettingsField::BaseUrl,
         ),
+        ("API Key", api_key, SettingsField::ApiKey),
         (
-            "API Key",
-            &app.settings_input_api_key,
-            SettingsField::ApiKey,
+            "Model",
+            app.settings_input_model.clone(),
+            SettingsField::Model,
         ),
-        ("Model", &app.settings_input_model, SettingsField::Model),
-        ("Real Nuclei", nuclei_status, SettingsField::RealNuclei),
+        (
+            "Timeout (s)",
+            app.settings_input_timeout.clone(),
+            SettingsField::Timeout,
+        ),
+        (
+            "Retries",
+            app.settings_input_retries.clone(),
+            SettingsField::Retries,
+        ),
+        ("Remote consent", consent, SettingsField::RemoteConsent),
+        ("Local fallback", fallback, SettingsField::FallbackEnabled),
+        (
+            "Fallback URL",
+            app.settings_input_fallback_base_url.clone(),
+            SettingsField::FallbackBaseUrl,
+        ),
+        (
+            "Fallback model",
+            app.settings_input_fallback_model.clone(),
+            SettingsField::FallbackModel,
+        ),
+        (
+            "Real Nuclei",
+            nuclei_status.to_string(),
+            SettingsField::RealNuclei,
+        ),
     ];
 
     let mut lines: Vec<Line> = vec![Line::from("")];
@@ -74,7 +111,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled(cursor, Style::default().fg(Color::Cyan)),
             Span::styled(format!("{:<12}", format!("{}:", label)), label_style),
-            Span::styled(value.to_string(), value_style),
+            Span::styled(value.clone(), value_style),
         ]));
         lines.push(Line::from(""));
     }
@@ -122,4 +159,12 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     )]))
     .style(Style::default().bg(Color::Rgb(12, 12, 24)));
     frame.render_widget(cancel_btn, app.settings_cancel_rect);
+}
+
+fn checkbox(enabled: bool) -> String {
+    if enabled {
+        "[X] Enabled".to_string()
+    } else {
+        "[ ] Disabled".to_string()
+    }
 }
