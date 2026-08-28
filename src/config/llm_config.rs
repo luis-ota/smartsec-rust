@@ -75,7 +75,7 @@ impl LlmProviderKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub provider: LlmProviderKind,
     pub base_url: String,
@@ -94,6 +94,24 @@ pub struct LlmConfig {
     pub fallback_base_url: String,
     #[serde(default = "default_fallback_model")]
     pub fallback_model: String,
+}
+
+impl std::fmt::Debug for LlmConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LlmConfig")
+            .field("provider", &self.provider)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &"[REDACTED]")
+            .field("timeout_secs", &self.timeout_secs)
+            .field("max_retries", &self.max_retries)
+            .field("remote_consent", &self.remote_consent)
+            .field("fallback_enabled", &self.fallback_enabled)
+            .field("fallback_base_url", &self.fallback_base_url)
+            .field("fallback_model", &self.fallback_model)
+            .finish()
+    }
 }
 
 impl LlmConfig {
@@ -219,5 +237,18 @@ mod tests {
         let serialized = toml::to_string(&config).unwrap();
         assert!(!serialized.contains("secret-value"));
         assert!(!serialized.contains("api_key"));
+    }
+
+    #[test]
+    fn redacts_api_key_from_debug_output() {
+        let config = LlmConfig {
+            api_key: "secret-value".to_string(),
+            ..LlmConfig::default()
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(!debug.contains("secret-value"));
+        assert!(debug.contains("[REDACTED]"));
     }
 }

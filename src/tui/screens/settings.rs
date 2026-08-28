@@ -168,3 +168,39 @@ fn checkbox(enabled: bool) -> String {
         "[ ] Disabled".to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::execution_type::ExecutionType;
+    use crate::config::llm_config::LlmConfig;
+    use crate::config::Configuration;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn masks_api_key_in_settings_screen() {
+        let config = Configuration {
+            target_url: String::new(),
+            active_tools: Vec::new(),
+            provider_mode: "OpenAI".to_string(),
+            execution_type: ExecutionType::Assisted,
+            llm: LlmConfig {
+                api_key: "secret-value".to_string(),
+                ..LlmConfig::default()
+            },
+            use_real_nuclei: false,
+        };
+        let mut app = AppState::new(config);
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render(&mut app, frame, frame.area()))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+
+        assert!(!screen.contains("secret-value"));
+        assert!(screen.contains("************"));
+    }
+}

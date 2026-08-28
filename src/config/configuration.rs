@@ -46,12 +46,12 @@ impl Configuration {
 
     pub fn save(&self) -> Result<()> {
         self.llm.validate().map_err(anyhow::Error::msg)?;
-        crate::config::persistence::save_config_file(
-            &crate::config::persistence::PersistedConfig::from(self),
-        )?;
         if self.llm.is_remote() {
             crate::config::persistence::save_api_key(&self.llm.api_key)?;
         }
+        crate::config::persistence::save_config_file(
+            &crate::config::persistence::PersistedConfig::from(self),
+        )?;
         Ok(())
     }
 
