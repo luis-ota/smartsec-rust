@@ -210,6 +210,7 @@ mod tests {
         assert!(!screen.contains("secret-value"));
         assert!(screen.contains("********"));
         assert!(screen.contains("Configurações"));
+        assert!(screen.contains("Integrado"));
         assert!(screen.contains("Consentimento remoto"));
         assert!(screen.contains("Alternativa local"));
         assert!(screen.contains("Nuclei real"));

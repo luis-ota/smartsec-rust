@@ -178,7 +178,7 @@ impl AIAgent {
             .filter(|v| v.severity == crate::domain::Severity::High)
             .count();
         format!(
-            "Analysis complete: {} critical and {} high severity vulnerabilities detected.\nImmediate remediation recommended for critical findings.\nReview authentication, input validation, and dependency surface first.",
+            "Análise concluída: {} vulnerabilidades críticas e {} de gravidade alta detectadas.\nRecomenda-se corrigir imediatamente os achados críticos.\nRevise primeiro a autenticação, a validação de entradas e a superfície de dependências.",
             crit, high
         )
     }
@@ -211,7 +211,7 @@ mod tests {
             _prompt: &str,
             model: &str,
         ) -> Result<String, anyhow::Error> {
-            Ok(format!("fallback response from {model}"))
+            Ok(format!("resposta alternativa do modelo {model}"))
         }
     }
 
@@ -229,7 +229,7 @@ mod tests {
 
         let result = agent.analyze_logs(&[]).await;
 
-        assert!(result.contains("Analysis complete"));
+        assert!(result.contains("Análise concluída"));
         assert!(agent
             .execution_history
             .iter()
@@ -251,7 +251,7 @@ mod tests {
 
         let response = agent.execute_with_fallback("logs").await.unwrap();
 
-        assert_eq!(response, "fallback response from llama3.1:8b");
+        assert_eq!(response, "resposta alternativa do modelo llama3.1:8b");
         assert!(agent
             .execution_history
             .iter()
