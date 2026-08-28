@@ -167,6 +167,12 @@ fn validate_endpoint(endpoint: &str, allow_local_http: bool) -> Result<(), Strin
     if url.host_str().is_none() || !matches!(url.scheme(), "http" | "https") {
         return Err("LLM endpoint must use HTTP or HTTPS and include a host".to_string());
     }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("LLM endpoint must not contain embedded credentials".to_string());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("LLM endpoint must not contain a query or fragment".to_string());
+    }
     if url.scheme() != "https" && !(allow_local_http && is_loopback_endpoint(endpoint)) {
         return Err("Remote LLM endpoint must use HTTPS".to_string());
     }
@@ -257,6 +263,25 @@ mod tests {
         };
 
         assert!(config.validate().unwrap_err().contains("must be local"));
+    }
+
+    #[test]
+    fn rejects_endpoint_with_embedded_credentials_or_query() {
+        let mut config = LlmConfig {
+            provider: LlmProviderKind::OpenAI,
+            base_url: "https://user:password@api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key: "test-key".to_string(),
+            remote_consent: true,
+            ..LlmConfig::default()
+        };
+
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .contains("embedded credentials"));
+        config.base_url = "https://api.openai.com/v1?key=value".to_string();
+        assert!(config.validate().unwrap_err().contains("query or fragment"));
     }
 
     #[test]

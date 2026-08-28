@@ -42,7 +42,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let api_key = if app.settings_input_api_key.is_empty() {
         "(not set)".to_string()
     } else {
-        "*".repeat(app.settings_input_api_key.chars().count().min(24))
+        "********".to_string()
     };
     let consent = checkbox(app.settings_remote_consent);
     let fallback = checkbox(app.settings_fallback_enabled);
@@ -201,6 +201,6 @@ mod tests {
         let screen = terminal.backend().to_string();
 
         assert!(!screen.contains("secret-value"));
-        assert!(screen.contains("************"));
+        assert!(screen.contains("********"));
     }
 }
