@@ -183,11 +183,11 @@ fn podman_output(result: ExecutionResult) -> String {
     match result.status {
         ExecutionStatus::Succeeded if cleanup_error.is_empty() => result.stdout,
         ExecutionStatus::Succeeded => format!(
-            "[ERRO] Scanner concluído em {:.2?}, mas o container {} não foi removido.{}",
+            "[ERRO] Varredura concluída em {:.2?}, mas o container {} não foi removido.{}",
             result.duration, result.container_id, cleanup_error
         ),
         ExecutionStatus::Failed(code) => format!(
-            "[ERRO] O container {} do scanner encerrou com status {} após {:.2?}: {}{}",
+            "[ERRO] O container {} da varredura encerrou com status {} após {:.2?}: {}{}",
             result.container_id,
             code.map_or_else(|| "desconhecido".to_owned(), |code| code.to_string()),
             result.duration,
@@ -195,7 +195,7 @@ fn podman_output(result: ExecutionResult) -> String {
             cleanup_error
         ),
         ExecutionStatus::TimedOut => format!(
-            "[ERRO] O container {} do scanner excedeu o tempo limite de 15 minutos após {:.2?}.{}",
+            "[ERRO] O container {} da varredura excedeu o tempo limite de 15 minutos após {:.2?}.{}",
             result.container_id, result.duration, cleanup_error
         ),
     }
@@ -228,11 +228,15 @@ mod tests {
 
     #[test]
     fn formats_podman_failures_in_brazilian_portuguese() {
+        let mut succeeded_result = result(ExecutionStatus::Succeeded);
+        succeeded_result.cleanup_error = Some("detalhe".to_owned());
+        let succeeded = podman_output(succeeded_result);
         let failed = podman_output(result(ExecutionStatus::Failed(None)));
         let timed_out = podman_output(result(ExecutionStatus::TimedOut));
 
+        assert!(succeeded.contains("Varredura concluída"));
         assert!(failed.contains("[ERRO]"));
-        assert!(failed.contains("status desconhecido após"));
-        assert!(timed_out.contains("excedeu o tempo limite de 15 minutos"));
+        assert!(failed.contains("da varredura encerrou com status desconhecido após"));
+        assert!(timed_out.contains("da varredura excedeu o tempo limite de 15 minutos"));
     }
 }
