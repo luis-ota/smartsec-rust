@@ -64,7 +64,12 @@ impl NmapToolSync {
 impl NmapTool {
     pub fn container_arguments(target: &str) -> Vec<String> {
         let (host, port) = split_host_port(target);
-        let mut arguments = vec!["-sV".to_owned(), "-oX".to_owned(), "-".to_owned()];
+        let mut arguments = vec![
+            "-sT".to_owned(),
+            "-sV".to_owned(),
+            "-oX".to_owned(),
+            "-".to_owned(),
+        ];
         if let Some(port) = port {
             arguments.extend(["-p".to_owned(), port]);
         }
@@ -81,7 +86,10 @@ mod tests {
     fn builds_container_arguments_without_a_host_shell() {
         let arguments = NmapTool::container_arguments("https://example.test:8443/path");
 
-        assert_eq!(arguments, ["-sV", "-oX", "-", "-p", "8443", "example.test"]);
+        assert_eq!(
+            arguments,
+            ["-sT", "-sV", "-oX", "-", "-p", "8443", "example.test"]
+        );
     }
 
     #[tokio::test]

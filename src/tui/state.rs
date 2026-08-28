@@ -241,11 +241,7 @@ impl AppState {
     }
 
     pub fn vulnerabilities(&self) -> Vec<Vulnerability> {
-        if self.orchestrator.findings.is_empty() {
-            Vulnerability::mock_all()
-        } else {
-            self.orchestrator.findings.clone()
-        }
+        self.orchestrator.findings.clone()
     }
 
     pub fn ai_summary(&self) -> &str {
@@ -317,12 +313,22 @@ impl AppState {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
         }
 
-        let _exec = self.orchestrator.execute_tool(&tool_info, &target).await;
+        let execution = self.orchestrator.execute_tool(&tool_info, &target).await;
 
-        self.tools[self.exec_current].status = ToolStatus::Done;
+        let failed = execution.execution_error.is_some();
+        self.tools[self.exec_current].status = if failed {
+            ToolStatus::Failed
+        } else {
+            ToolStatus::Done
+        };
         self.tools[self.exec_current].progress = 100;
-        self.exec_logs
-            .push(format!("[{}] OK Scan complete", tool_info.name));
+        if let Some(error) = execution.execution_error {
+            self.exec_logs
+                .push(format!("[{}] FALHA: {}", tool_info.name, error));
+        } else {
+            self.exec_logs
+                .push(format!("[{}] Varredura concluída", tool_info.name));
+        }
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
@@ -333,7 +339,7 @@ impl AppState {
         let all_done = self
             .tools
             .iter()
-            .all(|t| !t.selected || t.status == ToolStatus::Done);
+            .all(|t| !t.selected || matches!(t.status, ToolStatus::Done | ToolStatus::Failed));
         if all_done {
             self.orchestrator.build_findings();
             self.sync_agent_from_orchestrator();
