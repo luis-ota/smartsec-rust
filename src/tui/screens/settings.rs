@@ -19,7 +19,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(Line::from(vec![Span::styled(
-            " Settings ",
+            " Configurações ",
             Style::default().fg(Color::Cyan).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(12, 12, 24)));
@@ -29,9 +29,9 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let labels = LlmProviderKind::all_labels();
     let provider_label = labels[app.settings_provider_idx];
     let nuclei_status = if app.settings_real_nuclei {
-        "[X] Enabled"
+        "[X] Ativo"
     } else {
-        "[ ] Disabled"
+        "[ ] Inativo"
     };
     let _nuclei_color = if app.settings_real_nuclei {
         Color::Green
@@ -40,7 +40,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     };
 
     let api_key = if app.settings_input_api_key.is_empty() {
-        "(not set)".to_string()
+        "(não definida)".to_string()
     } else {
         "********".to_string()
     };
@@ -48,45 +48,53 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let fallback = checkbox(app.settings_fallback_enabled);
     let fields = vec![
         (
-            "Provider",
+            "Provedor",
             provider_label.to_string(),
             SettingsField::Provider,
         ),
         (
-            "Base URL",
+            "URL base",
             app.settings_input_base_url.clone(),
             SettingsField::BaseUrl,
         ),
-        ("API Key", api_key, SettingsField::ApiKey),
+        ("Chave de API", api_key, SettingsField::ApiKey),
         (
-            "Model",
+            "Modelo",
             app.settings_input_model.clone(),
             SettingsField::Model,
         ),
         (
-            "Timeout (s)",
+            "Tempo limite (s)",
             app.settings_input_timeout.clone(),
             SettingsField::Timeout,
         ),
         (
-            "Retries",
+            "Tentativas",
             app.settings_input_retries.clone(),
             SettingsField::Retries,
         ),
-        ("Remote consent", consent, SettingsField::RemoteConsent),
-        ("Local fallback", fallback, SettingsField::FallbackEnabled),
         (
-            "Fallback URL",
+            "Consentimento remoto",
+            consent,
+            SettingsField::RemoteConsent,
+        ),
+        (
+            "Alternativa local",
+            fallback,
+            SettingsField::FallbackEnabled,
+        ),
+        (
+            "URL alternativa",
             app.settings_input_fallback_base_url.clone(),
             SettingsField::FallbackBaseUrl,
         ),
         (
-            "Fallback model",
+            "Modelo alternativo",
             app.settings_input_fallback_model.clone(),
             SettingsField::FallbackModel,
         ),
         (
-            "Real Nuclei",
+            "Nuclei real",
             nuclei_status.to_string(),
             SettingsField::RealNuclei,
         ),
@@ -110,7 +118,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
         lines.push(Line::from(vec![
             Span::styled(cursor, Style::default().fg(Color::Cyan)),
-            Span::styled(format!("{:<12}", format!("{}:", label)), label_style),
+            Span::styled(format!("{:<23}", format!("{}:", label)), label_style),
             Span::styled(value.clone(), value_style),
         ]));
         lines.push(Line::from(""));
@@ -129,7 +137,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     if let Some(ref warning) = app.llm_warning {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled(" WARN: ", Style::default().fg(Color::Yellow)),
+            Span::styled(" AVISO: ", Style::default().fg(Color::Yellow)),
             Span::styled(warning.clone(), Style::default().fg(Color::Yellow)),
         ]));
     }
@@ -141,7 +149,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(para, inner);
 
     let save_btn = Paragraph::new(Line::from(vec![Span::styled(
-        " [ Save ] ",
+        " [ Salvar ] ",
         Style::default()
             .fg(Color::White)
             .bg(Color::Rgb(0, 120, 0))
@@ -151,7 +159,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(save_btn, app.settings_save_rect);
 
     let cancel_btn = Paragraph::new(Line::from(vec![Span::styled(
-        " [ Cancel ] ",
+        " [ Cancelar ] ",
         Style::default()
             .fg(Color::White)
             .bg(Color::Rgb(160, 30, 30))
@@ -163,9 +171,9 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
 fn checkbox(enabled: bool) -> String {
     if enabled {
-        "[X] Enabled".to_string()
+        "[X] Sim".to_string()
     } else {
-        "[ ] Disabled".to_string()
+        "[ ] Não".to_string()
     }
 }
 
@@ -202,5 +210,8 @@ mod tests {
 
         assert!(!screen.contains("secret-value"));
         assert!(screen.contains("********"));
+        assert!(screen.contains("Configurações"));
+        assert!(screen.contains("Consentimento remoto"));
+        assert!(screen.contains("Alternativa local"));
     }
 }
