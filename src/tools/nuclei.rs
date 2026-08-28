@@ -56,8 +56,9 @@ impl NucleiTool {
     pub fn validate_templates(&self) -> anyhow::Result<()> {
         if !self.config.templates_directory.is_dir() {
             bail!(
-                "Templates do Nuclei {} não encontrados em '{}'. Instale essa versão nesse diretório antes de iniciar a varredura",
+                "Templates do Nuclei {} (commit {}) não encontrados em '{}'. Instale essa versão nesse diretório antes de iniciar a varredura",
                 crate::config::nuclei_config::NUCLEI_TEMPLATES_VERSION,
+                crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT,
                 self.config.templates_directory.display()
             );
         }
@@ -153,5 +154,31 @@ mod tests {
         config.templates = vec!["../segredo.yaml".to_owned()];
         let error = NucleiTool::new(config).err().unwrap();
         assert!(error.to_string().contains("Seleção de template inválida"));
+    }
+
+    #[test]
+    fn reports_a_missing_pinned_template_directory() {
+        let config = NucleiConfig {
+            templates_directory: PathBuf::from("/diretorio/definitivamente/ausente"),
+            ..NucleiConfig::default()
+        };
+        let tool = NucleiTool::new(config).unwrap();
+
+        let error = tool.validate_templates().unwrap_err();
+
+        assert!(error.to_string().contains("Templates do Nuclei v10.2.9"));
+        assert!(error.to_string().contains("não encontrados"));
+    }
+
+    #[test]
+    fn pins_the_multi_architecture_image_and_template_commit() {
+        assert_eq!(
+            NUCLEI_IMAGE,
+            "docker.io/projectdiscovery/nuclei@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97"
+        );
+        assert_eq!(
+            crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT,
+            "8adc92372034777469dcef575af21ba56e336f9d"
+        );
     }
 }

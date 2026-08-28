@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const NUCLEI_TEMPLATES_VERSION: &str = "v10.2.9";
+pub const NUCLEI_TEMPLATES_COMMIT: &str = "8adc92372034777469dcef575af21ba56e336f9d";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]

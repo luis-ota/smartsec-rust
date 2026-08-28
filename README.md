@@ -21,7 +21,7 @@ Plataforma de analise de seguranca — prototipo escrito em Rust com interface d
 
 ## Aviso
 
-Este e um **prototipo / prova de conceito**. A maioria das ferramentas de seguranca sao emuladas (mock), mas o **Nuclei executa de verdade** — roda o binario real contra o alvo e faz parsing dos findings a partir da saida JSON.
+Este e um **prototipo / prova de conceito**. A maioria das ferramentas de seguranca sao emuladas (mock), mas o **Nuclei executa de verdade** em um container Podman rootless e produz findings a partir da saida JSONL.
 
 ## Funcionalidades
 
@@ -35,8 +35,27 @@ Este e um **prototipo / prova de conceito**. A maioria das ferramentas de segura
 ## Requisitos
 
 - Rust 1.80+
-- [Nuclei](https://github.com/projectdiscovery/nuclei) (para escaneamento real)
-- Templates do Nuclei (`nuclei -update-templates`)
+- Podman rootless
+- Templates do Nuclei `v10.2.9`, commit `8adc92372034777469dcef575af21ba56e336f9d`
+
+O binario nao e executado no host. A imagem esta fixada pelo digest multi-arquitetura de `projectdiscovery/nuclei:v3.4.10`. Instale os templates fixados no diretorio padrao antes da primeira varredura real:
+
+```bash
+mkdir -p ~/.local/share/smartsec
+git clone https://github.com/projectdiscovery/nuclei-templates.git ~/.local/share/smartsec/nuclei-templates-v10.2.9
+git -C ~/.local/share/smartsec/nuclei-templates-v10.2.9 checkout --detach 8adc92372034777469dcef575af21ba56e336f9d
+```
+
+Concorrencia, timeout de requisicao, timeout total, diretorio e selecao de templates podem ser ajustados em `~/.config/smartsec/config.toml`:
+
+```toml
+[nuclei]
+concurrency = 25
+request_timeout_seconds = 5
+scan_timeout_seconds = 900
+templates_directory = "/home/usuario/.local/share/smartsec/nuclei-templates-v10.2.9"
+templates = ["http/misconfiguration/"]
+```
 
 ## Uso rapido
 
