@@ -103,7 +103,7 @@ impl std::fmt::Debug for LlmConfig {
             .field("provider", &self.provider)
             .field("base_url", &self.base_url)
             .field("model", &self.model)
-            .field("api_key", &"[REDACTED]")
+            .field("api_key", &"[OCULTA]")
             .field("timeout_secs", &self.timeout_secs)
             .field("max_retries", &self.max_retries)
             .field("remote_consent", &self.remote_consent)
@@ -131,23 +131,26 @@ impl LlmConfig {
             validate_model(&self.model)?;
         }
         if self.timeout_secs == 0 || self.timeout_secs > DEFAULT_TIMEOUT_SECS {
-            return Err("LLM timeout must be between 1 and 45 seconds".to_string());
+            return Err("O tempo limite da LLM deve estar entre 1 e 45 segundos".to_string());
         }
         if self.max_retries > 3 {
-            return Err("LLM retries must be between 0 and 3".to_string());
+            return Err("As tentativas da LLM devem estar entre 0 e 3".to_string());
         }
         if self.is_remote() {
             if self.api_key.trim().is_empty() {
-                return Err("Remote LLM credentials are required".to_string());
+                return Err("As credenciais da LLM remota são obrigatórias".to_string());
             }
             if !self.remote_consent {
-                return Err("Explicit consent is required before sending logs remotely".to_string());
+                return Err(
+                    "O consentimento explícito é obrigatório antes do envio remoto de logs"
+                        .to_string(),
+                );
             }
         }
         if self.fallback_enabled {
             validate_endpoint(&self.fallback_base_url, true)?;
             if !is_loopback_endpoint(&self.fallback_base_url) {
-                return Err("Ollama fallback endpoint must be local".to_string());
+                return Err("O endpoint alternativo do Ollama deve ser local".to_string());
             }
             validate_model(&self.fallback_model)?;
         }
@@ -157,24 +160,25 @@ impl LlmConfig {
 
 fn validate_model(model: &str) -> Result<(), String> {
     if model.trim().is_empty() || model.chars().any(char::is_whitespace) {
-        return Err("LLM model must be non-empty and contain no whitespace".to_string());
+        return Err("O modelo da LLM não pode estar vazio nem conter espaços".to_string());
     }
     Ok(())
 }
 
 fn validate_endpoint(endpoint: &str, allow_local_http: bool) -> Result<(), String> {
-    let url = reqwest::Url::parse(endpoint).map_err(|_| "Invalid LLM endpoint URL".to_string())?;
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|_| "A URL do endpoint da LLM é inválida".to_string())?;
     if url.host_str().is_none() || !matches!(url.scheme(), "http" | "https") {
-        return Err("LLM endpoint must use HTTP or HTTPS and include a host".to_string());
+        return Err("O endpoint da LLM deve usar HTTP ou HTTPS e incluir um host".to_string());
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err("LLM endpoint must not contain embedded credentials".to_string());
+        return Err("O endpoint da LLM não deve conter credenciais embutidas".to_string());
     }
     if url.query().is_some() || url.fragment().is_some() {
-        return Err("LLM endpoint must not contain a query or fragment".to_string());
+        return Err("O endpoint da LLM não deve conter consulta ou fragmento".to_string());
     }
     if url.scheme() != "https" && !(allow_local_http && is_loopback_endpoint(endpoint)) {
-        return Err("Remote LLM endpoint must use HTTPS".to_string());
+        return Err("O endpoint remoto da LLM deve usar HTTPS".to_string());
     }
     Ok(())
 }
@@ -219,10 +223,10 @@ mod tests {
         assert!(config.validate().unwrap_err().contains("HTTPS"));
 
         config.base_url = "https://api.openai.com/v1".to_string();
-        assert!(config.validate().unwrap_err().contains("credentials"));
+        assert!(config.validate().unwrap_err().contains("credenciais"));
 
         config.api_key = "test-key".to_string();
-        assert!(config.validate().unwrap_err().contains("consent"));
+        assert!(config.validate().unwrap_err().contains("consentimento"));
         config.remote_consent = true;
         assert!(config.validate().is_ok());
     }
@@ -247,9 +251,9 @@ mod tests {
             ..LlmConfig::default()
         };
 
-        assert!(config.validate().unwrap_err().contains("credentials"));
+        assert!(config.validate().unwrap_err().contains("credenciais"));
         config.api_key = "test-key".to_string();
-        assert!(config.validate().unwrap_err().contains("consent"));
+        assert!(config.validate().unwrap_err().contains("consentimento"));
         config.remote_consent = true;
         assert!(config.validate().is_ok());
     }
@@ -262,7 +266,7 @@ mod tests {
             ..LlmConfig::default()
         };
 
-        assert!(config.validate().unwrap_err().contains("must be local"));
+        assert!(config.validate().unwrap_err().contains("deve ser local"));
     }
 
     #[test]
@@ -279,9 +283,12 @@ mod tests {
         assert!(config
             .validate()
             .unwrap_err()
-            .contains("embedded credentials"));
+            .contains("credenciais embutidas"));
         config.base_url = "https://api.openai.com/v1?key=value".to_string();
-        assert!(config.validate().unwrap_err().contains("query or fragment"));
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .contains("consulta ou fragmento"));
     }
 
     #[test]
@@ -305,6 +312,6 @@ mod tests {
         let debug = format!("{config:?}");
 
         assert!(!debug.contains("secret-value"));
-        assert!(debug.contains("[REDACTED]"));
+        assert!(debug.contains("[OCULTA]"));
     }
 }
