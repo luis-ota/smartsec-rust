@@ -5,7 +5,7 @@ use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::mocks::MockTool;
 use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Orchestrator {
     pub config: Configuration,
@@ -86,23 +86,26 @@ impl Orchestrator {
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
         let real_nuclei = tool_info.is_nuclei() && self.config.use_real_nuclei;
-        let runner: Box<dyn SecurityToolRunner> = if real_nuclei {
-            Box::new(NucleiTool)
-        } else {
-            Box::new(MockTool {
-                name: tool_info.name,
-                description: tool_info.description,
-            })
-        };
-
-        let arguments = runner.configure_command(target);
-        let mut exec = SecurityTool::new(tool_info.name, &arguments);
-        exec.executed_at = chrono_like_now();
-
         if real_nuclei {
-            let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+            let tool = match NucleiTool::new(self.config.nuclei.clone()) {
+                Ok(tool) => tool,
+                Err(error) => {
+                    let mut exec = SecurityTool::new(tool_info.name, "");
+                    exec.output = format!("[ERRO] Configuração inválida do Nuclei: {error:#}");
+                    self.execution_history.push(exec.clone());
+                    return exec;
+                }
+            };
+            let mut exec = SecurityTool::new(tool_info.name, &tool.configure_command(target));
+            exec.executed_at = chrono_like_now();
+            if let Err(error) = tool.validate_templates() {
+                exec.output = format!("[ERRO] {error:#}");
+                self.execution_history.push(exec.clone());
+                return exec;
+            }
+            let executor = PodmanExecutor::new(tool.scan_timeout());
             exec.output = match executor
-                .execute(NUCLEI_IMAGE, &NucleiTool::container_arguments(target))
+                .execute(NUCLEI_IMAGE, &tool.container_arguments(target))
                 .await
             {
                 Ok(result) => podman_output(result),
@@ -113,6 +116,14 @@ impl Orchestrator {
             self.execution_history.push(exec.clone());
             return exec;
         }
+
+        let runner: Box<dyn SecurityToolRunner> = Box::new(MockTool {
+            name: tool_info.name,
+            description: tool_info.description,
+        });
+        let arguments = runner.configure_command(target);
+        let mut exec = SecurityTool::new(tool_info.name, &arguments);
+        exec.executed_at = chrono_like_now();
 
         let container_id = self
             .sandbox
@@ -214,6 +225,7 @@ fn chrono_like_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn result(status: ExecutionStatus) -> ExecutionResult {
         ExecutionResult {

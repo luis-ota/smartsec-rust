@@ -1,5 +1,6 @@
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmConfig;
+use crate::config::nuclei_config::NucleiConfig;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -12,6 +13,8 @@ pub struct PersistedConfig {
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
     pub use_real_nuclei: bool,
+    #[serde(default)]
+    pub nuclei: NucleiConfig,
 }
 
 impl Default for PersistedConfig {
@@ -22,6 +25,7 @@ impl Default for PersistedConfig {
             execution_type: ExecutionType::Assisted,
             llm: LlmConfig::default(),
             use_real_nuclei: false,
+            nuclei: NucleiConfig::default(),
         }
     }
 }
@@ -81,6 +85,7 @@ impl From<crate::config::Configuration> for PersistedConfig {
             execution_type: c.execution_type,
             llm: c.llm,
             use_real_nuclei: c.use_real_nuclei,
+            nuclei: c.nuclei,
         }
     }
 }
@@ -93,6 +98,7 @@ impl From<&crate::config::Configuration> for PersistedConfig {
             execution_type: c.execution_type,
             llm: c.llm.clone(),
             use_real_nuclei: c.use_real_nuclei,
+            nuclei: c.nuclei.clone(),
         }
     }
 }
