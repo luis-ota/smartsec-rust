@@ -95,6 +95,7 @@ fn build_vuln_for_port(
     );
 
     Some(Vulnerability {
+        details: None,
         title: Box::leak(title.into_boxed_str()),
         severity,
         description: Box::leak(description.into_boxed_str()),
