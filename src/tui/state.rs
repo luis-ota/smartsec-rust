@@ -135,7 +135,11 @@ impl AppState {
             .iter()
             .map(|t| ToolItem {
                 tool: t.clone(),
-                selected: true,
+                selected: config.active_tools.is_empty()
+                    || config
+                        .active_tools
+                        .iter()
+                        .any(|active| active.eq_ignore_ascii_case(t.name)),
                 status: ToolStatus::Pending,
                 progress: 0,
             })
@@ -391,6 +395,12 @@ impl AppState {
     }
 
     pub fn init_execution(&mut self) {
+        self.config.active_tools = self
+            .tools
+            .iter()
+            .filter(|tool| tool.selected)
+            .map(|tool| tool.tool.name.to_owned())
+            .collect();
         for t in &mut self.tools {
             if t.selected {
                 t.status = ToolStatus::Pending;
@@ -501,5 +511,26 @@ impl AppState {
 
     pub fn sync_agent_from_orchestrator(&mut self) {
         self.agent.last_analysis = self.orchestrator.last_log.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initializes_tui_with_nmap_selected_from_configuration() {
+        let mut config = Configuration::default();
+        config.active_tools = vec!["nmap".to_owned()];
+
+        let app = AppState::new(config);
+
+        let selected: Vec<_> = app
+            .tools
+            .iter()
+            .filter(|tool| tool.selected)
+            .map(|tool| tool.tool.name)
+            .collect();
+        assert_eq!(selected, ["Nmap"]);
     }
 }
