@@ -346,6 +346,23 @@ impl AppState {
             .all(|t| !t.selected || matches!(t.status, ToolStatus::Done | ToolStatus::Failed));
         if all_done {
             self.orchestrator.build_findings();
+            for execution in &self.orchestrator.execution_history {
+                let Some(error) = &execution.execution_error else {
+                    continue;
+                };
+                let Some(tool) = self
+                    .tools
+                    .iter_mut()
+                    .find(|tool| tool.tool.name == execution.tool_name)
+                else {
+                    continue;
+                };
+                if tool.status != ToolStatus::Failed {
+                    tool.status = ToolStatus::Failed;
+                    self.exec_logs
+                        .push(format!("[{}] FALHA: {}", execution.tool_name, error));
+                }
+            }
             self.sync_agent_from_orchestrator();
             self.step = AppStep::Analysis;
             self.analysis_phase = AnalysisPhase::Scanning;

@@ -148,15 +148,26 @@ impl CommandLineInterface {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let exec = orchestrator.execute_tool(tool, &config.target_url).await;
-            println!(
-                "OK ({}, {} bytes output)",
-                exec.executed_at,
-                exec.output.len()
-            );
+            if let Some(error) = &exec.execution_error {
+                println!("FALHA ({error})");
+            } else {
+                println!(
+                    "OK ({}, {} bytes output)",
+                    exec.executed_at,
+                    exec.output.len()
+                );
+            }
         }
         println!();
 
         orchestrator.build_findings();
+        if let Some(failure) = orchestrator
+            .execution_history
+            .iter()
+            .find_map(|execution| execution.execution_error.as_deref())
+        {
+            anyhow::bail!("A varredura não foi concluída: {failure}");
+        }
         let analysis = orchestrator
             .agent
             .analyze_logs(&orchestrator.findings)
