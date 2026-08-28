@@ -24,7 +24,7 @@ impl HostSentinel {
             "smartsec-host-sentinel-{}-{unique}",
             std::process::id()
         ));
-        fs::write(&path, b"host-only").expect("host sentinel must be created");
+        fs::write(&path, b"host-only").expect("a sentinela do host deve ser criada");
         Self(path)
     }
 }
@@ -39,11 +39,11 @@ impl Drop for HostSentinel {
 async fn isolates_process_captures_io_and_removes_container() {
     match Command::new("podman").arg("--version").output().await {
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            eprintln!("skipping Podman integration test: Podman is not installed");
+            eprintln!("teste de integração do Podman ignorado: Podman não está instalado");
             return;
         }
-        Err(error) => panic!("could not check Podman availability: {error}"),
-        Ok(output) => assert!(output.status.success(), "`podman --version` failed"),
+        Err(error) => panic!("não foi possível verificar a disponibilidade do Podman: {error}"),
+        Ok(output) => assert!(output.status.success(), "falha em `podman --version`"),
     }
 
     let sentinel = HostSentinel::create();
@@ -59,7 +59,7 @@ async fn isolates_process_captures_io_and_removes_container() {
     let result = executor
         .execute(TEST_IMAGE, &command)
         .await
-        .expect("rootless Podman must execute the isolated test container");
+        .expect("o Podman rootless deve executar o container isolado de teste");
 
     assert_eq!(result.status, ExecutionStatus::Succeeded);
     assert_eq!(result.stdout, "isolated stdout");
@@ -70,6 +70,6 @@ async fn isolates_process_captures_io_and_removes_container() {
         .args(["container", "exists", &result.container_id])
         .status()
         .await
-        .expect("Podman must remain available after the test");
-    assert!(!inspect.success(), "test container was not removed");
+        .expect("o Podman deve permanecer disponível após o teste");
+    assert!(!inspect.success(), "o container de teste não foi removido");
 }

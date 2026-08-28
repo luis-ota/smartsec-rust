@@ -96,12 +96,12 @@ impl PodmanExecutor {
                     cleanup_guard.disarm();
                 }
                 return Err(anyhow!(
-                    "Podman did not create image '{image}' within {:.2?}. {}",
+                    "Podman não criou a imagem '{image}' dentro de {:.2?}. {}",
                     self.timeout,
                     cleanup.map_or_else(
-                        || "The partial container was removed.".to_owned(),
+                        || "O container parcial foi removido.".to_owned(),
                         |error| format!(
-                            "Cleanup failed: {error:#}. Run `podman rm --force {name}`."
+                            "Falha na limpeza: {error:#}. Execute `podman rm --force {name}`."
                         )
                     )
                 ));
@@ -114,10 +114,10 @@ impl PodmanExecutor {
                 cleanup_guard.disarm();
             }
             return Err(anyhow!(
-                "Podman could not create the rootless container from image '{image}': {}. Verify the image name, registry access, and rootless storage configuration.{}",
+                "Podman não conseguiu criar o container rootless a partir da imagem '{image}': {}. Verifique o nome da imagem, o acesso ao registro de imagens e a configuração do armazenamento rootless.{}",
                 output_message(&create_output.stderr),
                 cleanup_error.map_or_else(String::new, |error| format!(
-                    " Cleanup also failed: {error:#}. Run `podman rm --force --ignore {name}`."
+                    " A limpeza também falhou: {error:#}. Execute `podman rm --force --ignore {name}`."
                 ))
             ));
         }
@@ -131,10 +131,10 @@ impl PodmanExecutor {
                 cleanup_guard.disarm();
             }
             return Err(anyhow!(
-                "Podman created container '{name}' but returned no container ID. Cleanup result: {}",
+                "Podman criou o container '{name}', mas não retornou o ID do container. Resultado da limpeza: {}",
                 cleanup.map_or_else(
-                    || "container removed".to_owned(),
-                    |error| format!("{error:#}; remove it with `podman rm --force {name}`")
+                    || "container removido".to_owned(),
+                    |error| format!("{error:#}; remova-o com `podman rm --force {name}`")
                 )
             ));
         }
@@ -145,7 +145,7 @@ impl PodmanExecutor {
             .await
             .err()
             .map(|error| {
-                format!("{error:#}. Remove it manually with `podman rm --force {container_id}`")
+                format!("{error:#}. Remova-o manualmente com `podman rm --force {container_id}`")
             });
         if cleanup_error.is_none() {
             cleanup_guard.disarm();
@@ -156,7 +156,7 @@ impl PodmanExecutor {
             Err(error) => {
                 return Err(match cleanup_error {
                     Some(cleanup_error) => anyhow!(
-                        "Podman execution failed: {error:#}. Cleanup also failed: {cleanup_error}"
+                        "Falha na execução pelo Podman: {error:#}. A limpeza também falhou: {cleanup_error}"
                     ),
                     None => error,
                 });
@@ -177,18 +177,20 @@ impl PodmanExecutor {
         command.args(["info", "--format", "{{.Host.Security.Rootless}}"]);
         let output = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output())
             .await
-            .context("Podman did not answer the rootless availability check within 10 seconds")?
+            .context(
+                "Podman não respondeu à verificação de disponibilidade rootless em até 10 segundos",
+            )?
             .with_context(|| self.unavailable_message())?;
 
         if !output.status.success() {
             return Err(anyhow!(
-                "Podman is installed but unavailable: {}. Start the rootless Podman service or run `podman system migrate`, then retry.",
+                "Podman está instalado, mas indisponível: {}. Inicie o serviço rootless do Podman ou execute `podman system migrate` e tente novamente.",
                 output_message(&output.stderr)
             ));
         }
         if String::from_utf8_lossy(&output.stdout).trim() != "true" {
             return Err(anyhow!(
-                "Podman is not running rootless. Run SmartSec as a regular user and verify `podman info --format '{{{{.Host.Security.Rootless}}}}'` returns true."
+                "Podman não está em modo rootless. Execute o SmartSec como usuário comum e confirme que `podman info --format '{{{{.Host.Security.Rootless}}}}'` retorna true."
             ));
         }
         Ok(())
@@ -206,22 +208,22 @@ impl PodmanExecutor {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .context("Podman failed to start the created container")?;
+            .context("Podman não conseguiu iniciar o container criado")?;
         let stdout = child
             .stdout
             .take()
-            .context("could not capture Podman stdout")?;
+            .context("não foi possível capturar o stdout do Podman")?;
         let stderr = child
             .stderr
             .take()
-            .context("could not capture Podman stderr")?;
+            .context("não foi possível capturar o stderr do Podman")?;
         let stdout_task = tokio::spawn(read_stream(stdout));
         let stderr_task = tokio::spawn(read_stream(stderr));
         let started_at = Instant::now();
 
         let status = match tokio::time::timeout(self.timeout, child.wait()).await {
             Ok(wait_result) => {
-                let exit = wait_result.context("failed while waiting for the Podman process")?;
+                let exit = wait_result.context("falha ao aguardar o processo do Podman")?;
                 if exit.success() {
                     ExecutionStatus::Succeeded
                 } else {
@@ -239,12 +241,12 @@ impl PodmanExecutor {
 
         let stdout = stdout_task
             .await
-            .context("stdout capture task failed")?
-            .context("could not read Podman stdout")?;
+            .context("falha na tarefa de captura do stdout")?
+            .context("não foi possível ler o stdout do Podman")?;
         let stderr = stderr_task
             .await
-            .context("stderr capture task failed")?
-            .context("could not read Podman stderr")?;
+            .context("falha na tarefa de captura do stderr")?
+            .context("não foi possível ler o stderr do Podman")?;
 
         Ok((
             String::from_utf8_lossy(&stdout).into_owned(),
@@ -259,13 +261,13 @@ impl PodmanExecutor {
         command.args(["rm", "--force", "--ignore", container_id]);
         let output = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output())
             .await
-            .context("Podman cleanup did not finish within 10 seconds")?
-            .context("failed to invoke Podman cleanup")?;
+            .context("a limpeza do Podman não terminou em até 10 segundos")?
+            .context("falha ao executar a limpeza pelo Podman")?;
         if output.status.success() {
             Ok(())
         } else {
             Err(anyhow!(
-                "Podman failed to remove container {container_id}: {}",
+                "Podman não conseguiu remover o container {container_id}: {}",
                 output_message(&output.stderr)
             ))
         }
@@ -279,7 +281,7 @@ impl PodmanExecutor {
 
     fn unavailable_message(&self) -> String {
         format!(
-            "Podman was not found at '{}'. Install Podman and configure it for rootless use before enabling real scans",
+            "Podman não foi encontrado em '{}'. Instale o Podman e configure o uso rootless antes de habilitar varreduras reais",
             self.binary.display()
         )
     }
@@ -335,7 +337,7 @@ fn output_message(stderr: &[u8]) -> String {
     let message = String::from_utf8_lossy(stderr);
     let message = message.trim();
     if message.is_empty() {
-        "no diagnostic output was provided".to_owned()
+        "nenhuma saída de diagnóstico foi fornecida".to_owned()
     } else {
         message.to_owned()
     }
@@ -516,7 +518,7 @@ mod tests {
         let error = executor.execute("scanner", &[]).await.unwrap_err();
 
         let message = format!("{error:#}");
-        assert!(message.contains("Install Podman"));
+        assert!(message.contains("Instale o Podman"));
         assert!(message.contains("rootless"));
     }
 
