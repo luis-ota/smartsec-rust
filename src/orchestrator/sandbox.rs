@@ -3,11 +3,12 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const PODMAN_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionStatus {
@@ -52,13 +53,18 @@ impl PodmanExecutor {
     ) -> anyhow::Result<ExecutionResult> {
         self.ensure_rootless().await?;
 
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         let name = format!(
-            "smartsec-{}-{}",
+            "smartsec-{}-{created_at}-{}",
             std::process::id(),
             CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
-        let create_output = self
-            .podman_command()
+        let mut cleanup_guard = ContainerCleanup::new(self.binary.clone(), &name);
+        let mut create_command = self.podman_command();
+        create_command
             .args([
                 "create",
                 "--name",
@@ -80,15 +86,36 @@ impl PodmanExecutor {
                 "/tmp:rw,noexec,nosuid,nodev,size=128m",
                 image,
             ])
-            .args(command)
-            .output()
-            .await
-            .with_context(|| self.unavailable_message())?;
+            .args(command);
+        let create_output = match tokio::time::timeout(self.timeout, create_command.output()).await
+        {
+            Ok(output) => output.with_context(|| self.unavailable_message())?,
+            Err(_) => {
+                let cleanup = self.remove_container(&name).await.err();
+                return Err(anyhow!(
+                    "Podman did not create image '{image}' within {:.2?}. {}",
+                    self.timeout,
+                    cleanup.map_or_else(
+                        || "The partial container was removed.".to_owned(),
+                        |error| format!(
+                            "Cleanup failed: {error:#}. Run `podman rm --force {name}`."
+                        )
+                    )
+                ));
+            }
+        };
 
         if !create_output.status.success() {
+            let cleanup_error = self.remove_container(&name).await.err();
+            if cleanup_error.is_none() {
+                cleanup_guard.disarm();
+            }
             return Err(anyhow!(
-                "Podman could not create the rootless container from image '{image}': {}. Verify the image name, registry access, and rootless storage configuration.",
-                output_message(&create_output.stderr)
+                "Podman could not create the rootless container from image '{image}': {}. Verify the image name, registry access, and rootless storage configuration.{}",
+                output_message(&create_output.stderr),
+                cleanup_error.map_or_else(String::new, |error| format!(
+                    " Cleanup also failed: {error:#}. Run `podman rm --force --ignore {name}`."
+                ))
             ));
         }
 
@@ -96,8 +123,13 @@ impl PodmanExecutor {
             .trim()
             .to_owned();
         if container_id.is_empty() {
+            let cleanup = self.remove_container(&name).await.err();
             return Err(anyhow!(
-                "Podman created container '{name}' but returned no container ID; remove it with `podman rm --force {name}`"
+                "Podman created container '{name}' but returned no container ID. Cleanup result: {}",
+                cleanup.map_or_else(
+                    || "container removed".to_owned(),
+                    |error| format!("{error:#}; remove it with `podman rm --force {name}`")
+                )
             ));
         }
 
@@ -109,8 +141,21 @@ impl PodmanExecutor {
             .map(|error| {
                 format!("{error:#}. Remove it manually with `podman rm --force {container_id}`")
             });
+        if cleanup_error.is_none() {
+            cleanup_guard.disarm();
+        }
 
-        let (stdout, stderr, status, duration) = execution?;
+        let (stdout, stderr, status, duration) = match execution {
+            Ok(execution) => execution,
+            Err(error) => {
+                return Err(match cleanup_error {
+                    Some(cleanup_error) => anyhow!(
+                        "Podman execution failed: {error:#}. Cleanup also failed: {cleanup_error}"
+                    ),
+                    None => error,
+                });
+            }
+        };
         Ok(ExecutionResult {
             stdout,
             stderr,
@@ -122,11 +167,11 @@ impl PodmanExecutor {
     }
 
     async fn ensure_rootless(&self) -> anyhow::Result<()> {
-        let output = self
-            .podman_command()
-            .args(["info", "--format", "{{.Host.Security.Rootless}}"])
-            .output()
+        let mut command = self.podman_command();
+        command.args(["info", "--format", "{{.Host.Security.Rootless}}"]);
+        let output = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output())
             .await
+            .context("Podman did not answer the rootless availability check within 10 seconds")?
             .with_context(|| self.unavailable_message())?;
 
         if !output.status.success() {
@@ -179,11 +224,9 @@ impl PodmanExecutor {
             }
             Err(_) => {
                 let _ = child.kill().await;
-                let _ = self
-                    .podman_command()
-                    .args(["kill", container_id])
-                    .output()
-                    .await;
+                let mut kill_command = self.podman_command();
+                kill_command.args(["kill", container_id]);
+                let _ = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, kill_command.output()).await;
                 ExecutionStatus::TimedOut
             }
         };
@@ -206,11 +249,11 @@ impl PodmanExecutor {
     }
 
     async fn remove_container(&self, container_id: &str) -> anyhow::Result<()> {
-        let output = self
-            .podman_command()
-            .args(["rm", "--force", container_id])
-            .output()
+        let mut command = self.podman_command();
+        command.args(["rm", "--force", "--ignore", container_id]);
+        let output = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output())
             .await
+            .context("Podman cleanup did not finish within 10 seconds")?
             .context("failed to invoke Podman cleanup")?;
         if output.status.success() {
             Ok(())
@@ -223,7 +266,9 @@ impl PodmanExecutor {
     }
 
     fn podman_command(&self) -> Command {
-        Command::new(&self.binary)
+        let mut command = Command::new(&self.binary);
+        command.kill_on_drop(true);
+        command
     }
 
     fn unavailable_message(&self) -> String {
@@ -231,6 +276,52 @@ impl PodmanExecutor {
             "Podman was not found at '{}'. Install Podman and configure it for rootless use before enabling real scans",
             self.binary.display()
         )
+    }
+}
+
+struct ContainerCleanup {
+    binary: PathBuf,
+    container_id: Option<String>,
+}
+
+impl ContainerCleanup {
+    fn new(binary: PathBuf, container_id: &str) -> Self {
+        Self {
+            binary,
+            container_id: Some(container_id.to_owned()),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.container_id = None;
+    }
+}
+
+impl Drop for ContainerCleanup {
+    fn drop(&mut self) {
+        let Some(container_id) = self.container_id.take() else {
+            return;
+        };
+        let Ok(mut child) = std::process::Command::new(&self.binary)
+            .args(["rm", "--force", "--ignore", &container_id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return;
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+                Err(_) => break,
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -315,6 +406,14 @@ mod tests {
 
     impl FakePodman {
         fn new(start_script: &str) -> Self {
+            Self::with_cleanup(start_script, "exit 0")
+        }
+
+        fn with_cleanup(start_script: &str, cleanup_script: &str) -> Self {
+            Self::with_scripts("printf 'container-123\\n'", start_script, cleanup_script)
+        }
+
+        fn with_scripts(create_script: &str, start_script: &str, cleanup_script: &str) -> Self {
             let directory = std::env::temp_dir().join(format!(
                 "smartsec-podman-test-{}-{}",
                 std::process::id(),
@@ -325,9 +424,11 @@ mod tests {
             let pending_binary = directory.join("podman.tmp");
             let log = directory.join("calls.log");
             let script = format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  info) printf 'true\\n' ;;\n  create) printf 'container-123\\n' ;;\n  start) {} ;;\n  kill|rm) exit 0 ;;\nesac\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n  info) printf 'true\\n' ;;\n  create) {} ;;\n  start) {} ;;\n  kill) exit 0 ;;\n  rm) {} ;;\nesac\n",
                 log.display(),
-                start_script
+                create_script,
+                start_script,
+                cleanup_script
             );
             fs::write(&pending_binary, script).unwrap();
             let mut permissions = fs::metadata(&pending_binary).unwrap().permissions();
@@ -342,7 +443,7 @@ mod tests {
         }
 
         fn calls(&self) -> String {
-            fs::read_to_string(&self.log).unwrap()
+            fs::read_to_string(&self.log).unwrap_or_default()
         }
     }
 
@@ -376,7 +477,7 @@ mod tests {
         assert!(calls.contains("--cap-drop all"));
         assert!(calls.contains("--read-only"));
         assert!(calls.contains("example/scanner:1 scan target"));
-        assert!(calls.contains("rm --force container-123"));
+        assert!(calls.contains("rm --force --ignore container-123"));
     }
 
     #[tokio::test]
@@ -388,7 +489,7 @@ mod tests {
 
         assert_eq!(result.status, ExecutionStatus::Failed(Some(7)));
         assert_eq!(result.stderr, "invalid target");
-        assert!(fake.calls().contains("rm --force container-123"));
+        assert!(fake.calls().contains("rm --force --ignore container-123"));
     }
 
     #[tokio::test]
@@ -401,7 +502,7 @@ mod tests {
         assert_eq!(result.status, ExecutionStatus::TimedOut);
         let calls = fake.calls();
         assert!(calls.contains("kill container-123"));
-        assert!(calls.contains("rm --force container-123"));
+        assert!(calls.contains("rm --force --ignore container-123"));
     }
 
     #[tokio::test]
@@ -416,5 +517,65 @@ mod tests {
         let message = format!("{error:#}");
         assert!(message.contains("Install Podman"));
         assert!(message.contains("rootless"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_still_removes_container() {
+        let fake = FakePodman::new("exec sleep 10");
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(30));
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        for _ in 0..50 {
+            if fake.calls().contains("start --attach container-123") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        task.abort();
+        let _ = task.await;
+
+        for _ in 0..50 {
+            if fake.calls().contains("rm --force --ignore smartsec-") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(fake.calls().contains("rm --force --ignore smartsec-"));
+    }
+
+    #[tokio::test]
+    async fn exposes_cleanup_failure_with_manual_remediation() {
+        let fake = FakePodman::with_cleanup("exit 0", "printf 'storage busy' >&2; exit 1");
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(1));
+
+        let result = executor.execute("scanner", &[]).await.unwrap();
+
+        let cleanup_error = result.cleanup_error.unwrap();
+        assert!(cleanup_error.contains("storage busy"));
+        assert!(cleanup_error.contains("podman rm --force container-123"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_creation_removes_container_by_name() {
+        let fake = FakePodman::with_scripts("exec sleep 10", "exit 0", "exit 0");
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(30));
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        for _ in 0..50 {
+            if fake.calls().contains("create --name smartsec-") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        task.abort();
+        let _ = task.await;
+
+        for _ in 0..50 {
+            if fake.calls().contains("rm --force --ignore smartsec-") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(fake.calls().contains("rm --force --ignore smartsec-"));
     }
 }
