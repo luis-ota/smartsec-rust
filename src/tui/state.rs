@@ -47,6 +47,12 @@ pub enum SettingsField {
     BaseUrl,
     ApiKey,
     Model,
+    Timeout,
+    Retries,
+    RemoteConsent,
+    FallbackEnabled,
+    FallbackBaseUrl,
+    FallbackModel,
     RealNuclei,
 }
 
@@ -95,6 +101,12 @@ pub struct AppState {
     pub settings_input_base_url: String,
     pub settings_input_api_key: String,
     pub settings_input_model: String,
+    pub settings_input_timeout: String,
+    pub settings_input_retries: String,
+    pub settings_remote_consent: bool,
+    pub settings_fallback_enabled: bool,
+    pub settings_input_fallback_base_url: String,
+    pub settings_input_fallback_model: String,
     pub settings_real_nuclei: bool,
     pub llm_warning: Option<String>,
     pub exec_paused: bool,
@@ -158,6 +170,12 @@ impl AppState {
                 config.use_real_nuclei,
             )
         };
+        let timeout = config.llm.timeout_secs.to_string();
+        let retries = config.llm.max_retries.to_string();
+        let remote_consent = config.llm.remote_consent;
+        let fallback_enabled = config.llm.fallback_enabled;
+        let fallback_base_url = config.llm.fallback_base_url.clone();
+        let fallback_model = config.llm.fallback_model.clone();
 
         Self {
             config,
@@ -197,6 +215,12 @@ impl AppState {
             settings_input_base_url: base_url,
             settings_input_api_key: api_key,
             settings_input_model: model,
+            settings_input_timeout: timeout,
+            settings_input_retries: retries,
+            settings_remote_consent: remote_consent,
+            settings_fallback_enabled: fallback_enabled,
+            settings_input_fallback_base_url: fallback_base_url,
+            settings_input_fallback_model: fallback_model,
             settings_real_nuclei: real_nuclei,
             llm_warning: None,
             exec_paused: false,
@@ -445,20 +469,51 @@ impl AppState {
     pub fn apply_settings(&mut self) {
         let provider =
             LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
-        self.config.llm.provider = provider;
+        let mut updated = self.config.clone();
+        updated.llm.provider = provider;
         if self.settings_input_base_url.is_empty() {
-            self.config.llm.base_url = provider.default_base_url().to_string();
+            updated.llm.base_url = provider.default_base_url().to_string();
         } else {
-            self.config.llm.base_url = self.settings_input_base_url.clone();
+            updated.llm.base_url = self.settings_input_base_url.clone();
         }
-        self.config.llm.api_key = self.settings_input_api_key.clone();
+        updated.llm.api_key = self.settings_input_api_key.clone();
         if self.settings_input_model.is_empty() {
-            self.config.llm.model = provider.default_model().to_string();
+            updated.llm.model = provider.default_model().to_string();
         } else {
-            self.config.llm.model = self.settings_input_model.clone();
+            updated.llm.model = self.settings_input_model.clone();
         }
-        self.config.use_real_nuclei = self.settings_real_nuclei;
-        self.config.save();
+        let timeout = match self.settings_input_timeout.parse() {
+            Ok(value) => value,
+            Err(_) => {
+                self.llm_warning = Some("Timeout must be a whole number".to_string());
+                return;
+            }
+        };
+        let retries = match self.settings_input_retries.parse() {
+            Ok(value) => value,
+            Err(_) => {
+                self.llm_warning = Some("Retries must be a whole number".to_string());
+                return;
+            }
+        };
+        updated.llm.timeout_secs = timeout;
+        updated.llm.max_retries = retries;
+        updated.llm.remote_consent = self.settings_remote_consent;
+        updated.llm.fallback_enabled = self.settings_fallback_enabled;
+        updated.llm.fallback_base_url = self.settings_input_fallback_base_url.clone();
+        updated.llm.fallback_model = self.settings_input_fallback_model.clone();
+        updated.use_real_nuclei = self.settings_real_nuclei;
+        if let Err(error) = updated.save() {
+            self.llm_warning = Some(error.to_string());
+            return;
+        }
+
+        updated.provider_mode = format!("{:?}", provider);
+        self.config = updated;
+        self.orchestrator.config = self.config.clone();
+        self.orchestrator.agent = AIAgent::from_config(&self.config.llm);
+        self.agent = AIAgent::from_config(&self.config.llm);
+        self.llm_warning = None;
         self.show_settings = false;
     }
 
