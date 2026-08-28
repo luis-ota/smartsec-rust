@@ -403,11 +403,15 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
+
+    static FAKE_PODMAN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct FakePodman {
         directory: PathBuf,
         binary: PathBuf,
         log: PathBuf,
+        _test_lock: MutexGuard<'static, ()>,
     }
 
     impl FakePodman {
@@ -420,6 +424,9 @@ mod tests {
         }
 
         fn with_scripts(create_script: &str, start_script: &str, cleanup_script: &str) -> Self {
+            let test_lock = FAKE_PODMAN_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let directory = std::env::temp_dir().join(format!(
                 "smartsec-podman-test-{}-{}",
                 std::process::id(),
@@ -445,6 +452,7 @@ mod tests {
                 directory,
                 binary,
                 log,
+                _test_lock: test_lock,
             }
         }
 
