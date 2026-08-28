@@ -105,7 +105,11 @@ impl Orchestrator {
             }
             let executor = PodmanExecutor::new(tool.scan_timeout());
             exec.output = match executor
-                .execute(NUCLEI_IMAGE, &tool.container_arguments(target))
+                .execute_with_read_only_mounts(
+                    NUCLEI_IMAGE,
+                    &tool.container_arguments(target),
+                    &[(tool.templates_directory(), "/templates")],
+                )
                 .await
             {
                 Ok(result) => podman_output(result),
@@ -206,7 +210,7 @@ fn podman_output(result: ExecutionResult) -> String {
             cleanup_error
         ),
         ExecutionStatus::TimedOut => format!(
-            "[ERRO] O container {} da varredura excedeu o tempo limite de 15 minutos após {:.2?}.{}",
+            "[ERRO] O container {} da varredura excedeu o tempo limite configurado após {:.2?}.{}",
             result.container_id, result.duration, cleanup_error
         ),
     }
@@ -249,6 +253,6 @@ mod tests {
         assert!(succeeded.contains("Varredura concluída"));
         assert!(failed.contains("[ERRO]"));
         assert!(failed.contains("da varredura encerrou com status desconhecido após"));
-        assert!(timed_out.contains("da varredura excedeu o tempo limite de 15 minutos"));
+        assert!(timed_out.contains("da varredura excedeu o tempo limite configurado"));
     }
 }

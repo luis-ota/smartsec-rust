@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -46,11 +46,23 @@ impl PodmanExecutor {
         Self { binary, timeout }
     }
 
+    #[allow(dead_code)]
     pub async fn execute(
         &self,
         image: &str,
         command: &[String],
     ) -> anyhow::Result<ExecutionResult> {
+        self.execute_with_read_only_mounts(image, command, &[])
+            .await
+    }
+
+    pub async fn execute_with_read_only_mounts(
+        &self,
+        image: &str,
+        command: &[String],
+        mounts: &[(&Path, &str)],
+    ) -> anyhow::Result<ExecutionResult> {
+        let mounts = validate_mounts(mounts)?;
         self.ensure_rootless().await?;
 
         let created_at = SystemTime::now()
@@ -64,29 +76,30 @@ impl PodmanExecutor {
         );
         let mut cleanup_guard = ContainerCleanup::new(self.binary.clone(), &name);
         let mut create_command = self.podman_command();
-        create_command
-            .args([
-                "create",
-                "--name",
-                &name,
-                "--network",
-                "slirp4netns",
-                "--memory",
-                "512m",
-                "--cpus",
-                "1",
-                "--pids-limit",
-                "256",
-                "--cap-drop",
-                "all",
-                "--security-opt",
-                "no-new-privileges",
-                "--read-only",
-                "--tmpfs",
-                "/tmp:rw,noexec,nosuid,nodev,size=128m",
-                image,
-            ])
-            .args(command);
+        create_command.args([
+            "create",
+            "--name",
+            &name,
+            "--network",
+            "slirp4netns",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1",
+            "--pids-limit",
+            "256",
+            "--cap-drop",
+            "all",
+            "--security-opt",
+            "no-new-privileges",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,nodev,size=128m",
+        ]);
+        for mount in mounts {
+            create_command.args(["--mount", &mount]);
+        }
+        create_command.arg(image).args(command);
         let create_output = match tokio::time::timeout(self.timeout, create_command.output()).await
         {
             Ok(output) => output.with_context(|| self.unavailable_message())?,
@@ -287,6 +300,37 @@ impl PodmanExecutor {
     }
 }
 
+fn validate_mounts(mounts: &[(&Path, &str)]) -> anyhow::Result<Vec<String>> {
+    mounts
+        .iter()
+        .map(|(source, destination)| {
+            if !source.is_dir() {
+                return Err(anyhow!(
+                    "Diretório para montagem no Podman não encontrado: '{}'",
+                    source.display()
+                ));
+            }
+            if !destination.starts_with('/') || destination.contains(',') {
+                return Err(anyhow!(
+                    "Destino inválido para montagem no Podman: '{destination}'"
+                ));
+            }
+            let source = source
+                .canonicalize()
+                .with_context(|| format!("não foi possível resolver '{}'", source.display()))?;
+            let source = source.to_string_lossy();
+            if source.contains(',') {
+                return Err(anyhow!(
+                    "O caminho para montagem no Podman não pode conter vírgula: '{source}'"
+                ));
+            }
+            Ok(format!(
+                "type=bind,source={source},destination={destination},ro=true"
+            ))
+        })
+        .collect()
+}
+
 struct ContainerCleanup {
     binary: PathBuf,
     container_id: Option<String>,
@@ -481,6 +525,39 @@ mod tests {
         assert!(calls.contains("--read-only"));
         assert!(calls.contains("example/scanner:1 scan target"));
         assert!(calls.contains("rm --force --ignore container-123"));
+    }
+
+    #[tokio::test]
+    async fn mounts_a_validated_directory_as_read_only() {
+        let fake = FakePodman::new("exit 0");
+        let templates = fake.directory.join("templates");
+        fs::create_dir(&templates).unwrap();
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(1));
+
+        executor
+            .execute_with_read_only_mounts("scanner", &[], &[(&templates, "/templates")])
+            .await
+            .unwrap();
+
+        assert!(fake.calls().contains(&format!(
+            "--mount type=bind,source={},destination=/templates,ro=true",
+            templates.display()
+        )));
+    }
+
+    #[tokio::test]
+    async fn rejects_a_missing_mount_before_starting_podman() {
+        let fake = FakePodman::new("exit 0");
+        let missing = fake.directory.join("ausente");
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(1));
+
+        let error = executor
+            .execute_with_read_only_mounts("scanner", &[], &[(&missing, "/templates")])
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("não encontrado"));
+        assert!(fake.calls().is_empty());
     }
 
     #[tokio::test]

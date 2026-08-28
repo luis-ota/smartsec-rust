@@ -20,6 +20,10 @@ impl NucleiTool {
         Duration::from_secs(self.config.scan_timeout_seconds)
     }
 
+    pub fn templates_directory(&self) -> &Path {
+        &self.config.templates_directory
+    }
+
     pub fn configure_command(&self, target: &str) -> String {
         self.container_arguments(target).join(" ")
     }
