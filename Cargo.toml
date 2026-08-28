@@ -17,3 +17,4 @@ keyring = "3"
 anyhow = "1"
 async-trait = "0.1"
 arboard = "3"
+quick-xml = { version = "0.38", features = ["serialize"] }
