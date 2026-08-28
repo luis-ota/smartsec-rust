@@ -2,6 +2,7 @@ use crate::ai::agent::AIAgent;
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::nuclei_parser::{NucleiFinding, NucleiParseError};
 use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::mocks::MockTool;
 use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE};
@@ -16,6 +17,8 @@ pub struct Orchestrator {
     pub paused: bool,
     pub cancelled: bool,
     pub last_log: String,
+    pub nuclei_findings: Vec<NucleiFinding>,
+    pub nuclei_parse_errors: Vec<NucleiParseError>,
 }
 
 impl Orchestrator {
@@ -32,6 +35,8 @@ impl Orchestrator {
             paused: false,
             cancelled: false,
             last_log: String::new(),
+            nuclei_findings: Vec::new(),
+            nuclei_parse_errors: Vec::new(),
         }
     }
 
@@ -151,11 +156,20 @@ impl Orchestrator {
 
     pub fn build_findings(&mut self) {
         let mut real_findings: Vec<Vulnerability> = Vec::new();
+        self.nuclei_findings.clear();
+        self.nuclei_parse_errors.clear();
         for exec in &self.execution_history {
             if exec.tool_name == "Nuclei" && !exec.output.is_empty() {
-                let parsed =
+                let report =
                     crate::orchestrator::nuclei_parser::parse_nuclei_findings(&exec.output);
-                real_findings.extend(parsed);
+                real_findings.extend(
+                    report
+                        .findings
+                        .iter()
+                        .map(|finding| finding.vulnerability.clone()),
+                );
+                self.nuclei_findings.extend(report.findings);
+                self.nuclei_parse_errors.extend(report.errors);
             }
         }
         let mut findings = real_findings;
@@ -196,24 +210,54 @@ fn podman_output(result: ExecutionResult) -> String {
         .map(|error| format!(" Falha na limpeza: {error}"))
         .unwrap_or_default();
     match result.status {
-        ExecutionStatus::Succeeded if cleanup_error.is_empty() => result.stdout,
-        ExecutionStatus::Succeeded => format!(
-            "[ERRO] Varredura concluída em {:.2?}, mas o container {} não foi removido.{}",
-            result.duration, result.container_id, cleanup_error
+        ExecutionStatus::Succeeded if cleanup_error.is_empty() => {
+            append_diagnostic(result.stdout, "[AVISO] stderr do Nuclei", &result.stderr)
+        }
+        ExecutionStatus::Succeeded => append_diagnostic(
+            result.stdout,
+            "[ERRO] limpeza do container",
+            &format!(
+                "Varredura concluída em {:.2?}, mas o container {} não foi removido.{}",
+                result.duration, result.container_id, cleanup_error
+            ),
         ),
-        ExecutionStatus::Failed(code) => format!(
-            "[ERRO] O container {} da varredura encerrou com status {} após {:.2?}: {}{}",
-            result.container_id,
-            code.map_or_else(|| "desconhecido".to_owned(), |code| code.to_string()),
-            result.duration,
-            result.stderr.trim(),
-            cleanup_error
+        ExecutionStatus::Failed(code) => append_diagnostic(
+            result.stdout,
+            "[ERRO] execução do Nuclei",
+            &format!(
+                "O container {} encerrou com status {} após {:.2?}: {}{}",
+                result.container_id,
+                code.map_or_else(|| "desconhecido".to_owned(), |code| code.to_string()),
+                result.duration,
+                result.stderr.trim(),
+                cleanup_error
+            ),
         ),
-        ExecutionStatus::TimedOut => format!(
-            "[ERRO] O container {} da varredura excedeu o tempo limite configurado após {:.2?}.{}",
-            result.container_id, result.duration, cleanup_error
+        ExecutionStatus::TimedOut => append_diagnostic(
+            result.stdout,
+            "[ERRO] tempo limite do Nuclei",
+            &format!(
+                "O container {} excedeu o tempo limite configurado após {:.2?}. stderr: {}{}",
+                result.container_id,
+                result.duration,
+                result.stderr.trim(),
+                cleanup_error
+            ),
         ),
     }
+}
+
+fn append_diagnostic(mut stdout: String, label: &str, diagnostic: &str) -> String {
+    if diagnostic.trim().is_empty() {
+        return stdout;
+    }
+    if !stdout.is_empty() && !stdout.ends_with('\n') {
+        stdout.push('\n');
+    }
+    stdout.push_str(label);
+    stdout.push_str(": ");
+    stdout.push_str(diagnostic.trim());
+    stdout
 }
 
 fn chrono_like_now() -> String {
@@ -251,8 +295,22 @@ mod tests {
         let timed_out = podman_output(result(ExecutionStatus::TimedOut));
 
         assert!(succeeded.contains("Varredura concluída"));
-        assert!(failed.contains("[ERRO]"));
-        assert!(failed.contains("da varredura encerrou com status desconhecido após"));
-        assert!(timed_out.contains("da varredura excedeu o tempo limite configurado"));
+        assert!(failed.contains("[ERRO] execução do Nuclei"));
+        assert!(failed.contains("encerrou com status desconhecido após"));
+        assert!(failed.contains("saída externa"));
+        assert!(timed_out.contains("excedeu o tempo limite configurado"));
+    }
+
+    #[test]
+    fn preserves_partial_stdout_without_hiding_failure_or_stderr() {
+        let mut failed_result = result(ExecutionStatus::Failed(Some(7)));
+        failed_result.stdout = "{\"template-id\":\"parcial\"}\n".to_owned();
+
+        let output = podman_output(failed_result);
+
+        assert!(output.starts_with("{\"template-id\":\"parcial\"}"));
+        assert!(output.contains("[ERRO] execução do Nuclei"));
+        assert!(output.contains("status 7"));
+        assert!(output.contains("saída externa"));
     }
 }
