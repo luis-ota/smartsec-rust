@@ -11,6 +11,9 @@ pub struct Configuration {
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
     pub use_real_nuclei: bool,
+    /// Modo demo: quando `true`, o pipeline usa achados simulados em vez de executar ferramentas reais.
+    /// Só deve ser ativado explicitamente via `--demo`. Padrão: `false`.
+    pub demo_mode: bool,
 }
 
 impl Configuration {
@@ -23,6 +26,7 @@ impl Configuration {
             execution_type: persisted.execution_type,
             llm: persisted.llm.clone(),
             use_real_nuclei: persisted.use_real_nuclei,
+            demo_mode: false,
         })
     }
 
@@ -92,6 +96,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             execution_type: p.execution_type,
             llm,
             use_real_nuclei: p.use_real_nuclei,
+            demo_mode: false,
         }
     }
 }

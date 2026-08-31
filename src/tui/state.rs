@@ -241,8 +241,8 @@ impl AppState {
     }
 
     pub fn vulnerabilities(&self) -> Vec<Vulnerability> {
-        if self.orchestrator.findings.is_empty() {
-            Vulnerability::mock_all()
+        if self.orchestrator.findings.is_empty() && self.config.demo_mode {
+            crate::domain::demo_findings::demo_all(&self.config.target_url)
         } else {
             self.orchestrator.findings.clone()
         }

@@ -96,7 +96,7 @@ impl Orchestrator {
 
         let arguments = runner.configure_command(target);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
-        exec.executed_at = chrono_like_now();
+        exec.executed_at = now_iso8601();
 
         let container_id = self
             .sandbox
@@ -118,18 +118,38 @@ impl Orchestrator {
         exec
     }
 
+    /// Constrói os achados reais a partir da execução dos scanners.
+    ///
+    /// **Nunca** inclui achados simulados. Para modo demo, use [`build_demo_findings`].
     pub fn build_findings(&mut self) {
+        let target = self.config.target_url.clone();
         let mut real_findings: Vec<Vulnerability> = Vec::new();
         for exec in &self.execution_history {
             if exec.tool_name == "Nuclei" && !exec.output.is_empty() {
-                let parsed =
-                    crate::orchestrator::nuclei_parser::parse_nuclei_findings(&exec.output);
+                let parsed = crate::orchestrator::nuclei_parser::parse_nuclei_findings(
+                    &exec.output,
+                    &target,
+                );
+                real_findings.extend(parsed);
+            }
+            if exec.tool_name == "Nmap" && !exec.output.is_empty() {
+                let parsed = crate::orchestrator::nmap_parser::parse_nmap_findings(
+                    &exec.output,
+                    &target,
+                );
                 real_findings.extend(parsed);
             }
         }
-        let mut findings = real_findings;
-        findings.extend(Vulnerability::mock_all());
-        self.findings = findings;
+        self.findings = real_findings;
+    }
+
+    /// Constrói achados de demonstração.
+    ///
+    /// Só deve ser chamada quando `config.demo_mode == true`.
+    /// Todos os achados têm `source: FindingSource::Demo`.
+    pub fn build_demo_findings(&mut self) {
+        let target = self.config.target_url.clone();
+        self.findings = crate::domain::demo_findings::demo_all(&target);
     }
 
     #[allow(dead_code)]
@@ -152,19 +172,77 @@ impl Orchestrator {
             }
             let _exec = self.execute_tool(tool, &target).await;
         }
-        self.build_findings();
+
+        if self.config.demo_mode {
+            self.build_demo_findings();
+        } else {
+            self.build_findings();
+        }
+
         let analysis = self.agent.analyze_logs(&self.findings).await;
         self.last_log = analysis;
         Ok(self.findings.clone())
     }
 }
 
-fn chrono_like_now() -> String {
+fn now_iso8601() -> String {
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let secs = dur.as_secs();
-    let mins = (secs / 60) % 60;
-    let hours = (secs / 3600) % 24;
-    format!("2026-01-01T{:02}:{:02}:00Z", hours, mins)
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    format!("2026-01-01T{:02}:{:02}:{:02}Z", h, m, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Configuration;
+    use crate::domain::vulnerability::FindingSource;
+
+    fn make_config(demo: bool) -> Configuration {
+        let mut c = Configuration::default();
+        c.demo_mode = demo;
+        c.target_url = "http://test.local".to_string();
+        c
+    }
+
+    #[test]
+    fn build_findings_never_includes_demo() {
+        let mut orch = Orchestrator::new(make_config(false));
+        orch.build_findings();
+        for f in &orch.findings {
+            assert_ne!(
+                f.source,
+                FindingSource::Demo,
+                "Execução real não deve conter achados de demo"
+            );
+        }
+    }
+
+    #[test]
+    fn build_demo_findings_only_includes_demo() {
+        let mut orch = Orchestrator::new(make_config(true));
+        orch.build_demo_findings();
+        assert!(!orch.findings.is_empty(), "Modo demo deve ter achados");
+        for f in &orch.findings {
+            assert_eq!(
+                f.source,
+                FindingSource::Demo,
+                "Modo demo deve ter apenas achados Demo"
+            );
+        }
+    }
+
+    #[test]
+    fn real_run_empty_history_produces_no_findings() {
+        let mut orch = Orchestrator::new(make_config(false));
+        orch.build_findings();
+        assert!(
+            orch.findings.is_empty(),
+            "Sem execuções, não deve haver achados"
+        );
+    }
 }
