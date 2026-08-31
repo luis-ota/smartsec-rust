@@ -45,18 +45,44 @@ impl CommandLineInterface {
     }
 
     pub async fn run(self) -> Result<()> {
-        if let Some(url) = extract_arg(&self.arguments, "--url") {
-            let mut initial_config = config::Configuration::load(&[])?;
-            initial_config.target_url = url;
-            initial_config.execution_type = ExecutionType::Auto;
-            if self.arguments.iter().any(|a| a == "--auto") {
-                return Self::run_headless(initial_config).await;
-            }
-            return Self::display_tui(initial_config).await;
+        let initial_config = config::Configuration::load(&self.arguments)?;
+
+        if initial_config.show_help {
+            Self::print_help();
+            return Ok(());
         }
 
-        let initial_config = config::Configuration::load(&self.arguments)?;
+        if initial_config.show_version {
+            println!("smartsec v{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+
+        if initial_config.execution_type == ExecutionType::Auto {
+            return Self::run_headless(initial_config).await;
+        }
+
         Self::display_tui(initial_config).await
+    }
+
+    fn print_help() {
+        println!("SmartSec - Security Analysis Platform");
+        println!();
+        println!("USO:");
+        println!("  smartsec [OPCOES]");
+        println!();
+        println!("OPCOES:");
+        println!("  -u, --url <URL>               Define a URL/alvo para o scan");
+        println!("  -a, --auto                    Executa em modo automatizado (headless)");
+        println!("  -d, --demo                    Executa em modo demonstrativo (dados simulados)");
+        println!("  -p, --provider <NOME>         Provedor de IA (mock, ollama, openai)");
+        println!("  -o, --output <ARQUIVO>        Salva o relatorio Markdown no caminho especificado");
+        println!("  -h, --help                    Exibe esta ajuda");
+        println!("  -v, --version                 Exibe a versao");
+        println!();
+        println!("EXEMPLOS:");
+        println!("  smartsec");
+        println!("  smartsec --auto --url http://target.local");
+        println!("  smartsec --auto --url http://target.local --demo -o relatorio.md");
     }
 
     async fn display_tui(initial_config: config::Configuration) -> Result<()> {
@@ -205,11 +231,12 @@ impl CommandLineInterface {
         println!("  Container: {}", orchestrator.container_id());
         println!();
         println!("═══════════════════════════════════════════════════════════");
-        println!("  OK Relatorio exportado: smartsec-report.md");
+        let out_file = config.output_file.as_deref().unwrap_or("smartsec-report.md");
+        let _ = std::fs::write(out_file, &report);
+        println!("  OK Relatorio exportado: {}", out_file);
         println!("  OK Analise concluida.");
         println!("═══════════════════════════════════════════════════════════");
 
-        let _ = report;
         Ok(())
     }
 }
