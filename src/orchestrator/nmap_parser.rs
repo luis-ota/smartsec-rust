@@ -1,9 +1,21 @@
 #![allow(dead_code)]
 
 use crate::domain::severity::Severity;
-use crate::domain::vulnerability::Vulnerability;
+use crate::domain::vulnerability::{FindingSource, Vulnerability};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn parse_nmap_findings(xml: &str) -> Vec<Vulnerability> {
+fn now_iso8601() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    format!("2026-01-01T{:02}:{:02}:{:02}Z", h, m, s)
+}
+
+pub fn parse_nmap_findings(xml: &str, target: &str) -> Vec<Vulnerability> {
     let mut vulns = Vec::new();
     let mut seen_ports: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -19,6 +31,7 @@ pub fn parse_nmap_findings(xml: &str) -> Vec<Vulnerability> {
                     product.as_deref(),
                     version.as_deref(),
                     xml,
+                    target,
                 ) {
                     vulns.push(v);
                 }
@@ -52,6 +65,7 @@ fn build_vuln_for_port(
     product: Option<&str>,
     version: Option<&str>,
     full_xml: &str,
+    target: &str,
 ) -> Option<Vulnerability> {
     let banner_product = extract_banner_product(full_xml);
     let banner_version = extract_banner_version(full_xml);
@@ -94,13 +108,22 @@ fn build_vuln_for_port(
         if !ver_str.is_empty() { format!(" versão {}", ver_str) } else { String::new() }
     );
 
+    let evidence = format!(
+        "nmap port={}/tcp service={} product={} version={}",
+        port, svc, prod_str, ver_str
+    );
+
     Some(Vulnerability {
-        title: Box::leak(title.into_boxed_str()),
+        title,
         severity,
-        description: Box::leak(description.into_boxed_str()),
-        tool: "Nmap",
-        recommendation: Box::leak(recommendation.into_boxed_str()),
-        didactic: Box::leak(didactic.into_boxed_str()),
+        description,
+        tool: "Nmap".to_string(),
+        recommendation,
+        didactic,
+        source: FindingSource::Real,
+        target: target.to_string(),
+        evidence,
+        detected_at: now_iso8601(),
     })
 }
 
