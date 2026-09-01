@@ -183,8 +183,11 @@ impl CommandLineInterface {
         }
         println!();
 
-        let report =
-            crate::report::ReportGenerator::compile_report(&config, &orchestrator.findings);
+        let report = crate::report::ReportGenerator::compile_report(
+            &config,
+            &orchestrator.findings,
+            &orchestrator.decision_history,
+        );
         let crit = orchestrator
             .findings
             .iter()
