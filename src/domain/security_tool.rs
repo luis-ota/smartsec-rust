@@ -11,6 +11,11 @@ impl ToolInfo {
     pub fn all() -> Vec<Self> {
         vec![
             ToolInfo {
+                name: "Nmap",
+                description: "Network mapper and service detector",
+                category: "Recon",
+            },
+            ToolInfo {
                 name: "ZAP",
                 description: "OWASP ZAP - Web app scanner",
                 category: "DAST",
@@ -55,6 +60,10 @@ impl ToolInfo {
 
     pub fn is_nuclei(&self) -> bool {
         self.name == "Nuclei"
+    }
+
+    pub fn is_nmap(&self) -> bool {
+        self.name == "Nmap"
     }
 }
 

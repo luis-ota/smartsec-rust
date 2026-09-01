@@ -2,7 +2,9 @@ use crate::ai::agent::AIAgent;
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
 use crate::tools::mocks::MockTool;
+use crate::tools::nmap::NmapTool;
 use crate::tools::nuclei::NucleiTool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,10 +13,12 @@ pub struct Orchestrator {
     pub agent: AIAgent,
     pub sandbox: Box<dyn crate::orchestrator::sandbox::SandboxManager>,
     pub execution_history: Vec<SecurityTool>,
+    pub decision_history: Vec<DecisionRecord>,
     pub findings: Vec<Vulnerability>,
     pub paused: bool,
     pub cancelled: bool,
     pub last_log: String,
+    latest_nmap_output: Option<String>,
 }
 
 impl Orchestrator {
@@ -27,10 +31,12 @@ impl Orchestrator {
             agent,
             sandbox,
             execution_history: Vec::new(),
+            decision_history: Vec::new(),
             findings: Vec::new(),
             paused: false,
             cancelled: false,
             last_log: String::new(),
+            latest_nmap_output: None,
         }
     }
 
@@ -71,6 +77,13 @@ impl Orchestrator {
         self.cancelled = true;
     }
 
+    pub fn reset_run_state(&mut self) {
+        self.execution_history.clear();
+        self.decision_history.clear();
+        self.findings.clear();
+        self.latest_nmap_output = None;
+    }
+
     pub fn determine_next_step(&self) -> String {
         if self
             .findings
@@ -84,15 +97,18 @@ impl Orchestrator {
     }
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
-        let runner: Box<dyn SecurityToolRunner> =
-            if tool_info.is_nuclei() && self.config.use_real_nuclei {
-                Box::new(NucleiTool)
-            } else {
-                Box::new(MockTool {
-                    name: tool_info.name,
-                    description: tool_info.description,
-                })
-            };
+        if tool_info.is_nmap() {
+            return self.execute_nmap(tool_info, target).await;
+        }
+
+        if tool_info.is_nuclei() && self.config.use_real_nuclei {
+            return self.execute_nuclei_with_plan(tool_info, target).await;
+        }
+
+        let runner: Box<dyn SecurityToolRunner> = Box::new(MockTool {
+            name: tool_info.name,
+            description: tool_info.description,
+        });
 
         let arguments = runner.configure_command(target);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
@@ -118,18 +134,103 @@ impl Orchestrator {
         exec
     }
 
+    async fn execute_nmap(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
+        let runner = NmapTool;
+        let arguments = runner.configure_command(target);
+        let mut exec = SecurityTool::new(tool_info.name, &arguments);
+        exec.executed_at = chrono_like_now();
+
+        let container_id = self
+            .sandbox
+            .create_isolated_environment(tool_info.category)
+            .unwrap_or_else(|_| format!("fallback-{}", tool_info.name.to_lowercase()));
+        let _ = self.sandbox.run_command(&container_id, &arguments);
+        let _ = self.sandbox.destroy_environment(&container_id);
+
+        match runner.parse_output(target).await {
+            Ok(output) => {
+                self.latest_nmap_output = Some(output.clone());
+                exec.output = output;
+            }
+            Err(e) => {
+                exec.output = format!("[ERROR] {}", e);
+                self.latest_nmap_output = Some(exec.output.clone());
+            }
+        }
+
+        self.execution_history.push(exec.clone());
+        exec
+    }
+
+    async fn execute_nuclei_with_plan(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
+        let ai_response = self.request_nuclei_plan(target).await;
+        let decision = decide_nuclei_plan(
+            target,
+            self.latest_nmap_output.as_deref(),
+            ai_response.as_deref(),
+            &self.agent.model,
+        );
+        self.decision_history.push(decision.clone());
+
+        let runner = NucleiTool;
+        let arguments = runner.configure_command_with_plan(target, &decision.plan);
+        let mut exec = SecurityTool::new(tool_info.name, &arguments);
+        exec.executed_at = chrono_like_now();
+
+        if !decision.plan.should_run {
+            exec.output = format!("Nuclei skipped by policy: {}", decision.justification);
+            self.execution_history.push(exec.clone());
+            return exec;
+        }
+
+        let container_id = self
+            .sandbox
+            .create_isolated_environment(tool_info.category)
+            .unwrap_or_else(|_| format!("fallback-{}", tool_info.name.to_lowercase()));
+        let _ = self.sandbox.run_command(&container_id, &arguments);
+        let _ = self.sandbox.destroy_environment(&container_id);
+
+        match runner.parse_output_with_plan(target, &decision.plan).await {
+            Ok(output) => {
+                exec.output = output;
+            }
+            Err(e) => {
+                exec.output = format!("[ERROR] {}", e);
+            }
+        }
+
+        self.execution_history.push(exec.clone());
+        exec
+    }
+
+    async fn request_nuclei_plan(&self, target: &str) -> Option<String> {
+        let prompt = format!(
+            "Analyze this Nmap XML and return only JSON with fields should_run, profiles, concurrency, timeout_seconds, justification. Allowed profiles are http-misconfiguration, http-exposed-panels, ssh-exposure, database-exposure, generic. Never invent command flags or shell commands. Target: {}\n\nNmap log:\n{}",
+            target,
+            self.latest_nmap_output.as_deref().unwrap_or_default()
+        );
+
+        self.agent
+            .provider
+            .execute_prompt(&prompt, &self.agent.model)
+            .await
+            .ok()
+    }
+
     pub fn build_findings(&mut self) {
         let mut real_findings: Vec<Vulnerability> = Vec::new();
         for exec in &self.execution_history {
+            if exec.tool_name == "Nmap" && !exec.output.is_empty() {
+                let parsed = crate::orchestrator::nmap_parser::parse_nmap_findings(&exec.output);
+                real_findings.extend(parsed);
+            }
             if exec.tool_name == "Nuclei" && !exec.output.is_empty() {
                 let parsed =
                     crate::orchestrator::nuclei_parser::parse_nuclei_findings(&exec.output);
                 real_findings.extend(parsed);
             }
         }
-        let mut findings = real_findings;
-        findings.extend(Vulnerability::mock_all());
-        self.findings = findings;
+        self.findings = real_findings;
     }
 
     #[allow(dead_code)]

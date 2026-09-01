@@ -3,47 +3,88 @@
 use crate::domain::severity::Severity;
 use crate::domain::vulnerability::Vulnerability;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NmapPortFinding {
+    pub port: String,
+    pub service: Option<String>,
+    pub product: Option<String>,
+    pub version: Option<String>,
+}
+
+pub fn parse_nmap_ports(xml: &str) -> Vec<NmapPortFinding> {
+    let mut ports = Vec::new();
+    let mut current: Option<NmapPortFinding> = None;
+    let mut current_open = false;
+
+    for line in xml.lines() {
+        let trimmed = line.trim();
+
+        if let Some(port) = extract_attr(trimmed, "portid") {
+            if let Some(existing) = current.take() {
+                if current_open {
+                    ports.push(existing);
+                }
+            }
+            current = Some(NmapPortFinding {
+                port,
+                service: None,
+                product: None,
+                version: None,
+            });
+            current_open = false;
+        }
+
+        if trimmed.contains("<state") && trimmed.contains("state=\"open\"") {
+            current_open = true;
+        }
+
+        if let Some(ref mut finding) = current {
+            if trimmed.contains("<service") {
+                finding.service = extract_attr(trimmed, "name");
+                finding.product = extract_attr(trimmed, "product");
+                finding.version = extract_attr(trimmed, "version");
+            }
+        }
+
+        if trimmed.contains("</port>") {
+            if let Some(existing) = current.take() {
+                if current_open {
+                    ports.push(existing);
+                }
+            }
+            current_open = false;
+        }
+    }
+
+    if let Some(existing) = current.take() {
+        if current_open {
+            ports.push(existing);
+        }
+    }
+
+    ports
+}
+
 pub fn parse_nmap_findings(xml: &str) -> Vec<Vulnerability> {
     let mut vulns = Vec::new();
     let mut seen_ports: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for line in xml.lines() {
-        let trimmed = line.trim();
-        if let Some(port_id) = extract_port_open(trimmed) {
-            if !seen_ports.contains(&port_id) {
-                seen_ports.insert(port_id.clone());
-                let (service, product, version) = extract_service_info(trimmed);
-                if let Some(v) = build_vuln_for_port(
-                    &port_id,
-                    service.as_deref(),
-                    product.as_deref(),
-                    version.as_deref(),
-                    xml,
-                ) {
-                    vulns.push(v);
-                }
+    for port in parse_nmap_ports(xml) {
+        if !seen_ports.contains(&port.port) {
+            seen_ports.insert(port.port.clone());
+            if let Some(v) = build_vuln_for_port(
+                &port.port,
+                port.service.as_deref(),
+                port.product.as_deref(),
+                port.version.as_deref(),
+                xml,
+            ) {
+                vulns.push(v);
             }
         }
     }
 
     vulns
-}
-
-fn extract_port_open(line: &str) -> Option<String> {
-    if !line.contains("<state state=\"open\"") {
-        return None;
-    }
-    if !line.contains("portid=\"") {
-        return None;
-    }
-    let start = line.find("portid=\"")? + "portid=\"".len();
-    let rest = &line[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-fn extract_service_info(_line: &str) -> (Option<String>, Option<String>, Option<String>) {
-    (None, None, None)
 }
 
 fn build_vuln_for_port(
@@ -102,6 +143,19 @@ fn build_vuln_for_port(
         recommendation: Box::leak(recommendation.into_boxed_str()),
         didactic: Box::leak(didactic.into_boxed_str()),
     })
+}
+
+fn extract_attr(line: &str, attr: &str) -> Option<String> {
+    let needle = format!("{}=\"", attr);
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    let value = rest[..end].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn decode_entities(s: &str) -> String {
@@ -228,4 +282,39 @@ fn severity_for_port(port: &str, product: &str, version: &str) -> Severity {
         return Severity::Medium;
     }
     Severity::Info
+}
+
+#[cfg(test)]
+mod tests {
+        use super::{parse_nmap_findings, parse_nmap_ports};
+
+        #[test]
+        fn parses_multiline_nmap_xml_ports() {
+                let xml = r#"
+<nmaprun>
+    <host>
+        <ports>
+            <port protocol="tcp" portid="22">
+                <state state="open" reason="syn-ack" />
+                <service name="ssh" product="OpenSSH" version="9.6p1" />
+            </port>
+            <port protocol="tcp" portid="80">
+                <state state="open" reason="syn-ack" />
+                <service name="http" product="nginx" version="1.24.0" />
+            </port>
+        </ports>
+    </host>
+</nmaprun>
+"#;
+
+                let ports = parse_nmap_ports(xml);
+                assert_eq!(ports.len(), 2);
+                assert_eq!(ports[0].port, "22");
+                assert_eq!(ports[0].service.as_deref(), Some("ssh"));
+                assert_eq!(ports[1].port, "80");
+                assert_eq!(ports[1].product.as_deref(), Some("nginx"));
+
+                let vulns = parse_nmap_findings(xml);
+                assert_eq!(vulns.len(), 2);
+        }
 }
