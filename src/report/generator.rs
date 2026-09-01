@@ -1,14 +1,35 @@
 use crate::config::Configuration;
+use crate::orchestrator::decision::DecisionRecord;
 use crate::domain::vulnerability::Vulnerability;
 
 pub struct ReportGenerator;
 
 impl ReportGenerator {
-    pub fn compile_report(config: &Configuration, vulns: &[Vulnerability]) -> String {
+    pub fn compile_report(
+        config: &Configuration,
+        vulns: &[Vulnerability],
+        decisions: &[DecisionRecord],
+    ) -> String {
         let mut md = String::new();
         md.push_str("# SmartSec - Relatório de Análise de Segurança\n\n");
         md.push_str(&format!("**URL Alvo:** {}\n\n", config.target_url));
         md.push_str(&format!("**Modo:** {}\n\n", config.execution_type));
+        if !decisions.is_empty() {
+            md.push_str("## Decisões Dinâmicas\n\n");
+            for decision in decisions {
+                md.push_str(&format!("### {}\n\n", decision.summary()));
+                md.push_str(&format!("- Modelo: {}\n", decision.model));
+                md.push_str(&format!("- Justificativa: {}\n", decision.justification));
+                md.push_str(&format!("- Parâmetros: {}\n", decision.parameters.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(", ")));
+                if !decision.evidence.is_empty() {
+                    md.push_str("- Evidências:\n");
+                    for item in &decision.evidence {
+                        md.push_str(&format!("  - {}\n", item));
+                    }
+                }
+                md.push('\n');
+            }
+        }
         md.push_str("## Resumo\n\n");
         md.push_str(&format!("- Total de vulnerabilidades: {}\n", vulns.len()));
         let crit = vulns
