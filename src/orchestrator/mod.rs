@@ -1,4 +1,5 @@
 pub mod nmap_parser;
+pub mod decision;
 pub mod nuclei_parser;
 pub mod pipeline;
 pub mod sandbox;

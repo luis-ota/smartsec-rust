@@ -399,8 +399,7 @@ impl AppState {
         self.exec_cancelled = false;
         self.orchestrator.paused = false;
         self.orchestrator.cancelled = false;
-        self.orchestrator.execution_history.clear();
-        self.orchestrator.findings.clear();
+        self.orchestrator.reset_run_state();
 
         self.analysis_phase = AnalysisPhase::Scanning;
         self.analysis_tick = 0;
@@ -439,7 +438,11 @@ impl AppState {
     }
 
     pub fn export_md(&self) -> String {
-        crate::report::ReportGenerator::compile_report(&self.config, &self.vulnerabilities())
+        crate::report::ReportGenerator::compile_report(
+            &self.config,
+            &self.vulnerabilities(),
+            &self.orchestrator.decision_history,
+        )
     }
 
     pub fn apply_settings(&mut self) {
