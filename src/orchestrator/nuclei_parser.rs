@@ -1,5 +1,5 @@
 use crate::domain::severity::Severity;
-use crate::domain::vulnerability::Vulnerability;
+use crate::domain::vulnerability::{FindingProvenance, Vulnerability};
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
@@ -62,21 +62,17 @@ pub fn parse_nuclei_findings(jsonl_output: &str) -> Vec<Vulnerability> {
             result.info.name,
             result.matcher_name.as_deref().unwrap_or("")
         );
-        let title_static: &'static str = Box::leak(title.into_boxed_str());
-
         let desc = if result.info.description.len() > 300 {
             result.info.description[..300].to_string()
         } else {
             result.info.description.clone()
         };
-        let desc_static: &'static str = Box::leak(desc.into_boxed_str());
 
         let rec = format!(
             "Review and implement the missing security measure: {}. Apply recommended fixes for {}.",
             result.info.name,
             result.matched_at
         );
-        let rec_static: &'static str = Box::leak(rec.into_boxed_str());
 
         let didactic = format!(
             "Nuclei identified: {}\n\nSeverity: {}\nMatched at: {}\nDescription: {}\n\nThis finding was detected by the Nuclei scanner using template-based vulnerability detection. Nuclei runs community-curated templates that check for known CVEs, misconfigurations, and security weaknesses.\n\nRecommendation: Apply the recommended fix and verify with a rescan.",
@@ -85,18 +81,31 @@ pub fn parse_nuclei_findings(jsonl_output: &str) -> Vec<Vulnerability> {
             result.matched_at,
             result.info.description
         );
-        let didactic_static: &'static str = Box::leak(didactic.into_boxed_str());
-
         vulns.push(Vulnerability {
+            title,
+            description: desc,
+            tool: "Nuclei".to_owned(),
+            recommendation: rec,
+            didactic,
+            provenance: FindingProvenance {
+                source: "scanner".to_owned(),
+                tool: "Nuclei".to_owned(),
+                target: result.host.clone(),
+                evidence: format!("matched-at={}; matcher={}", result.matched_at, result.matcher_name.as_deref().unwrap_or("")),
+                timestamp: timestamp_now(),
+            },
             details: None,
-            title: title_static,
             severity,
-            description: desc_static,
-            tool: "Nuclei",
-            recommendation: rec_static,
-            didactic: didactic_static,
         });
     }
 
     vulns
+}
+
+fn timestamp_now() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{seconds}")
 }

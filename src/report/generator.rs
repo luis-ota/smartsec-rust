@@ -9,6 +9,14 @@ impl ReportGenerator {
         md.push_str("# SmartSec - Relatório de Análise de Segurança\n\n");
         md.push_str(&format!("**URL Alvo:** {}\n\n", config.target_url));
         md.push_str(&format!("**Modo:** {}\n\n", config.execution_type));
+        md.push_str(&format!(
+            "**Dados:** {}\n\n",
+            if config.demo_mode {
+                "DEMO (achados simulados)"
+            } else {
+                "REAL"
+            }
+        ));
         md.push_str("## Resumo\n\n");
         md.push_str(&format!("- Total de vulnerabilidades: {}\n", vulns.len()));
         let crit = vulns
@@ -39,6 +47,7 @@ impl ReportGenerator {
                 md.push_str(&format!("### [{}] {}\n\n", v.severity.label(), v.title));
                 md.push_str(&format!("{}\n\n", v.description));
                 md.push_str(&format!("**Ferramenta:** {}\n\n", v.tool));
+                append_provenance(&mut md, v);
                 append_details(&mut md, v);
                 md.push_str(&format!("**Recomendação:** {}\n\n", v.recommendation));
             }
@@ -63,6 +72,10 @@ impl ReportGenerator {
                 append_details(&mut md, vulnerability);
             }
         }
+        md.push_str("\n## Proveniência dos achados\n\n");
+        for vulnerability in vulns {
+            append_provenance(&mut md, vulnerability);
+        }
         md
     }
 
@@ -75,6 +88,14 @@ impl ReportGenerator {
     pub fn export_to_pdf(_content: &str, _path: &str) -> Result<(), anyhow::Error> {
         Err(anyhow::anyhow!("PDF export not yet implemented"))
     }
+}
+
+fn append_provenance(md: &mut String, vulnerability: &Vulnerability) {
+    let provenance = &vulnerability.provenance;
+    md.push_str(&format!(
+        "**Origem:** {}  \n**Alvo:** {}  \n**Evidência:** {}  \n**Timestamp:** {}\n\n",
+        provenance.source, provenance.target, provenance.evidence, provenance.timestamp
+    ));
 }
 
 fn append_details(md: &mut String, vulnerability: &Vulnerability) {

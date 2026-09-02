@@ -1,5 +1,5 @@
 use crate::domain::severity::Severity;
-use crate::domain::vulnerability::{FindingDetails, Vulnerability};
+use crate::domain::vulnerability::{FindingDetails, FindingProvenance, Vulnerability};
 use anyhow::Context;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -114,18 +114,33 @@ pub fn parse_nmap_findings(xml: &str) -> anyhow::Result<Vec<Vulnerability>> {
             }
 
             findings.push(Vulnerability {
-                title: "Porta aberta detectada pelo Nmap",
+                title: "Porta aberta detectada pelo Nmap".to_owned(),
                 severity: Severity::Info,
-                description: "O Nmap identificou uma porta aberta no alvo analisado.",
-                tool: "Nmap",
-                recommendation: "Confirme se o serviço deve estar exposto e restrinja o acesso por firewall quando aplicável.",
-                didactic: "Uma porta aberta indica que um serviço aceita conexões nesse endereço. Valide a necessidade da exposição e mantenha o serviço atualizado.",
+                description: "O Nmap identificou uma porta aberta no alvo analisado.".to_owned(),
+                tool: "Nmap".to_owned(),
+                recommendation: "Confirme se o serviço deve estar exposto e restrinja o acesso por firewall quando aplicável.".to_owned(),
+                didactic: "Uma porta aberta indica que um serviço aceita conexões nesse endereço. Valide a necessidade da exposição e mantenha o serviço atualizado.".to_owned(),
+                provenance: FindingProvenance {
+                    source: "scanner".to_owned(),
+                    tool: "Nmap".to_owned(),
+                    target: host_name.clone(),
+                    evidence: format!("porta={}/{}; estado=open", port.port, port.protocol),
+                    timestamp: timestamp_now(),
+                },
                 details: Some(build_details(&scan.version, &host_name, port)),
             });
         }
     }
 
     Ok(findings)
+}
+
+fn timestamp_now() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{seconds}")
 }
 
 fn build_details(tool_version: &str, host: &str, port: NmapPort) -> FindingDetails {
@@ -204,6 +219,9 @@ mod tests {
         assert!(details.evidence.contains("motivo=syn-ack"));
         assert!(details.evidence.contains("script ssh-hostkey="));
         assert_eq!(details.tool_version, "7.95");
+        assert_eq!(ssh.provenance.source, "scanner");
+        assert_eq!(ssh.provenance.tool, "Nmap");
+        assert!(!ssh.provenance.timestamp.is_empty());
     }
 
     #[test]

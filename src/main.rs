@@ -50,6 +50,7 @@ impl CommandLineInterface {
             initial_config.target_url = url;
             initial_config.execution_type = ExecutionType::Auto;
             apply_cli_tool_selection(&mut initial_config, &self.arguments);
+            initial_config.demo_mode = self.arguments.iter().any(|a| a == "--demo");
             if self.arguments.iter().any(|a| a == "--auto") {
                 return Self::run_headless(initial_config).await;
             }
@@ -58,6 +59,7 @@ impl CommandLineInterface {
 
         let mut initial_config = config::Configuration::load(&self.arguments)?;
         apply_cli_tool_selection(&mut initial_config, &self.arguments);
+        initial_config.demo_mode = self.arguments.iter().any(|a| a == "--demo");
         Self::display_tui(initial_config).await
     }
 
@@ -114,6 +116,11 @@ impl CommandLineInterface {
         println!("═══════════════════════════════════════════════════════════");
         println!("  Target: {}", config.target_url);
         println!("  Mode:   {}", config.execution_type);
+        if config.demo_mode {
+            println!("  Dados:  DEMO (findings simulados; nenhum scanner real)");
+        } else {
+            println!("  Dados:  REAL");
+        }
         println!("  LLM:    {:?} ({})", config.llm.provider, config.llm.model);
         println!(
             "  Nuclei: {}",
@@ -274,6 +281,14 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert!(selected[0].is_nmap());
+    }
+
+    #[test]
+    fn demo_requires_explicit_cli_flag() {
+        let mut config = config::Configuration::default();
+        config.demo_mode = ["--demo".to_owned()].iter().any(|arg| arg == "--demo");
+        assert!(config.demo_mode);
+        assert!(!config::Configuration::default().demo_mode);
     }
 }
 
