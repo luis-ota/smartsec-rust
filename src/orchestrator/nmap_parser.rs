@@ -297,3 +297,38 @@ mod tests {
                 assert_eq!(vulns.len(), 2);
         }
 }
+
+#[cfg(test)]
+mod tests {
+        use super::{parse_nmap_findings, parse_nmap_ports};
+
+        #[test]
+        fn parses_multiline_nmap_xml_ports() {
+                let xml = r#"
+<nmaprun>
+    <host>
+        <ports>
+            <port protocol="tcp" portid="22">
+                <state state="open" reason="syn-ack" />
+                <service name="ssh" product="OpenSSH" version="9.6p1" />
+            </port>
+            <port protocol="tcp" portid="80">
+                <state state="open" reason="syn-ack" />
+                <service name="http" product="nginx" version="1.24.0" />
+            </port>
+        </ports>
+    </host>
+</nmaprun>
+"#;
+
+                let ports = parse_nmap_ports(xml);
+                assert_eq!(ports.len(), 2);
+                assert_eq!(ports[0].port, "22");
+                assert_eq!(ports[0].service.as_deref(), Some("ssh"));
+                assert_eq!(ports[1].port, "80");
+                assert_eq!(ports[1].product.as_deref(), Some("nginx"));
+
+                let vulns = parse_nmap_findings(xml);
+                assert_eq!(vulns.len(), 2);
+        }
+}
