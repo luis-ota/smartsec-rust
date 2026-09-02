@@ -198,6 +198,9 @@ mod tests {
             },
             use_real_nuclei: false,
             demo_mode: false,
+            output_file: None,
+            show_help: false,
+            show_version: false,
         };
         let mut app = AppState::new(config);
         let backend = TestBackend::new(80, 24);
