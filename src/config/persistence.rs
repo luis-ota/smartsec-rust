@@ -43,16 +43,15 @@ pub fn load_config_file() -> PersistedConfig {
     PersistedConfig::default()
 }
 
-pub fn save_config_file(cfg: &PersistedConfig) {
+pub fn save_config_file(cfg: &PersistedConfig) -> std::io::Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::create_dir_all(parent)?;
     }
     let mut cfg_no_key = cfg.clone();
     cfg_no_key.llm.api_key = String::new();
-    if let Ok(content) = toml::to_string_pretty(&cfg_no_key) {
-        let _ = fs::write(&path, content);
-    }
+    let content = toml::to_string_pretty(&cfg_no_key).map_err(std::io::Error::other)?;
+    fs::write(&path, content)
 }
 
 const KEYRING_SERVICE: &str = "smartsec";

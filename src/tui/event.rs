@@ -330,7 +330,13 @@ fn handle_settings_key(app: &mut AppState, key: event::KeyEvent) -> bool {
                 SettingsField::Provider => SettingsField::BaseUrl,
                 SettingsField::BaseUrl => SettingsField::ApiKey,
                 SettingsField::ApiKey => SettingsField::Model,
-                SettingsField::Model => SettingsField::RealNuclei,
+                SettingsField::Model => SettingsField::Timeout,
+                SettingsField::Timeout => SettingsField::Retries,
+                SettingsField::Retries => SettingsField::RemoteConsent,
+                SettingsField::RemoteConsent => SettingsField::FallbackEnabled,
+                SettingsField::FallbackEnabled => SettingsField::FallbackBaseUrl,
+                SettingsField::FallbackBaseUrl => SettingsField::FallbackModel,
+                SettingsField::FallbackModel => SettingsField::RealNuclei,
                 SettingsField::RealNuclei => SettingsField::Provider,
             };
         }
@@ -340,7 +346,13 @@ fn handle_settings_key(app: &mut AppState, key: event::KeyEvent) -> bool {
                 SettingsField::BaseUrl => SettingsField::Provider,
                 SettingsField::ApiKey => SettingsField::BaseUrl,
                 SettingsField::Model => SettingsField::ApiKey,
-                SettingsField::RealNuclei => SettingsField::Model,
+                SettingsField::Timeout => SettingsField::Model,
+                SettingsField::Retries => SettingsField::Timeout,
+                SettingsField::RemoteConsent => SettingsField::Retries,
+                SettingsField::FallbackEnabled => SettingsField::RemoteConsent,
+                SettingsField::FallbackBaseUrl => SettingsField::FallbackEnabled,
+                SettingsField::FallbackModel => SettingsField::FallbackBaseUrl,
+                SettingsField::RealNuclei => SettingsField::FallbackModel,
             };
         }
         KeyCode::Enter => match app.settings_field {
@@ -353,6 +365,12 @@ fn handle_settings_key(app: &mut AppState, key: event::KeyEvent) -> bool {
             }
             SettingsField::RealNuclei => {
                 app.settings_real_nuclei = !app.settings_real_nuclei;
+            }
+            SettingsField::RemoteConsent => {
+                app.settings_remote_consent = !app.settings_remote_consent;
+            }
+            SettingsField::FallbackEnabled => {
+                app.settings_fallback_enabled = !app.settings_fallback_enabled;
             }
             _ => {
                 app.apply_settings();
@@ -384,12 +402,26 @@ fn handle_settings_key(app: &mut AppState, key: event::KeyEvent) -> bool {
             SettingsField::BaseUrl => app.settings_input_base_url.push(c),
             SettingsField::ApiKey => app.settings_input_api_key.push(c),
             SettingsField::Model => app.settings_input_model.push(c),
+            SettingsField::Timeout if c.is_ascii_digit() => app.settings_input_timeout.push(c),
+            SettingsField::Retries if c.is_ascii_digit() => app.settings_input_retries.push(c),
+            SettingsField::FallbackBaseUrl => app.settings_input_fallback_base_url.push(c),
+            SettingsField::FallbackModel => app.settings_input_fallback_model.push(c),
             SettingsField::RealNuclei => {
                 if c == ' ' {
                     app.settings_real_nuclei = !app.settings_real_nuclei;
                 }
             }
-            SettingsField::Provider => {}
+            SettingsField::RemoteConsent => {
+                if c == ' ' {
+                    app.settings_remote_consent = !app.settings_remote_consent;
+                }
+            }
+            SettingsField::FallbackEnabled => {
+                if c == ' ' {
+                    app.settings_fallback_enabled = !app.settings_fallback_enabled;
+                }
+            }
+            SettingsField::Provider | SettingsField::Timeout | SettingsField::Retries => {}
         },
         KeyCode::Backspace => match app.settings_field {
             SettingsField::BaseUrl => {
@@ -413,6 +445,10 @@ fn handle_settings_key(app: &mut AppState, key: event::KeyEvent) -> bool {
                     app.settings_input_model = s;
                 }
             }
+            SettingsField::Timeout => pop_char(&mut app.settings_input_timeout),
+            SettingsField::Retries => pop_char(&mut app.settings_input_retries),
+            SettingsField::FallbackBaseUrl => pop_char(&mut app.settings_input_fallback_base_url),
+            SettingsField::FallbackModel => pop_char(&mut app.settings_input_fallback_model),
             _ => {}
         },
         _ => {}
@@ -425,8 +461,20 @@ fn handle_settings_paste(app: &mut AppState, text: &str) {
         SettingsField::BaseUrl => app.settings_input_base_url.push_str(text),
         SettingsField::ApiKey => app.settings_input_api_key.push_str(text),
         SettingsField::Model => app.settings_input_model.push_str(text),
+        SettingsField::Timeout if text.chars().all(|c| c.is_ascii_digit()) => {
+            app.settings_input_timeout.push_str(text)
+        }
+        SettingsField::Retries if text.chars().all(|c| c.is_ascii_digit()) => {
+            app.settings_input_retries.push_str(text)
+        }
+        SettingsField::FallbackBaseUrl => app.settings_input_fallback_base_url.push_str(text),
+        SettingsField::FallbackModel => app.settings_input_fallback_model.push_str(text),
         _ => {}
     }
+}
+
+fn pop_char(value: &mut String) {
+    value.pop();
 }
 
 fn handle_mouse(app: &mut AppState, mouse: MouseEvent) {
