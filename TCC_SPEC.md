@@ -133,6 +133,8 @@ Nenhum finding demonstrativo pode ser misturado a uma execucao real. Dados de de
 
 O modo demonstrativo e ativado explicitamente com `--demo`. Cada finding deve manter campos proprietarios e proveniencia com origem, ferramenta, alvo, evidencia e timestamp; o modo real somente aceita achados produzidos pelos parsers dos scanners executados.
 
+Na Sprint 1, Nmap e Nuclei reais executam exclusivamente em Podman rootless. A imagem do Nuclei e referenciada por digest, os templates sao montados em modo somente leitura e o commit esperado deve ser validado antes da execucao. O plano validado pelo orquestrador e aplicado aos argumentos do container. Cada registro estruturado preserva stdout, stderr sanitizado, status, duracao, timestamp, versao e imagem/digest quando aplicavel.
+
 ## 8. Macro-sprints
 
 ### Sprint 1 - Nucleo de Orquestracao e Isolamento

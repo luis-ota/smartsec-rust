@@ -75,6 +75,10 @@ pub struct SecurityTool {
     pub arguments: String,
     pub executed_at: String,
     pub output: String,
+    pub stderr: String,
+    pub status: String,
+    pub duration_ms: u128,
+    pub image: Option<String>,
     #[allow(dead_code)]
     pub tool_version: Option<String>,
     pub execution_error: Option<String>,
@@ -87,6 +91,10 @@ impl SecurityTool {
             arguments: arguments.to_string(),
             executed_at: chrono_like_now(),
             output: String::new(),
+            stderr: String::new(),
+            status: "not_started".to_string(),
+            duration_ms: 0,
+            image: None,
             tool_version: None,
             execution_error: None,
         }
@@ -100,14 +108,7 @@ impl SecurityTool {
 }
 
 fn chrono_like_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    let mins = (secs / 60) % 60;
-    let hours = (secs / 3600) % 24;
-    format!("2026-01-01T{:02}:{:02}:00Z", hours, mins)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 #[async_trait]

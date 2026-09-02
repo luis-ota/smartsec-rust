@@ -3,7 +3,9 @@ use crate::orchestrator::decision::{NucleiPlan, NucleiTemplateProfile};
 
 pub struct NucleiTool;
 
-pub const NUCLEI_IMAGE: &str = "docker.io/projectdiscovery/nuclei:v3.4.10";
+pub const NUCLEI_VERSION: &str = "v3.4.10";
+pub const NUCLEI_IMAGE: &str = "docker.io/projectdiscovery/nuclei@sha256:2a11faa83464d769a888f1abb9396d5b4d8640619dfc6310086bf5c0d4003481";
+pub const NUCLEI_TEMPLATES_COMMIT: &str = "b98e6097cb84e73e7a480436062d685a8f898824";
 
 fn split_host_port(target: &str) -> (String, Option<String>) {
     let mut t = target.trim().to_string();
@@ -72,12 +74,9 @@ impl NucleiTool {
             "-silent".to_string(),
         ];
 
-        let base = dirs::home_dir()
-            .unwrap_or_default()
-            .join("nuclei-templates");
         for template in plan.template_paths() {
             args.push("-t".to_string());
-            args.push(base.join(template).to_string_lossy().to_string());
+            args.push(format!("/root/nuclei-templates/{template}"));
         }
 
         args.push("-c".to_string());
@@ -90,65 +89,43 @@ impl NucleiTool {
 
     pub async fn parse_output_with_plan(
         &self,
-        target: &str,
-        plan: &NucleiPlan,
+        _target: &str,
+        _plan: &NucleiPlan,
     ) -> Result<String, anyhow::Error> {
-        let (host, port) = split_host_port(target);
-        let mut cmd = tokio::process::Command::new("nuclei");
-        let target_arg = match port {
-            Some(ref p) => format!("{}:{}", host, p),
-            None => host,
-        };
-        let base = dirs::home_dir()
-            .unwrap_or_default()
-            .join("nuclei-templates");
-        cmd.arg("-u").arg(&target_arg).arg("-jsonl").arg("-silent");
-
-        for template in plan.template_paths() {
-            cmd.arg("-t")
-                .arg(base.join(template).to_string_lossy().to_string());
-        }
-
-        cmd.arg("-c")
-            .arg(plan.concurrency.to_string())
-            .arg("-timeout")
-            .arg(plan.timeout_seconds.to_string());
-        let output = cmd.output().await?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if output.stdout.is_empty() {
-                Ok(format!(
-                    "Scan complete — {} template checks run.",
-                    stderr.lines().count()
-                ))
-            } else {
-                Err(anyhow::anyhow!("Nuclei error: {}", stderr))
-            }
-        }
+        Err(anyhow::anyhow!(
+            "Nuclei real exige execução pelo executor Podman; binário no host não é permitido"
+        ))
     }
 }
 
 impl NucleiTool {
+    #[allow(dead_code)]
     pub fn container_arguments(target: &str) -> Vec<String> {
+        Self::container_arguments_with_plan(target, &Self::default_plan())
+    }
+
+    pub fn container_arguments_with_plan(target: &str, plan: &NucleiPlan) -> Vec<String> {
         let (host, port) = split_host_port(target);
         let target_arg = match port {
             Some(port) => format!("{host}:{port}"),
             None => host,
         };
-        vec![
+        let mut args = vec![
             "-u".to_owned(),
             target_arg,
             "-jsonl".to_owned(),
             "-silent".to_owned(),
             "-c".to_owned(),
-            "25".to_owned(),
+            plan.concurrency.to_string(),
             "-timeout".to_owned(),
-            "2".to_owned(),
+            plan.timeout_seconds.to_string(),
             "-disable-update-check".to_owned(),
-        ]
+        ];
+        for template in plan.template_paths() {
+            args.push("-t".to_owned());
+            args.push(format!("/root/nuclei-templates/{template}"));
+        }
+        args
     }
 }
 
@@ -168,11 +145,30 @@ mod tests {
                 "-jsonl",
                 "-silent",
                 "-c",
-                "25",
+                "20",
                 "-timeout",
-                "2",
-                "-disable-update-check"
+                "3",
+                "-disable-update-check",
+                "-t",
+                "/root/nuclei-templates/http/misconfiguration/",
+                "-t",
+                "/root/nuclei-templates/http/exposed-panels/"
             ]
         );
+    }
+
+    #[test]
+    fn applies_the_validated_plan_to_container_arguments() {
+        let plan = NucleiPlan {
+            should_run: true,
+            profiles: vec![NucleiTemplateProfile::SshExposure],
+            concurrency: 7,
+            timeout_seconds: 9,
+        };
+        let arguments = NucleiTool::container_arguments_with_plan("10.0.0.1", &plan);
+        assert!(arguments.windows(2).any(|pair| pair == ["-c", "7"]));
+        assert!(arguments.windows(2).any(|pair| pair == ["-timeout", "9"]));
+        assert!(arguments.iter().any(|arg| arg.contains("network/")));
+        assert!(NUCLEI_IMAGE.contains("@sha256:"));
     }
 }
