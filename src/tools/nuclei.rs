@@ -1,4 +1,5 @@
 use crate::domain::security_tool::SecurityToolRunner;
+use crate::orchestrator::decision::{NucleiPlan, NucleiTemplateProfile};
 
 pub struct NucleiTool;
 
@@ -35,23 +36,63 @@ impl SecurityToolRunner for NucleiTool {
     }
 
     fn configure_command(&self, target: &str) -> String {
+        self.configure_command_with_plan(target, &Self::default_plan())
+    }
+
+    async fn parse_output(&self, target: &str) -> Result<String, anyhow::Error> {
+        self.parse_output_with_plan(target, &Self::default_plan())
+            .await
+    }
+}
+
+impl NucleiTool {
+    pub fn default_plan() -> NucleiPlan {
+        NucleiPlan {
+            should_run: true,
+            profiles: vec![
+                NucleiTemplateProfile::HttpMisconfiguration,
+                NucleiTemplateProfile::HttpExposedPanels,
+            ],
+            concurrency: 20,
+            timeout_seconds: 3,
+        }
+    }
+
+    pub fn configure_command_with_plan(&self, target: &str, plan: &NucleiPlan) -> String {
         let (host, port) = split_host_port(target);
         let target_arg = match port {
             Some(ref p) => format!("{}:{}", host, p),
             None => host,
         };
+        let mut args = vec![
+            "nuclei".to_string(),
+            "-u".to_string(),
+            target_arg,
+            "-jsonl".to_string(),
+            "-silent".to_string(),
+        ];
+
         let base = dirs::home_dir()
             .unwrap_or_default()
             .join("nuclei-templates");
-        let tmpl_misc = base.join("http/misconfiguration/");
-        format!(
-            "nuclei -u {} -jsonl -silent -t {} -c 200 -timeout 2",
-            target_arg,
-            tmpl_misc.display(),
-        )
+        for template in plan.template_paths() {
+            args.push("-t".to_string());
+            args.push(base.join(template).to_string_lossy().to_string());
+        }
+
+        args.push("-c".to_string());
+        args.push(plan.concurrency.to_string());
+        args.push("-timeout".to_string());
+        args.push(plan.timeout_seconds.to_string());
+
+        args.join(" ")
     }
 
-    async fn parse_output(&self, target: &str) -> Result<String, anyhow::Error> {
+    pub async fn parse_output_with_plan(
+        &self,
+        target: &str,
+        plan: &NucleiPlan,
+    ) -> Result<String, anyhow::Error> {
         let (host, port) = split_host_port(target);
         let mut cmd = tokio::process::Command::new("nuclei");
         let target_arg = match port {
@@ -61,20 +102,17 @@ impl SecurityToolRunner for NucleiTool {
         let base = dirs::home_dir()
             .unwrap_or_default()
             .join("nuclei-templates");
-        cmd.arg("-u")
-            .arg(&target_arg)
-            .arg("-jsonl")
-            .arg("-silent")
-            .arg("-t")
-            .arg(
-                base.join("http/misconfiguration/")
-                    .to_string_lossy()
-                    .to_string(),
-            )
-            .arg("-c")
-            .arg("200")
+        cmd.arg("-u").arg(&target_arg).arg("-jsonl").arg("-silent");
+
+        for template in plan.template_paths() {
+            cmd.arg("-t")
+                .arg(base.join(template).to_string_lossy().to_string());
+        }
+
+        cmd.arg("-c")
+            .arg(plan.concurrency.to_string())
             .arg("-timeout")
-            .arg("2");
+            .arg(plan.timeout_seconds.to_string());
         let output = cmd.output().await?;
 
         if output.status.success() {

@@ -1,7 +1,6 @@
-#![allow(dead_code)]
-
 use crate::domain::vulnerability::Vulnerability;
 use crate::domain::Severity;
+use crate::orchestrator::decision::DecisionRecord;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -32,12 +31,15 @@ pub struct ScanMetadata {
     pub high_count: usize,
     pub medium_count: usize,
     pub low_count: usize,
-    pub findings: Vec<Vulnerability>,
+    pub findings: Vec<serde_json::Value>,
     pub agent_analysis: String,
+    #[serde(default)]
+    pub decisions: Vec<DecisionRecord>,
 }
 
 /// Resumo compacto para listagem de scans históricos.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct ScanRecordSummary {
     pub scan_id: String,
     pub target_url: String,
@@ -90,8 +92,12 @@ impl ScanMetadata {
             high_count,
             medium_count,
             low_count,
-            findings,
+            findings: findings
+                .iter()
+                .map(|finding| serde_json::to_value(finding).unwrap_or(serde_json::Value::Null))
+                .collect(),
             agent_analysis,
+            decisions: Vec::new(),
         }
     }
 }
@@ -128,6 +134,7 @@ pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Re
 }
 
 /// Lista o resumo de todos os scans estruturados gravados em um diretório.
+#[allow(dead_code)]
 pub fn list_scan_logs_from_dir(dir: &PathBuf) -> Result<Vec<ScanRecordSummary>> {
     let mut summaries = Vec::new();
     if !dir.exists() {
@@ -157,6 +164,7 @@ pub fn list_scan_logs_from_dir(dir: &PathBuf) -> Result<Vec<ScanRecordSummary>> 
 }
 
 /// Carrega os metadados completos de um scan dado seu caminho de arquivo.
+#[allow(dead_code)]
 pub fn load_scan_log_from_file(file_path: &PathBuf) -> Result<ScanMetadata> {
     let content = fs::read_to_string(file_path)
         .with_context(|| format!("Falha ao ler arquivo de log {:?}", file_path))?;

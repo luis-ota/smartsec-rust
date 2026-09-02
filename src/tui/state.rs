@@ -423,8 +423,7 @@ impl AppState {
         self.exec_cancelled = false;
         self.orchestrator.paused = false;
         self.orchestrator.cancelled = false;
-        self.orchestrator.execution_history.clear();
-        self.orchestrator.findings.clear();
+        self.orchestrator.reset_run_state();
 
         self.analysis_phase = AnalysisPhase::Scanning;
         self.analysis_tick = 0;
@@ -463,7 +462,11 @@ impl AppState {
     }
 
     pub fn export_md(&self) -> String {
-        crate::report::ReportGenerator::compile_report(&self.config, &self.vulnerabilities())
+        crate::report::ReportGenerator::compile_report(
+            &self.config,
+            &self.vulnerabilities(),
+            &self.orchestrator.decision_history,
+        )
     }
 
     pub fn apply_settings(&mut self) {
@@ -476,6 +479,12 @@ impl AppState {
             self.config.llm.base_url = self.settings_input_base_url.clone();
         }
         self.config.llm.api_key = self.settings_input_api_key.clone();
+        self.config.llm.timeout_secs = self.settings_input_timeout.parse().unwrap_or(45);
+        self.config.llm.max_retries = self.settings_input_retries.parse().unwrap_or(2);
+        self.config.llm.remote_consent = self.settings_remote_consent;
+        self.config.llm.fallback_enabled = self.settings_fallback_enabled;
+        self.config.llm.fallback_base_url = self.settings_input_fallback_base_url.clone();
+        self.config.llm.fallback_model = self.settings_input_fallback_model.clone();
         if self.settings_input_model.is_empty() {
             self.config.llm.model = provider.default_model().to_string();
         } else {
