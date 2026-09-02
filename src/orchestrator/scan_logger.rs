@@ -14,6 +14,12 @@ pub struct ToolExecutionRecord {
     pub executed_at: String,
     pub output_bytes: usize,
     pub output_sample: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub status: String,
+    pub duration_ms: u128,
+    pub tool_version: Option<String>,
+    pub image: Option<String>,
 }
 
 /// Metadados e log estruturado completo de um scan de segurança.
@@ -198,6 +204,12 @@ mod tests {
                 executed_at: "2026-08-31T12:01:00Z".to_string(),
                 output_bytes: 120,
                 output_sample: "found test vuln".to_string(),
+                stdout: "found test vuln".to_string(),
+                stderr: String::new(),
+                status: "succeeded".to_string(),
+                duration_ms: 10,
+                tool_version: Some("test".to_string()),
+                image: None,
             }],
             vec![Vulnerability {
                 title: "Test Vuln".to_string(),
