@@ -207,7 +207,43 @@ impl Orchestrator {
         self.build_findings();
         let analysis = self.agent.analyze_logs(&self.findings).await;
         self.last_log = analysis;
+        let _ = self.persist_scan_log();
         Ok(self.findings.clone())
+    }
+
+    /// Salva os metadados e histórico estruturado do scan atual em disco.
+    pub fn persist_scan_log(&self) -> anyhow::Result<std::path::PathBuf> {
+        let dur = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = dur.as_secs();
+        let scan_id = format!("scan_{}", secs);
+
+        let tools_executed = self
+            .execution_history
+            .iter()
+            .map(|e| crate::orchestrator::scan_logger::ToolExecutionRecord {
+                tool_name: e.tool_name.clone(),
+                arguments: e.arguments.clone(),
+                executed_at: e.executed_at.clone(),
+                output_bytes: e.output.len(),
+                output_sample: e.output.chars().take(200).collect(),
+            })
+            .collect();
+
+        let metadata = crate::orchestrator::scan_logger::ScanMetadata::new(
+            scan_id,
+            self.config.target_url.clone(),
+            chrono_like_now(),
+            chrono_like_now(),
+            format!("{}", self.config.execution_type),
+            self.config.provider_mode.clone(),
+            tools_executed,
+            self.findings.clone(),
+            self.last_log.clone(),
+        );
+
+        crate::orchestrator::scan_logger::save_scan_log(&metadata)
     }
 }
 

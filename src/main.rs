@@ -219,6 +219,9 @@ impl CommandLineInterface {
         println!();
         println!("═══════════════════════════════════════════════════════════");
         println!("  OK Relatorio exportado: smartsec-report.md");
+        if let Ok(log_path) = orchestrator.persist_scan_log() {
+            println!("  OK Log estruturado: {}", log_path.display());
+        }
         println!("  OK Analise concluida.");
         println!("═══════════════════════════════════════════════════════════");
 
