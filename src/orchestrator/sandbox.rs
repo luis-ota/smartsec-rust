@@ -9,6 +9,7 @@ use tokio::process::Command;
 
 static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const PODMAN_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+const ROOTLESS_NETWORK: &str = "pasta";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionStatus {
@@ -70,7 +71,7 @@ impl PodmanExecutor {
                 "--name",
                 &name,
                 "--network",
-                "slirp4netns",
+                ROOTLESS_NETWORK,
                 "--memory",
                 "512m",
                 "--cpus",
@@ -477,6 +478,7 @@ mod tests {
         assert!(result.duration <= Duration::from_secs(1));
         let calls = fake.calls();
         assert!(calls.contains("create --name smartsec-"));
+        assert!(calls.contains("--network pasta"));
         assert!(calls.contains("--cap-drop all"));
         assert!(calls.contains("--read-only"));
         assert!(calls.contains("example/scanner:1 scan target"));

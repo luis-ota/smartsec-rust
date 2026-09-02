@@ -37,8 +37,15 @@ Este e um **prototipo / prova de conceito**. A maioria das ferramentas de segura
 
 - Rust 1.80+
 - [Podman](https://podman.io/) configurado em modo rootless
+- Podman com suporte ao backend de rede rootless `pasta` (o Podman 6.1 usado
+  na validacao local ja o fornece; versoes recentes removeram o backend
+  obsoleto `slirp4netns`)
 - [Nuclei](https://github.com/projectdiscovery/nuclei) (para escaneamento real)
 - Templates do Nuclei (`nuclei -update-templates`)
+
+O executor sempre usa `--network pasta` em containers rootless. Essa rede
+mantem o isolamento do container sem exigir privilegios de root e evita o
+backend removido `slirp4netns`; nao ha fallback silencioso para outro driver.
 
 ## Uso rapido
 
