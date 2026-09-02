@@ -47,6 +47,12 @@ pub enum SettingsField {
     BaseUrl,
     ApiKey,
     Model,
+    Timeout,
+    Retries,
+    RemoteConsent,
+    FallbackEnabled,
+    FallbackBaseUrl,
+    FallbackModel,
     RealNuclei,
 }
 
@@ -95,6 +101,12 @@ pub struct AppState {
     pub settings_input_base_url: String,
     pub settings_input_api_key: String,
     pub settings_input_model: String,
+    pub settings_input_timeout: String,
+    pub settings_input_retries: String,
+    pub settings_remote_consent: bool,
+    pub settings_fallback_enabled: bool,
+    pub settings_input_fallback_base_url: String,
+    pub settings_input_fallback_model: String,
     pub settings_real_nuclei: bool,
     pub llm_warning: Option<String>,
     pub exec_paused: bool,
@@ -158,6 +170,12 @@ impl AppState {
                 config.use_real_nuclei,
             )
         };
+        let timeout = config.llm.timeout_secs.to_string();
+        let retries = config.llm.max_retries.to_string();
+        let remote_consent = config.llm.remote_consent;
+        let fallback_enabled = config.llm.fallback_enabled;
+        let fallback_base_url = config.llm.fallback_base_url.clone();
+        let fallback_model = config.llm.fallback_model.clone();
 
         Self {
             config,
@@ -197,6 +215,12 @@ impl AppState {
             settings_input_base_url: base_url,
             settings_input_api_key: api_key,
             settings_input_model: model,
+            settings_input_timeout: timeout,
+            settings_input_retries: retries,
+            settings_remote_consent: remote_consent,
+            settings_fallback_enabled: fallback_enabled,
+            settings_input_fallback_base_url: fallback_base_url,
+            settings_input_fallback_model: fallback_model,
             settings_real_nuclei: real_nuclei,
             llm_warning: None,
             exec_paused: false,
