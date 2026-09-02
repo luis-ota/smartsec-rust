@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::domain::vulnerability::Vulnerability;
 use crate::domain::Severity;
 use anyhow::{Context, Result};
@@ -45,6 +47,7 @@ pub struct ScanRecordSummary {
 }
 
 impl ScanMetadata {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         scan_id: String,
         target_url: String,
@@ -165,6 +168,7 @@ pub fn load_scan_log_from_file(file_path: &PathBuf) -> Result<ScanMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::vulnerability::FindingSource;
     use crate::domain::Severity;
 
     #[test]

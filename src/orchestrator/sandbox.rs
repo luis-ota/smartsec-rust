@@ -498,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn times_out_kills_and_removes_container() {
         let fake = FakePodman::new("exec sleep 10");
-        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_millis(30));
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(1));
 
         let result = executor.execute("scanner", &[]).await.unwrap();
 
