@@ -46,16 +46,18 @@ impl CommandLineInterface {
 
     pub async fn run(self) -> Result<()> {
         if let Some(url) = extract_arg(&self.arguments, "--url") {
-            let mut initial_config = config::Configuration::load(&[])?;
+            let mut initial_config = config::Configuration::load(&self.arguments)?;
             initial_config.target_url = url;
             initial_config.execution_type = ExecutionType::Auto;
+            apply_cli_tool_selection(&mut initial_config, &self.arguments);
             if self.arguments.iter().any(|a| a == "--auto") {
                 return Self::run_headless(initial_config).await;
             }
             return Self::display_tui(initial_config).await;
         }
 
-        let initial_config = config::Configuration::load(&self.arguments)?;
+        let mut initial_config = config::Configuration::load(&self.arguments)?;
+        apply_cli_tool_selection(&mut initial_config, &self.arguments);
         Self::display_tui(initial_config).await
     }
 
@@ -125,7 +127,7 @@ impl CommandLineInterface {
 
         let mut orchestrator = Orchestrator::new(config.clone());
         let all_tools = ToolInfo::all();
-        let selected: Vec<&ToolInfo> = all_tools.iter().collect();
+        let selected = selected_tools(&all_tools, &config.active_tools);
 
         println!("[1/3] Running security tools...");
         let total = selected.len();
@@ -146,15 +148,26 @@ impl CommandLineInterface {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let exec = orchestrator.execute_tool(tool, &config.target_url).await;
-            println!(
-                "OK ({}, {} bytes output)",
-                exec.executed_at,
-                exec.output.len()
-            );
+            if let Some(error) = &exec.execution_error {
+                println!("FALHA ({error})");
+            } else {
+                println!(
+                    "OK ({}, {} bytes output)",
+                    exec.executed_at,
+                    exec.output.len()
+                );
+            }
         }
         println!();
 
         orchestrator.build_findings();
+        if let Some(failure) = orchestrator
+            .execution_history
+            .iter()
+            .find_map(|execution| execution.execution_error.as_deref())
+        {
+            anyhow::bail!("A varredura não foi concluída: {failure}");
+        }
         let analysis = orchestrator
             .agent
             .analyze_logs(&orchestrator.findings)
@@ -217,6 +230,48 @@ impl CommandLineInterface {
 fn extract_arg(args: &[String], flag: &str) -> Option<String> {
     let pos = args.iter().position(|a| a == flag)?;
     args.get(pos + 1).cloned()
+}
+
+fn apply_cli_tool_selection(config: &mut config::Configuration, args: &[String]) {
+    let Some(tools) = extract_arg(args, "--tools") else {
+        return;
+    };
+    config.active_tools = tools
+        .split(',')
+        .map(str::trim)
+        .filter(|tool| !tool.is_empty())
+        .map(str::to_owned)
+        .collect();
+}
+
+fn selected_tools<'a>(tools: &'a [ToolInfo], active_tools: &[String]) -> Vec<&'a ToolInfo> {
+    tools
+        .iter()
+        .filter(|tool| {
+            active_tools.is_empty()
+                || active_tools
+                    .iter()
+                    .any(|active| active.eq_ignore_ascii_case(tool.name))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_nmap_from_existing_cli_contract() {
+        let mut config = config::Configuration::default();
+        let arguments = ["--tools".to_owned(), "Nmap".to_owned()];
+
+        apply_cli_tool_selection(&mut config, &arguments);
+        let catalog = ToolInfo::all();
+        let selected = selected_tools(&catalog, &config.active_tools);
+
+        assert_eq!(selected.len(), 1);
+        assert!(selected[0].is_nmap());
+    }
 }
 
 #[tokio::main]

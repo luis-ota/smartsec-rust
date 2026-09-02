@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" version="7.95">
+  <host><ports><port protocol="tcp" portid="22">
+    <state state="open" reason="syn-ack"/>
+  </ports></host>
+</nmaprun>
