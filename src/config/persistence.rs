@@ -43,6 +43,13 @@ pub fn load_config_file() -> PersistedConfig {
     PersistedConfig::default()
 }
 
+pub fn load_config_file_from(path: &std::path::Path) -> Result<PersistedConfig, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("não foi possível ler o arquivo de configuração: {error}"))?;
+    toml::from_str(&content)
+        .map_err(|error| format!("configuração TOML inválida: {error}"))
+}
+
 pub fn save_config_file(cfg: &PersistedConfig) -> std::io::Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
