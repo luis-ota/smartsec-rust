@@ -75,6 +75,7 @@ pub struct SecurityTool {
     pub arguments: String,
     pub executed_at: String,
     pub output: String,
+    #[allow(dead_code)]
     pub tool_version: Option<String>,
     pub execution_error: Option<String>,
 }

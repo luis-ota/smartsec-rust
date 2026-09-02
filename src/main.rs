@@ -2,10 +2,7 @@
 //!
 //! Entry point: `CommandLineInterface::main`.
 //!
-//! Supports two modes:
-//! - TUI mode (default): interactive terminal UI
-//! - Headless mode: invoked with `--auto --url <target>` — runs the full
-//!   pipeline and prints a summary report to stdout without launching the TUI.
+//! Supports interactive TUI mode and structured `scan`/`tool` commands.
 
 mod ai;
 mod config;
@@ -39,28 +36,175 @@ pub struct CommandLineInterface {
     pub arguments: Vec<String>,
 }
 
+#[derive(Debug)]
+struct Cli {
+    command: Option<CliCommand>,
+}
+
+#[derive(Debug)]
+enum CliCommand {
+    Scan(ScanArgs),
+    Tool(ToolArgs),
+}
+
+#[derive(Debug)]
+struct ScanArgs {
+    target: String,
+    options: ExecutionArgs,
+}
+
+#[derive(Debug)]
+struct ToolArgs {
+    tool: String,
+    target: String,
+    options: ExecutionArgs,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ExecutionArgs {
+    config: Option<std::path::PathBuf>,
+    tools: Option<String>,
+    llm: Option<String>,
+    model: Option<String>,
+    real_nuclei: bool,
+    demo: bool,
+}
+
+impl Cli {
+    fn parse(arguments: &[String]) -> Result<Self> {
+        if arguments
+            .iter()
+            .any(|argument| argument == "--version" || argument == "-V")
+        {
+            println!("smartsec-rust 0.2.0");
+            return Ok(Self { command: None });
+        }
+        if arguments.is_empty() {
+            return Ok(Self { command: None });
+        }
+        if arguments
+            .iter()
+            .any(|argument| argument == "--help" || argument == "-h")
+        {
+            print_help();
+            return Ok(Self { command: None });
+        }
+        let command = arguments[0].as_str();
+        let (tool, start) = match command {
+            "scan" => (None, 1),
+            "tool" => {
+                let tool = arguments
+                    .get(1)
+                    .ok_or_else(|| anyhow::anyhow!("a ferramenta é obrigatória"))?;
+                (Some(tool.clone()), 2)
+            }
+            other => anyhow::bail!("comando desconhecido: {other}; use --help para ver as opções"),
+        };
+        let (target, options) = parse_execution_args(&arguments[start..])?;
+        let target = target.ok_or_else(|| anyhow::anyhow!("o argumento --target é obrigatório"))?;
+        Ok(Self {
+            command: Some(if let Some(tool) = tool {
+                CliCommand::Tool(ToolArgs {
+                    tool,
+                    target,
+                    options,
+                })
+            } else {
+                CliCommand::Scan(ScanArgs { target, options })
+            }),
+        })
+    }
+}
+
+fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, ExecutionArgs)> {
+    let mut target = None;
+    let mut options = ExecutionArgs::default();
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        let value = |index: &mut usize, name: &str| -> Result<String> {
+            *index += 1;
+            arguments
+                .get(*index)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("o argumento {name} exige um valor"))
+        };
+        match argument.as_str() {
+            "--target" | "-t" => target = Some(value(&mut index, "--target")?),
+            "--config" => options.config = Some(value(&mut index, "--config")?.into()),
+            "--tools" => options.tools = Some(value(&mut index, "--tools")?),
+            "--llm" => options.llm = Some(value(&mut index, "--llm")?),
+            "--model" => options.model = Some(value(&mut index, "--model")?),
+            "--real-nuclei" => options.real_nuclei = true,
+            "--demo" => options.demo = true,
+            other => {
+                anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções")
+            }
+        }
+        index += 1;
+    }
+    Ok((target, options))
+}
+
+fn print_help() {
+    println!("SmartSec - Plataforma de análise de segurança");
+    println!("Uso: smartsec <scan|tool> --target <ALVO> [OPÇÕES]");
+    println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas separadas por vírgulas\n      --llm <PROVEDOR>  mock, ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n      --real-nuclei  Executa Nuclei via Podman\n  -h, --help\n  -V, --version");
+}
+
 impl CommandLineInterface {
     pub fn new(arguments: Vec<String>) -> Self {
         Self { arguments }
     }
 
     pub async fn run(self) -> Result<()> {
-        if let Some(url) = extract_arg(&self.arguments, "--url") {
-            let mut initial_config = config::Configuration::load(&self.arguments)?;
-            initial_config.target_url = url;
-            initial_config.execution_type = ExecutionType::Auto;
-            apply_cli_tool_selection(&mut initial_config, &self.arguments);
-            initial_config.demo_mode = self.arguments.iter().any(|a| a == "--demo");
-            if self.arguments.iter().any(|a| a == "--auto") {
-                return Self::run_headless(initial_config).await;
-            }
-            return Self::display_tui(initial_config).await;
+        let cli = Cli::parse(&self.arguments)?;
+        if self
+            .arguments
+            .iter()
+            .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+        {
+            return Ok(());
         }
+        match cli.command {
+            Some(CliCommand::Scan(args)) => {
+                let config = build_config(&args.options, args.target, None, true)?;
+                Self::run_headless(config).await
+            }
+            Some(CliCommand::Tool(args)) => {
+                let config = build_config(&args.options, args.target, Some(args.tool), true)?;
+                Self::run_headless(config).await
+            }
+            None => {
+                let config = config::Configuration::load(&[])?;
+                Self::display_tui(config).await
+            }
+        }
+    }
 
-        let mut initial_config = config::Configuration::load(&self.arguments)?;
-        apply_cli_tool_selection(&mut initial_config, &self.arguments);
-        initial_config.demo_mode = self.arguments.iter().any(|a| a == "--demo");
-        Self::display_tui(initial_config).await
+    #[allow(dead_code)]
+    fn print_help() {
+        println!("SmartSec - Security Analysis Platform");
+        println!();
+        println!("USO:");
+        println!("  smartsec [OPCOES]");
+        println!();
+        println!("OPCOES:");
+        println!("  -u, --url <URL>               Define a URL/alvo para o scan");
+        println!("  -a, --auto                    Executa em modo automatizado (headless)");
+        println!("  -d, --demo                    Executa em modo demonstrativo (dados simulados)");
+        println!("  -p, --provider <NOME>         Provedor de IA (mock, ollama, openai)");
+        println!(
+            "  -o, --output <ARQUIVO>        Salva o relatorio Markdown no caminho especificado"
+        );
+        println!("  -h, --help                    Exibe esta ajuda");
+        println!("  -v, --version                 Exibe a versao");
+        println!();
+        println!("EXEMPLOS:");
+        println!("  smartsec");
+        println!("  smartsec --auto --url http://target.local");
+        println!("  smartsec --auto --url http://target.local --demo -o relatorio.md");
     }
 
     async fn display_tui(initial_config: config::Configuration) -> Result<()> {
@@ -106,10 +250,7 @@ impl CommandLineInterface {
     }
 
     pub async fn run_headless(config: config::Configuration) -> Result<()> {
-        if let Err(e) = config.validate_target() {
-            eprintln!("[smartsec] invalid target: {}", e);
-            std::process::exit(2);
-        }
+        config.validate_target().map_err(anyhow::Error::msg)?;
 
         println!("═══════════════════════════════════════════════════════════");
         println!("  SmartSec — Headless Analysis");
@@ -232,26 +373,91 @@ impl CommandLineInterface {
         println!("  OK Analise concluida.");
         println!("═══════════════════════════════════════════════════════════");
 
-        let _ = report;
+        let output_file = config
+            .output_file
+            .as_deref()
+            .unwrap_or("smartsec-report.md");
+        crate::report::ReportGenerator::export_to_markdown(&report, output_file)?;
         Ok(())
     }
 }
 
-fn extract_arg(args: &[String], flag: &str) -> Option<String> {
-    let pos = args.iter().position(|a| a == flag)?;
-    args.get(pos + 1).cloned()
+fn build_config(
+    options: &ExecutionArgs,
+    target: String,
+    manual_tool: Option<String>,
+    auto: bool,
+) -> Result<config::Configuration> {
+    let mut config = match &options.config {
+        Some(path) => config::Configuration::load_from_path(path)?,
+        None => config::Configuration::load_unvalidated(),
+    };
+    config.target_url = target;
+    config.execution_type = if auto {
+        ExecutionType::Auto
+    } else {
+        ExecutionType::Assisted
+    };
+    if let Some(tools) = &options.tools {
+        config.active_tools = tools
+            .split(',')
+            .map(str::trim)
+            .filter(|tool| !tool.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if config.active_tools.is_empty() {
+            anyhow::bail!("a lista de ferramentas não pode estar vazia");
+        }
+    }
+    if let Some(tool) = manual_tool {
+        config.active_tools = vec![tool];
+    }
+    validate_tools(&config.active_tools)?;
+    if let Some(provider) = &options.llm {
+        let kind = parse_provider(provider)?;
+        config.llm.provider = kind;
+        config.llm.base_url = kind.default_base_url().to_owned();
+        if options.model.is_none() {
+            config.llm.model = kind.default_model().to_owned();
+        }
+    }
+    if let Some(model) = &options.model {
+        if model.trim().is_empty() {
+            anyhow::bail!("o modelo da IA não pode ser vazio");
+        }
+        config.llm.model = model.clone();
+    }
+    if options.real_nuclei {
+        config.use_real_nuclei = true;
+    }
+    config.demo_mode = options.demo;
+    config.validate_target().map_err(anyhow::Error::msg)?;
+    config.llm.validate().map_err(anyhow::Error::msg)?;
+    Ok(config)
 }
 
-fn apply_cli_tool_selection(config: &mut config::Configuration, args: &[String]) {
-    let Some(tools) = extract_arg(args, "--tools") else {
-        return;
-    };
-    config.active_tools = tools
-        .split(',')
-        .map(str::trim)
-        .filter(|tool| !tool.is_empty())
-        .map(str::to_owned)
-        .collect();
+fn validate_tools(active_tools: &[String]) -> Result<()> {
+    let catalog = ToolInfo::all();
+    for selected in active_tools {
+        if !catalog
+            .iter()
+            .any(|tool| tool.name.eq_ignore_ascii_case(selected))
+        {
+            anyhow::bail!("ferramenta desconhecida: {selected}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_provider(provider: &str) -> Result<config::llm_config::LlmProviderKind> {
+    match provider.to_ascii_lowercase().as_str() {
+        "mock" | "integrado" => Ok(config::llm_config::LlmProviderKind::Mock),
+        "ollama" => Ok(config::llm_config::LlmProviderKind::Ollama),
+        "openai" => Ok(config::llm_config::LlmProviderKind::OpenAI),
+        "nvidia-nim" | "nvidia_nim" => Ok(config::llm_config::LlmProviderKind::NvidiaNim),
+        "custom" | "personalizado" => Ok(config::llm_config::LlmProviderKind::Custom),
+        _ => anyhow::bail!("provedor de IA desconhecido: {provider}"),
+    }
 }
 
 fn selected_tools<'a>(tools: &'a [ToolInfo], active_tools: &[String]) -> Vec<&'a ToolInfo> {
@@ -271,16 +477,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selects_nmap_from_existing_cli_contract() {
-        let mut config = config::Configuration::default();
-        let arguments = ["--tools".to_owned(), "Nmap".to_owned()];
+    fn parses_scan_target_and_options() {
+        let cli = Cli::parse(&[
+            "scan".to_owned(),
+            "--target".to_owned(),
+            "192.0.2.10".to_owned(),
+            "--tools".to_owned(),
+            "Nmap,Nuclei".to_owned(),
+            "--llm".to_owned(),
+            "ollama".to_owned(),
+            "--model".to_owned(),
+            "llama3.1:8b".to_owned(),
+        ])
+        .unwrap();
+        let Some(CliCommand::Scan(args)) = cli.command else {
+            panic!("o comando scan deveria ser reconhecido");
+        };
+        assert_eq!(args.target, "192.0.2.10");
+        assert_eq!(args.options.tools.as_deref(), Some("Nmap,Nuclei"));
+        assert_eq!(args.options.llm.as_deref(), Some("ollama"));
+    }
 
-        apply_cli_tool_selection(&mut config, &arguments);
-        let catalog = ToolInfo::all();
-        let selected = selected_tools(&catalog, &config.active_tools);
+    #[test]
+    fn cli_values_have_precedence_over_configuration() {
+        let options = ExecutionArgs {
+            config: None,
+            tools: Some("Nmap".to_owned()),
+            llm: None,
+            model: None,
+            real_nuclei: false,
+            demo: false,
+        };
+        let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
+        assert_eq!(configured.active_tools, vec!["Nmap"]);
+    }
 
-        assert_eq!(selected.len(), 1);
-        assert!(selected[0].is_nmap());
+    #[test]
+    fn rejects_invalid_target_and_tool() {
+        let options = ExecutionArgs {
+            config: None,
+            tools: Some("Inexistente".to_owned()),
+            llm: None,
+            model: None,
+            real_nuclei: false,
+            demo: false,
+        };
+        assert!(build_config(&options, "não é um alvo".to_owned(), None, true).is_err());
+        assert!(build_config(
+            &ExecutionArgs {
+                tools: Some("Inexistente".to_owned()),
+                ..options
+            },
+            "192.0.2.10".to_owned(),
+            None,
+            true
+        )
+        .is_err());
     }
 
     #[test]
