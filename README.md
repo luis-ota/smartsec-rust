@@ -21,7 +21,7 @@ Plataforma de analise de seguranca — prototipo escrito em Rust com interface d
 
 ## Aviso
 
-Este e um **prototipo / prova de conceito**. A maioria das ferramentas de seguranca sao emuladas (mock), mas o **Nuclei executa de verdade** — roda o binario real contra o alvo e faz parsing dos findings a partir da saida JSON.
+Este e um **prototipo / prova de conceito**. A maioria das ferramentas de seguranca sao emuladas (mock). Nmap e Nuclei reais executam somente em containers Podman rootless; o binario de scanner nunca e chamado diretamente no host.
 
 ## Funcionalidades
 
@@ -29,7 +29,7 @@ Este e um **prototipo / prova de conceito**. A maioria das ferramentas de segura
 - **Modo headless** via `--auto --url <alvo>`
 - **Nmap real** via Podman rootless, com portas e serviços extraídos do XML
 - **Suporte a mouse** — todos os botoes e listas sao clicaveis
-- **Nuclei real** — escaneia alvos usando 968+ templates de misconfiguracao, extrai findings com classificacao de severidade
+- **Nuclei real** — imagem fixada por digest, templates montados somente-leitura e plano Nmap/IA aplicado aos argumentos
 - **Analise IA** (integracao com LLM — mock por padrao, suporta OpenAI / Ollama / NVIDIA NIM)
 - **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes e explicacoes didaticas
 
@@ -40,8 +40,7 @@ Este e um **prototipo / prova de conceito**. A maioria das ferramentas de segura
 - Podman com suporte ao backend de rede rootless `pasta` (o Podman 6.1 usado
   na validacao local ja o fornece; versoes recentes removeram o backend
   obsoleto `slirp4netns`)
-- [Nuclei](https://github.com/projectdiscovery/nuclei) (para escaneamento real)
-- Templates do Nuclei (`nuclei -update-templates`)
+- Templates do Nuclei em `~/nuclei-templates`, no commit esperado configurado; o caminho e commit podem ser definidos no TOML
 
 O executor sempre usa `--network pasta` em containers rootless. Essa rede
 mantem o isolamento do container sem exigir privilegios de root e evita o
@@ -69,12 +68,17 @@ cargo run -- tool Nmap --target 192.0.2.10
 # Usar configuração TOML e substituir opções pela CLI
 cargo run -- scan --target example.com --config ./smartsec.toml --llm ollama --model llama3.1:8b
 
-# Para ativar o Nuclei real:
+# Para ativar o Nuclei real (requer templates no commit esperado):
 # Na TUI: C-x s → Real Nuclei → Enable → Save
 # Depois execute normalmente que o Nuclei vai rodar de verdade
 
 # Na TUI em modo assistido, marque ou desmarque Nmap com Espaco
 ```
+
+Para uma execucao real, a configuracao TOML pode definir `nuclei_templates_path` e
+`nuclei_templates_commit`. O SmartSec rejeita o scan se o diretorio nao for um
+checkout Git no commit esperado. A imagem usada e
+`docker.io/projectdiscovery/nuclei@sha256:2a11faa83464d769a888f1abb9396d5b4d8640619dfc6310086bf5c0d4003481`.
 
 ## Arquitetura
 

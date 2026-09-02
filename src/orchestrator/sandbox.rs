@@ -52,6 +52,15 @@ impl PodmanExecutor {
         image: &str,
         command: &[String],
     ) -> anyhow::Result<ExecutionResult> {
+        self.execute_with_mounts(image, command, &[]).await
+    }
+
+    pub async fn execute_with_mounts(
+        &self,
+        image: &str,
+        command: &[String],
+        mounts: &[(PathBuf, String)],
+    ) -> anyhow::Result<ExecutionResult> {
         self.ensure_rootless().await?;
 
         let created_at = SystemTime::now()
@@ -85,8 +94,14 @@ impl PodmanExecutor {
                 "--read-only",
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,nodev,size=128m",
-                image,
             ])
+            .args(mounts.iter().flat_map(|(host, container)| {
+                [
+                    "--volume".to_owned(),
+                    format!("{}:{}:ro", host.display(), container),
+                ]
+            }))
+            .arg(image)
             .args(command);
         let create_output = match tokio::time::timeout(self.timeout, create_command.output()).await
         {
