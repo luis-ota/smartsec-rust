@@ -15,15 +15,9 @@ pub struct Configuration {
 
 impl Configuration {
     pub fn load(_args: &[String]) -> Result<Self> {
-        let persisted = crate::config::persistence::load_config_file();
-        Ok(Self {
-            target_url: persisted.target_url.clone(),
-            active_tools: persisted.active_tools.clone(),
-            provider_mode: format!("{:?}", persisted.llm.provider),
-            execution_type: persisted.execution_type,
-            llm: persisted.llm.clone(),
-            use_real_nuclei: persisted.use_real_nuclei,
-        })
+        let config: Self = crate::config::persistence::load_config_file().into();
+        config.llm.validate().map_err(anyhow::Error::msg)?;
+        Ok(config)
     }
 
     pub fn validate_target(&self) -> Result<(), String> {
@@ -52,15 +46,15 @@ impl Configuration {
         Ok(())
     }
 
-    pub fn save(&self) {
+    pub fn save(&self) -> Result<()> {
+        self.llm.validate().map_err(anyhow::Error::msg)?;
+        if self.llm.is_remote() {
+            crate::config::persistence::save_api_key(&self.llm.api_key)?;
+        }
         crate::config::persistence::save_config_file(
             &crate::config::persistence::PersistedConfig::from(self),
-        );
-        if !self.llm.api_key.is_empty()
-            && self.llm.provider != crate::config::llm_config::LlmProviderKind::Mock
-        {
-            let _ = crate::config::persistence::save_api_key(&self.llm.api_key);
-        }
+        )?;
+        Ok(())
     }
 
     pub fn config_dir() -> PathBuf {
@@ -78,9 +72,7 @@ impl Default for Configuration {
 impl From<crate::config::persistence::PersistedConfig> for Configuration {
     fn from(p: crate::config::persistence::PersistedConfig) -> Self {
         let mut llm = p.llm.clone();
-        if llm.api_key.is_empty()
-            && llm.provider != crate::config::llm_config::LlmProviderKind::Mock
-        {
+        if llm.api_key.is_empty() && llm.is_remote() {
             if let Ok(key) = crate::config::persistence::load_api_key() {
                 llm.api_key = key;
             }
