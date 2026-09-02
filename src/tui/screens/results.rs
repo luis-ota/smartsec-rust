@@ -226,7 +226,7 @@ fn render_vuln_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
                     format!("[{}] ", v.severity.label()),
                     Style::default().fg(sev_color).bold(),
                 ),
-                Span::styled(v.title, title_style),
+                Span::styled(v.title.as_str(), title_style),
                 Span::styled(
                     format!(" ({})", v.tool),
                     Style::default().fg(Color::DarkGray),
@@ -258,7 +258,7 @@ fn render_vuln_detail(app: &AppState, frame: &mut Frame, area: Rect, idx: usize)
                 format!(" [{}] ", v.severity.label()),
                 Style::default().fg(sev_color).bold(),
             ),
-            Span::styled(v.title, Style::default().fg(Color::White).bold()),
+            Span::styled(v.title.as_str(), Style::default().fg(Color::White).bold()),
         ]))
         .style(Style::default().bg(Color::Rgb(12, 12, 24)));
     let inner = block.inner(area);
@@ -272,7 +272,7 @@ fn render_vuln_detail(app: &AppState, frame: &mut Frame, area: Rect, idx: usize)
         ]),
         Line::from(vec![
             Span::styled(" Tool: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(v.tool, Style::default().fg(Color::Cyan)),
+            Span::styled(v.tool.as_str(), Style::default().fg(Color::Cyan)),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -324,7 +324,7 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
                     format!(" [{}] ", v.severity.label()),
                     Style::default().fg(v.severity.color()).bold(),
                 ),
-                Span::styled(v.title, Style::default().fg(Color::White).bold()),
+                Span::styled(v.title.as_str(), Style::default().fg(Color::White).bold()),
             ]));
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
@@ -354,7 +354,7 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
                     format!(" [{}] ", v.severity.label()),
                     Style::default().fg(v.severity.color()).bold(),
                 ),
-                Span::styled(v.title, Style::default().fg(Color::White).bold()),
+                Span::styled(v.title.as_str(), Style::default().fg(Color::White).bold()),
             ]));
             lines.push(Line::from(""));
             for p in v.didactic.split("\n\n") {
@@ -428,7 +428,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect) {
                     format!(" [{}] ", v.severity.label()),
                     Style::default().fg(v.severity.color()).bold(),
                 ),
-                Span::styled(v.title, Style::default().fg(Color::White).bold()),
+                Span::styled(v.title.as_str(), Style::default().fg(Color::White).bold()),
             ]));
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(

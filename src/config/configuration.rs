@@ -110,15 +110,15 @@ impl Configuration {
         Ok(())
     }
 
-    pub fn save(&self) -> Result<()> {
-        self.llm.validate().map_err(anyhow::Error::msg)?;
-        if self.llm.is_remote() {
-            crate::config::persistence::save_api_key(&self.llm.api_key)?;
-        }
+    pub fn save(&self) {
         crate::config::persistence::save_config_file(
             &crate::config::persistence::PersistedConfig::from(self),
-        )?;
-        Ok(())
+        );
+        if !self.llm.api_key.is_empty()
+            && self.llm.provider != crate::config::llm_config::LlmProviderKind::Mock
+        {
+            let _ = crate::config::persistence::save_api_key(&self.llm.api_key);
+        }
     }
 
     pub fn config_dir() -> PathBuf {
@@ -136,7 +136,9 @@ impl Default for Configuration {
 impl From<crate::config::persistence::PersistedConfig> for Configuration {
     fn from(p: crate::config::persistence::PersistedConfig) -> Self {
         let mut llm = p.llm.clone();
-        if llm.api_key.is_empty() && llm.is_remote() {
+        if llm.api_key.is_empty()
+            && llm.provider != crate::config::llm_config::LlmProviderKind::Mock
+        {
             if let Ok(key) = crate::config::persistence::load_api_key() {
                 llm.api_key = key;
             }
@@ -148,7 +150,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             execution_type: p.execution_type,
             llm,
             use_real_nuclei: p.use_real_nuclei,
-            demo_mode: false,
+            demo_mode: p.demo_mode,
             output_file: None,
             show_help: false,
             show_version: false,

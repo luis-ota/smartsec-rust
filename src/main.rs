@@ -67,6 +67,7 @@ struct ExecutionArgs {
     llm: Option<String>,
     model: Option<String>,
     real_nuclei: bool,
+    demo: bool,
 }
 
 impl Cli {
@@ -120,6 +121,7 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
             "--llm" => options.llm = Some(value(&mut index, "--llm")?),
             "--model" => options.model = Some(value(&mut index, "--model")?),
             "--real-nuclei" => options.real_nuclei = true,
+            "--demo" => options.demo = true,
             other => anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções"),
         }
         index += 1;
@@ -233,6 +235,11 @@ impl CommandLineInterface {
         println!("═══════════════════════════════════════════════════════════");
         println!("  Target: {}", config.target_url);
         println!("  Mode:   {}", config.execution_type);
+        if config.demo_mode {
+            println!("  Dados:  DEMO (findings simulados; nenhum scanner real)");
+        } else {
+            println!("  Dados:  REAL");
+        }
         println!("  LLM:    {:?} ({})", config.llm.provider, config.llm.model);
         println!(
             "  Nuclei: {}",
@@ -344,7 +351,8 @@ impl CommandLineInterface {
         println!("  OK Analise concluida.");
         println!("═══════════════════════════════════════════════════════════");
 
-        crate::report::ReportGenerator::export_to_markdown(&report, "smartsec-report.md")?;
+        let output_file = config.output_file.as_deref().unwrap_or("smartsec-report.md");
+        crate::report::ReportGenerator::export_to_markdown(&report, output_file)?;
         Ok(())
     }
 }
@@ -393,6 +401,7 @@ fn build_config(
     if options.real_nuclei {
         config.use_real_nuclei = true;
     }
+    config.demo_mode = options.demo;
     config.validate_target().map_err(anyhow::Error::msg)?;
     config.llm.validate().map_err(anyhow::Error::msg)?;
     Ok(config)
@@ -461,6 +470,7 @@ mod tests {
             llm: None,
             model: None,
             real_nuclei: false,
+            demo: false,
         };
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
         assert_eq!(configured.active_tools, vec!["Nmap"]);
@@ -474,6 +484,7 @@ mod tests {
             llm: None,
             model: None,
             real_nuclei: false,
+            demo: false,
         };
         assert!(build_config(&options, "não é um alvo".to_owned(), None, true).is_err());
         assert!(build_config(
@@ -486,6 +497,14 @@ mod tests {
             true
         )
         .is_err());
+    }
+
+    #[test]
+    fn demo_requires_explicit_cli_flag() {
+        let mut config = config::Configuration::default();
+        config.demo_mode = ["--demo".to_owned()].iter().any(|arg| arg == "--demo");
+        assert!(config.demo_mode);
+        assert!(!config::Configuration::default().demo_mode);
     }
 }
 
