@@ -1,10 +1,15 @@
 use crate::config::Configuration;
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::decision::DecisionRecord;
 
 pub struct ReportGenerator;
 
 impl ReportGenerator {
-    pub fn compile_report(config: &Configuration, vulns: &[Vulnerability]) -> String {
+    pub fn compile_report(
+        config: &Configuration,
+        vulns: &[Vulnerability],
+        decisions: &[DecisionRecord],
+    ) -> String {
         let mut md = String::new();
         md.push_str("# SmartSec - Relatório de Análise de Segurança\n\n");
         md.push_str(&format!("**URL Alvo:** {}\n\n", config.target_url));
@@ -17,6 +22,16 @@ impl ReportGenerator {
                 "REAL"
             }
         ));
+        if !decisions.is_empty() {
+            md.push_str("## Decisões Dinâmicas\n\n");
+            for decision in decisions {
+                md.push_str(&format!("### {}\n\n", decision.summary()));
+                md.push_str(&format!("- Modelo: {}\n", decision.model));
+                md.push_str(&format!("- Justificativa: {}\n", decision.justification));
+                md.push_str(&format!("- Parâmetros: {:?}\n", decision.parameters));
+                md.push_str(&format!("- Evidências: {:?}\n\n", decision.evidence));
+            }
+        }
         md.push_str("## Resumo\n\n");
         md.push_str(&format!("- Total de vulnerabilidades: {}\n", vulns.len()));
         let crit = vulns

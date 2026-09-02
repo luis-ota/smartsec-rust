@@ -2,7 +2,58 @@
 
 use crate::domain::severity::Severity;
 use crate::domain::vulnerability::{FindingSource, Vulnerability};
+use serde::Deserialize;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NmapPortFinding {
+    pub port: String,
+    pub service: Option<String>,
+    pub product: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NmapSignalRun {
+    #[serde(rename = "host", default)]
+    hosts: Vec<NmapSignalHost>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NmapSignalHost {
+    #[serde(default)]
+    ports: NmapSignalPorts,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NmapSignalPorts {
+    #[serde(rename = "port", default)]
+    ports: Vec<NmapSignalPort>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NmapSignalPort {
+    #[serde(rename = "@portid")]
+    port: String,
+    state: NmapSignalState,
+    service: Option<NmapSignalService>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NmapSignalState {
+    #[serde(rename = "@state")]
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NmapSignalService {
+    #[serde(rename = "@name")]
+    name: Option<String>,
+    #[serde(rename = "@product")]
+    product: Option<String>,
+    #[serde(rename = "@version")]
+    version: Option<String>,
+}
 
 fn now_iso8601() -> String {
     let secs = SystemTime::now()
@@ -15,31 +66,48 @@ fn now_iso8601() -> String {
     format!("2026-01-01T{:02}:{:02}:{:02}Z", h, m, s)
 }
 
+pub fn parse_nmap_ports(xml: &str) -> Vec<NmapPortFinding> {
+    let Ok(scan) = quick_xml::de::from_str::<NmapSignalRun>(xml) else {
+        return Vec::new();
+    };
+    scan.hosts
+        .into_iter()
+        .flat_map(|host| host.ports.ports)
+        .filter(|port| port.state.state == "open")
+        .map(|port| NmapPortFinding {
+            port: port.port,
+            service: port
+                .service
+                .as_ref()
+                .and_then(|service| service.name.clone()),
+            product: port
+                .service
+                .as_ref()
+                .and_then(|service| service.product.clone()),
+            version: port
+                .service
+                .as_ref()
+                .and_then(|service| service.version.clone()),
+        })
+        .collect()
+}
+
 pub fn parse_nmap_findings(xml: &str, target: &str) -> Vec<Vulnerability> {
-    let mut vulns = Vec::new();
-    let mut seen_ports: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for line in xml.lines() {
-        let trimmed = line.trim();
-        if let Some(port_id) = extract_port_open(trimmed) {
-            if !seen_ports.contains(&port_id) {
-                seen_ports.insert(port_id.clone());
-                let (service, product, version) = extract_service_info(trimmed);
-                if let Some(v) = build_vuln_for_port(
-                    &port_id,
-                    service.as_deref(),
-                    product.as_deref(),
-                    version.as_deref(),
-                    xml,
-                    target,
-                ) {
-                    vulns.push(v);
-                }
-            }
-        }
-    }
-
-    vulns
+    let mut seen_ports = std::collections::HashSet::new();
+    parse_nmap_ports(xml)
+        .into_iter()
+        .filter(|port| seen_ports.insert(port.port.clone()))
+        .filter_map(|port| {
+            build_vuln_for_port(
+                &port.port,
+                port.service.as_deref(),
+                port.product.as_deref(),
+                port.version.as_deref(),
+                xml,
+                target,
+            )
+        })
+        .collect()
 }
 
 fn extract_port_open(line: &str) -> Option<String> {
