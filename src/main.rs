@@ -162,6 +162,27 @@ impl CommandLineInterface {
         }
     }
 
+    fn print_help() {
+        println!("SmartSec - Security Analysis Platform");
+        println!();
+        println!("USO:");
+        println!("  smartsec [OPCOES]");
+        println!();
+        println!("OPCOES:");
+        println!("  -u, --url <URL>               Define a URL/alvo para o scan");
+        println!("  -a, --auto                    Executa em modo automatizado (headless)");
+        println!("  -d, --demo                    Executa em modo demonstrativo (dados simulados)");
+        println!("  -p, --provider <NOME>         Provedor de IA (mock, ollama, openai)");
+        println!("  -o, --output <ARQUIVO>        Salva o relatorio Markdown no caminho especificado");
+        println!("  -h, --help                    Exibe esta ajuda");
+        println!("  -v, --version                 Exibe a versao");
+        println!();
+        println!("EXEMPLOS:");
+        println!("  smartsec");
+        println!("  smartsec --auto --url http://target.local");
+        println!("  smartsec --auto --url http://target.local --demo -o relatorio.md");
+    }
+
     async fn display_tui(initial_config: config::Configuration) -> Result<()> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
