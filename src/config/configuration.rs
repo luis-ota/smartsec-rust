@@ -15,33 +15,53 @@ pub struct Configuration {
 
 impl Configuration {
     pub fn load(_args: &[String]) -> Result<Self> {
-        let config: Self = crate::config::persistence::load_config_file().into();
+        let config = Self::load_unvalidated();
         config.llm.validate().map_err(anyhow::Error::msg)?;
         Ok(config)
     }
 
+    pub fn load_unvalidated() -> Self {
+        crate::config::persistence::load_config_file().into()
+    }
+
+    pub fn load_from_path(path: &std::path::Path) -> Result<Self> {
+        let config = crate::config::persistence::load_config_file_from(path)
+            .map_err(anyhow::Error::msg)?;
+        let config: Self = config.into();
+        Ok(config)
+    }
+
     pub fn validate_target(&self) -> Result<(), String> {
-        if self.target_url.is_empty() {
-            return Err("Target URL is empty".to_string());
+        let target = self.target_url.trim();
+        if target.is_empty() || target.chars().any(char::is_whitespace) {
+            return Err("o alvo não pode estar vazio nem conter espaços".to_string());
         }
-        let normalized =
-            if self.target_url.starts_with("http://") || self.target_url.starts_with("https://") {
-                self.target_url.clone()
-            } else {
-                format!("http://{}", self.target_url)
-            };
-        if !(normalized.starts_with("http://") || normalized.starts_with("https://")) {
-            return Err("Invalid URL: must start with http:// or https://".to_string());
+        if target.contains("://") && !target.starts_with("http://") && !target.starts_with("https://") {
+            return Err("o alvo deve usar HTTP ou HTTPS".to_string());
         }
-        let without_scheme = normalized
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .split('/')
-            .next()
-            .unwrap_or("");
-        let host = without_scheme.split(':').next().unwrap_or("");
-        if host.is_empty() {
-            return Err("Invalid URL: missing host".to_string());
+        let normalized = if target.starts_with("http://") || target.starts_with("https://") {
+            target.to_owned()
+        } else {
+            format!("http://{target}")
+        };
+        let url = reqwest::Url::parse(&normalized)
+            .map_err(|_| "o alvo deve ser um IP, domínio ou URL válido".to_string())?;
+        let host = url
+            .host_str()
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| "o alvo deve conter um host válido".to_string())?;
+        if host.parse::<std::net::IpAddr>().is_err()
+            && (host.starts_with('.')
+                || host.ends_with('.')
+                || host.contains("..")
+                || host.split('.').any(|part| {
+                    part.is_empty()
+                        || part.starts_with('-')
+                        || part.ends_with('-')
+                        || !part.chars().all(|character| character.is_ascii_alphanumeric() || character == '-')
+                }))
+        {
+            return Err("o alvo deve ser um IP, domínio ou URL válido".to_string());
         }
         Ok(())
     }

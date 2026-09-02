@@ -43,14 +43,24 @@ Este e um **prototipo / prova de conceito**. A maioria das ferramentas de segura
 ## Uso rapido
 
 ```bash
+# Ajuda e versão
+cargo run -- --help
+cargo run -- --version
+
 # TUI interativa
 cargo run
 
-# Headless — scan automatico com relatorio
-cargo run -- --auto --url https://httpbin.org
+# Headless — scan automático com relatório
+cargo run -- scan --target https://httpbin.org
 
 # Headless — executar apenas o Nmap
-cargo run -- --auto --url https://example.com --tools Nmap
+cargo run -- scan --target https://example.com --tools Nmap
+
+# Executar manualmente uma ferramenta específica
+cargo run -- tool Nmap --target 192.0.2.10
+
+# Usar configuração TOML e substituir opções pela CLI
+cargo run -- scan --target example.com --config ./smartsec.toml --llm ollama --model llama3.1:8b
 
 # Para ativar o Nuclei real:
 # Na TUI: C-x s → Real Nuclei → Enable → Save
