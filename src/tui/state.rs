@@ -147,7 +147,11 @@ impl AppState {
             .iter()
             .map(|t| ToolItem {
                 tool: t.clone(),
-                selected: true,
+                selected: config.active_tools.is_empty()
+                    || config
+                        .active_tools
+                        .iter()
+                        .any(|active| active.eq_ignore_ascii_case(t.name)),
                 status: ToolStatus::Pending,
                 progress: 0,
             })
@@ -265,11 +269,7 @@ impl AppState {
     }
 
     pub fn vulnerabilities(&self) -> Vec<Vulnerability> {
-        if self.orchestrator.findings.is_empty() {
-            Vulnerability::mock_all()
-        } else {
-            self.orchestrator.findings.clone()
-        }
+        self.orchestrator.findings.clone()
     }
 
     pub fn ai_summary(&self) -> &str {
@@ -341,12 +341,22 @@ impl AppState {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
         }
 
-        let _exec = self.orchestrator.execute_tool(&tool_info, &target).await;
+        let execution = self.orchestrator.execute_tool(&tool_info, &target).await;
 
-        self.tools[self.exec_current].status = ToolStatus::Done;
+        let failed = execution.execution_error.is_some();
+        self.tools[self.exec_current].status = if failed {
+            ToolStatus::Failed
+        } else {
+            ToolStatus::Done
+        };
         self.tools[self.exec_current].progress = 100;
-        self.exec_logs
-            .push(format!("[{}] OK Scan complete", tool_info.name));
+        if let Some(error) = execution.execution_error {
+            self.exec_logs
+                .push(format!("[{}] FALHA: {}", tool_info.name, error));
+        } else {
+            self.exec_logs
+                .push(format!("[{}] Varredura concluída", tool_info.name));
+        }
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
@@ -357,9 +367,26 @@ impl AppState {
         let all_done = self
             .tools
             .iter()
-            .all(|t| !t.selected || t.status == ToolStatus::Done);
+            .all(|t| !t.selected || matches!(t.status, ToolStatus::Done | ToolStatus::Failed));
         if all_done {
             self.orchestrator.build_findings();
+            for execution in &self.orchestrator.execution_history {
+                let Some(error) = &execution.execution_error else {
+                    continue;
+                };
+                let Some(tool) = self
+                    .tools
+                    .iter_mut()
+                    .find(|tool| tool.tool.name == execution.tool_name)
+                else {
+                    continue;
+                };
+                if tool.status != ToolStatus::Failed {
+                    tool.status = ToolStatus::Failed;
+                    self.exec_logs
+                        .push(format!("[{}] FALHA: {}", execution.tool_name, error));
+                }
+            }
             self.sync_agent_from_orchestrator();
             self.step = AppStep::Analysis;
             self.analysis_phase = AnalysisPhase::Scanning;
@@ -409,6 +436,12 @@ impl AppState {
     }
 
     pub fn init_execution(&mut self) {
+        self.config.active_tools = self
+            .tools
+            .iter()
+            .filter(|tool| tool.selected)
+            .map(|tool| tool.tool.name.to_owned())
+            .collect();
         for t in &mut self.tools {
             if t.selected {
                 t.status = ToolStatus::Pending;
@@ -550,5 +583,26 @@ impl AppState {
 
     pub fn sync_agent_from_orchestrator(&mut self) {
         self.agent.last_analysis = self.orchestrator.last_log.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initializes_tui_with_nmap_selected_from_configuration() {
+        let mut config = Configuration::default();
+        config.active_tools = vec!["nmap".to_owned()];
+
+        let app = AppState::new(config);
+
+        let selected: Vec<_> = app
+            .tools
+            .iter()
+            .filter(|tool| tool.selected)
+            .map(|tool| tool.tool.name)
+            .collect();
+        assert_eq!(selected, ["Nmap"]);
     }
 }

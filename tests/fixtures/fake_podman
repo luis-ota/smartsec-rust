@@ -1,0 +1,12 @@
+#!/bin/sh
+
+directory=$(dirname "$0")
+printf '%s\n' "$*" >> "$directory/calls.log"
+
+case "$1" in
+  info) printf 'true\n' ;;
+  create) exec sh "$directory/create.sh" ;;
+  start) exec sh "$directory/start.sh" ;;
+  kill) exit 0 ;;
+  rm) exec sh "$directory/cleanup.sh" ;;
+esac
