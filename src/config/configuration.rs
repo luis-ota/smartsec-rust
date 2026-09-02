@@ -116,7 +116,7 @@ impl Configuration {
     }
 
     pub fn save(&self) {
-        crate::config::persistence::save_config_file(
+        let _ = crate::config::persistence::save_config_file(
             &crate::config::persistence::PersistedConfig::from(self),
         );
         if !self.llm.api_key.is_empty()

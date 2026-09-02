@@ -183,6 +183,7 @@ impl CommandLineInterface {
         }
     }
 
+    #[allow(dead_code)]
     fn print_help() {
         println!("SmartSec - Security Analysis Platform");
         println!();

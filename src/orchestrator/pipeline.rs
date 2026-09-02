@@ -2,9 +2,12 @@ use crate::ai::agent::AIAgent;
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::mocks::MockTool;
-use crate::tools::nuclei::NucleiTool;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::tools::nmap::{NmapTool, NMAP_IMAGE, NMAP_VERSION};
+use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE};
+use anyhow::Result;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct Orchestrator {
     pub config: Configuration,
@@ -116,15 +119,50 @@ impl Orchestrator {
     }
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
-        let runner: Box<dyn SecurityToolRunner> =
-            if !self.config.demo_mode && tool_info.is_nuclei() && self.config.use_real_nuclei {
-                Box::new(NucleiTool)
-            } else {
-                Box::new(MockTool {
-                    name: tool_info.name,
-                    description: tool_info.description,
-                })
+        let real_nmap = !self.config.demo_mode && tool_info.is_nmap();
+        let real_nuclei =
+            !self.config.demo_mode && tool_info.is_nuclei() && self.config.use_real_nuclei;
+        if real_nmap {
+            let mut execution = SecurityTool::new(tool_info.name, target);
+            execution.tool_version = Some(NMAP_VERSION.to_owned());
+            let executor =
+                crate::orchestrator::sandbox::PodmanExecutor::new(Duration::from_secs(900));
+            match executor
+                .execute(NMAP_IMAGE, &NmapTool::container_arguments(target))
+                .await
+            {
+                Ok(result) => {
+                    execution.output = podman_output(result);
+                }
+                Err(error) => {
+                    execution.execution_error =
+                        Some(format!("falha no Nmap via Podman: {error:#}"));
+                }
+            }
+            self.execution_history.push(execution.clone());
+            return execution;
+        }
+        if real_nuclei {
+            let mut execution = SecurityTool::new(tool_info.name, target);
+            let executor = PodmanExecutor::new(Duration::from_secs(900));
+            execution.output = match executor
+                .execute(NUCLEI_IMAGE, &NucleiTool::container_arguments(target))
+                .await
+            {
+                Ok(result) => podman_output(result),
+                Err(error) => format!("[ERRO] falha no Nuclei via Podman: {error:#}"),
             };
+            self.execution_history.push(execution.clone());
+            return execution;
+        }
+        let runner: Box<dyn SecurityToolRunner> = if real_nuclei {
+            Box::new(NucleiTool)
+        } else {
+            Box::new(MockTool {
+                name: tool_info.name,
+                description: tool_info.description,
+            })
+        };
 
         let arguments = runner.configure_command(target);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
@@ -212,6 +250,25 @@ impl Orchestrator {
         let analysis = self.agent.analyze_logs(&self.findings).await;
         self.last_log = analysis;
         Ok(self.findings.clone())
+    }
+}
+
+fn podman_output(result: ExecutionResult) -> String {
+    let cleanup = result
+        .cleanup_error
+        .map(|error| format!(" Falha na limpeza: {error}"))
+        .unwrap_or_default();
+    match result.status {
+        ExecutionStatus::Succeeded if cleanup.is_empty() => result.stdout,
+        ExecutionStatus::Succeeded => {
+            format!("[ERRO] Varredura concluída, mas o container não foi removido.{cleanup}")
+        }
+        ExecutionStatus::Failed(code) => format!(
+            "[ERRO] O container encerrou com status {}: {}{cleanup}",
+            code.map_or_else(|| "desconhecido".to_owned(), |value| value.to_string()),
+            result.stderr.trim()
+        ),
+        ExecutionStatus::TimedOut => format!("[ERRO] A varredura excedeu o tempo limite.{cleanup}"),
     }
 }
 
