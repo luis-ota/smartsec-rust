@@ -135,6 +135,7 @@ pub fn parse_nuclei_findings(jsonl_output: &str) -> NucleiParseReport {
 
         report.findings.push(NucleiFinding {
             vulnerability: Vulnerability {
+                details: None,
                 title: Box::leak(title.into_boxed_str()),
                 severity,
                 description: Box::leak(description.into_boxed_str()),

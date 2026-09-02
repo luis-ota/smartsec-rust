@@ -23,6 +23,15 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
+    #[allow(clippy::manual_checked_ops)]
+    fn progress_percentage(done: usize, total: usize) -> usize {
+        if total > 0 {
+            done * 100 / total
+        } else {
+            0
+        }
+    }
+
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::DarkGray))
@@ -41,7 +50,7 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
         .iter()
         .filter(|t| t.status == ToolStatus::Running)
         .count();
-    let overall_pct = if total > 0 { done * 100 / total } else { 0 };
+    let overall_pct = progress_percentage(done, total);
 
     let header = Paragraph::new(Line::from(vec![
         Span::styled(" | ", Style::default().fg(Color::Cyan)),
