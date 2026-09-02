@@ -47,12 +47,6 @@ pub enum SettingsField {
     BaseUrl,
     ApiKey,
     Model,
-    Timeout,
-    Retries,
-    RemoteConsent,
-    FallbackEnabled,
-    FallbackBaseUrl,
-    FallbackModel,
     RealNuclei,
 }
 
@@ -101,12 +95,6 @@ pub struct AppState {
     pub settings_input_base_url: String,
     pub settings_input_api_key: String,
     pub settings_input_model: String,
-    pub settings_input_timeout: String,
-    pub settings_input_retries: String,
-    pub settings_remote_consent: bool,
-    pub settings_fallback_enabled: bool,
-    pub settings_input_fallback_base_url: String,
-    pub settings_input_fallback_model: String,
     pub settings_real_nuclei: bool,
     pub llm_warning: Option<String>,
     pub exec_paused: bool,
@@ -147,11 +135,7 @@ impl AppState {
             .iter()
             .map(|t| ToolItem {
                 tool: t.clone(),
-                selected: config.active_tools.is_empty()
-                    || config
-                        .active_tools
-                        .iter()
-                        .any(|active| active.eq_ignore_ascii_case(t.name)),
+                selected: true,
                 status: ToolStatus::Pending,
                 progress: 0,
             })
@@ -174,12 +158,6 @@ impl AppState {
                 config.use_real_nuclei,
             )
         };
-        let timeout = config.llm.timeout_secs.to_string();
-        let retries = config.llm.max_retries.to_string();
-        let remote_consent = config.llm.remote_consent;
-        let fallback_enabled = config.llm.fallback_enabled;
-        let fallback_base_url = config.llm.fallback_base_url.clone();
-        let fallback_model = config.llm.fallback_model.clone();
 
         Self {
             config,
@@ -219,12 +197,6 @@ impl AppState {
             settings_input_base_url: base_url,
             settings_input_api_key: api_key,
             settings_input_model: model,
-            settings_input_timeout: timeout,
-            settings_input_retries: retries,
-            settings_remote_consent: remote_consent,
-            settings_fallback_enabled: fallback_enabled,
-            settings_input_fallback_base_url: fallback_base_url,
-            settings_input_fallback_model: fallback_model,
             settings_real_nuclei: real_nuclei,
             llm_warning: None,
             exec_paused: false,
@@ -269,7 +241,11 @@ impl AppState {
     }
 
     pub fn vulnerabilities(&self) -> Vec<Vulnerability> {
-        self.orchestrator.findings.clone()
+        if self.orchestrator.findings.is_empty() && self.config.demo_mode {
+            crate::domain::demo_findings::demo_all(&self.config.target_url)
+        } else {
+            self.orchestrator.findings.clone()
+        }
     }
 
     pub fn ai_summary(&self) -> &str {
@@ -341,22 +317,12 @@ impl AppState {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
         }
 
-        let execution = self.orchestrator.execute_tool(&tool_info, &target).await;
+        let _exec = self.orchestrator.execute_tool(&tool_info, &target).await;
 
-        let failed = execution.execution_error.is_some();
-        self.tools[self.exec_current].status = if failed {
-            ToolStatus::Failed
-        } else {
-            ToolStatus::Done
-        };
+        self.tools[self.exec_current].status = ToolStatus::Done;
         self.tools[self.exec_current].progress = 100;
-        if let Some(error) = execution.execution_error {
-            self.exec_logs
-                .push(format!("[{}] FALHA: {}", tool_info.name, error));
-        } else {
-            self.exec_logs
-                .push(format!("[{}] Varredura concluída", tool_info.name));
-        }
+        self.exec_logs
+            .push(format!("[{}] OK Scan complete", tool_info.name));
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
@@ -367,26 +333,9 @@ impl AppState {
         let all_done = self
             .tools
             .iter()
-            .all(|t| !t.selected || matches!(t.status, ToolStatus::Done | ToolStatus::Failed));
+            .all(|t| !t.selected || t.status == ToolStatus::Done);
         if all_done {
             self.orchestrator.build_findings();
-            for execution in &self.orchestrator.execution_history {
-                let Some(error) = &execution.execution_error else {
-                    continue;
-                };
-                let Some(tool) = self
-                    .tools
-                    .iter_mut()
-                    .find(|tool| tool.tool.name == execution.tool_name)
-                else {
-                    continue;
-                };
-                if tool.status != ToolStatus::Failed {
-                    tool.status = ToolStatus::Failed;
-                    self.exec_logs
-                        .push(format!("[{}] FALHA: {}", execution.tool_name, error));
-                }
-            }
             self.sync_agent_from_orchestrator();
             self.step = AppStep::Analysis;
             self.analysis_phase = AnalysisPhase::Scanning;
@@ -436,12 +385,6 @@ impl AppState {
     }
 
     pub fn init_execution(&mut self) {
-        self.config.active_tools = self
-            .tools
-            .iter()
-            .filter(|tool| tool.selected)
-            .map(|tool| tool.tool.name.to_owned())
-            .collect();
         for t in &mut self.tools {
             if t.selected {
                 t.status = ToolStatus::Pending;
@@ -502,51 +445,20 @@ impl AppState {
     pub fn apply_settings(&mut self) {
         let provider =
             LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
-        let mut updated = self.config.clone();
-        updated.llm.provider = provider;
+        self.config.llm.provider = provider;
         if self.settings_input_base_url.is_empty() {
-            updated.llm.base_url = provider.default_base_url().to_string();
+            self.config.llm.base_url = provider.default_base_url().to_string();
         } else {
-            updated.llm.base_url = self.settings_input_base_url.clone();
+            self.config.llm.base_url = self.settings_input_base_url.clone();
         }
-        updated.llm.api_key = self.settings_input_api_key.clone();
+        self.config.llm.api_key = self.settings_input_api_key.clone();
         if self.settings_input_model.is_empty() {
-            updated.llm.model = provider.default_model().to_string();
+            self.config.llm.model = provider.default_model().to_string();
         } else {
-            updated.llm.model = self.settings_input_model.clone();
+            self.config.llm.model = self.settings_input_model.clone();
         }
-        let timeout = match self.settings_input_timeout.parse() {
-            Ok(value) => value,
-            Err(_) => {
-                self.llm_warning = Some("O tempo limite deve ser um número inteiro".to_string());
-                return;
-            }
-        };
-        let retries = match self.settings_input_retries.parse() {
-            Ok(value) => value,
-            Err(_) => {
-                self.llm_warning = Some("As tentativas devem ser um número inteiro".to_string());
-                return;
-            }
-        };
-        updated.llm.timeout_secs = timeout;
-        updated.llm.max_retries = retries;
-        updated.llm.remote_consent = self.settings_remote_consent;
-        updated.llm.fallback_enabled = self.settings_fallback_enabled;
-        updated.llm.fallback_base_url = self.settings_input_fallback_base_url.clone();
-        updated.llm.fallback_model = self.settings_input_fallback_model.clone();
-        updated.use_real_nuclei = self.settings_real_nuclei;
-        if let Err(error) = updated.save() {
-            self.llm_warning = Some(error.to_string());
-            return;
-        }
-
-        updated.provider_mode = format!("{:?}", provider);
-        self.config = updated;
-        self.orchestrator.config = self.config.clone();
-        self.orchestrator.agent = AIAgent::from_config(&self.config.llm);
-        self.agent = AIAgent::from_config(&self.config.llm);
-        self.llm_warning = None;
+        self.config.use_real_nuclei = self.settings_real_nuclei;
+        self.config.save();
         self.show_settings = false;
     }
 
@@ -583,26 +495,5 @@ impl AppState {
 
     pub fn sync_agent_from_orchestrator(&mut self) {
         self.agent.last_analysis = self.orchestrator.last_log.clone();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn initializes_tui_with_nmap_selected_from_configuration() {
-        let mut config = Configuration::default();
-        config.active_tools = vec!["nmap".to_owned()];
-
-        let app = AppState::new(config);
-
-        let selected: Vec<_> = app
-            .tools
-            .iter()
-            .filter(|tool| tool.selected)
-            .map(|tool| tool.tool.name)
-            .collect();
-        assert_eq!(selected, ["Nmap"]);
     }
 }

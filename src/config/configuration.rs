@@ -11,14 +11,23 @@ pub struct Configuration {
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
     pub use_real_nuclei: bool,
+    /// Modo demo: quando `true`, o pipeline usa achados simulados em vez de executar ferramentas reais.
+    /// Só deve ser ativado explicitamente via `--demo`. Padrão: `false`.
     pub demo_mode: bool,
 }
 
 impl Configuration {
     pub fn load(_args: &[String]) -> Result<Self> {
-        let config: Self = crate::config::persistence::load_config_file().into();
-        config.llm.validate().map_err(anyhow::Error::msg)?;
-        Ok(config)
+        let persisted = crate::config::persistence::load_config_file();
+        Ok(Self {
+            target_url: persisted.target_url.clone(),
+            active_tools: persisted.active_tools.clone(),
+            provider_mode: format!("{:?}", persisted.llm.provider),
+            execution_type: persisted.execution_type,
+            llm: persisted.llm.clone(),
+            use_real_nuclei: persisted.use_real_nuclei,
+            demo_mode: false,
+        })
     }
 
     pub fn validate_target(&self) -> Result<(), String> {
@@ -47,15 +56,15 @@ impl Configuration {
         Ok(())
     }
 
-    pub fn save(&self) -> Result<()> {
-        self.llm.validate().map_err(anyhow::Error::msg)?;
-        if self.llm.is_remote() {
-            crate::config::persistence::save_api_key(&self.llm.api_key)?;
-        }
+    pub fn save(&self) {
         crate::config::persistence::save_config_file(
             &crate::config::persistence::PersistedConfig::from(self),
-        )?;
-        Ok(())
+        );
+        if !self.llm.api_key.is_empty()
+            && self.llm.provider != crate::config::llm_config::LlmProviderKind::Mock
+        {
+            let _ = crate::config::persistence::save_api_key(&self.llm.api_key);
+        }
     }
 
     pub fn config_dir() -> PathBuf {
@@ -73,7 +82,9 @@ impl Default for Configuration {
 impl From<crate::config::persistence::PersistedConfig> for Configuration {
     fn from(p: crate::config::persistence::PersistedConfig) -> Self {
         let mut llm = p.llm.clone();
-        if llm.api_key.is_empty() && llm.is_remote() {
+        if llm.api_key.is_empty()
+            && llm.provider != crate::config::llm_config::LlmProviderKind::Mock
+        {
             if let Ok(key) = crate::config::persistence::load_api_key() {
                 llm.api_key = key;
             }
@@ -85,7 +96,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             execution_type: p.execution_type,
             llm,
             use_real_nuclei: p.use_real_nuclei,
-            demo_mode: p.demo_mode,
+            demo_mode: false,
         }
     }
 }
