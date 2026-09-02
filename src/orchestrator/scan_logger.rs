@@ -39,6 +39,7 @@ pub struct ScanMetadata {
 
 /// Resumo compacto para listagem de scans históricos.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct ScanRecordSummary {
     pub scan_id: String,
     pub target_url: String,
@@ -48,6 +49,7 @@ pub struct ScanRecordSummary {
 }
 
 impl ScanMetadata {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         scan_id: String,
         target_url: String,
@@ -60,10 +62,22 @@ impl ScanMetadata {
         agent_analysis: String,
     ) -> Self {
         let findings_count = findings.len();
-        let critical_count = findings.iter().filter(|v| v.severity == Severity::Critical).count();
-        let high_count = findings.iter().filter(|v| v.severity == Severity::High).count();
-        let medium_count = findings.iter().filter(|v| v.severity == Severity::Medium).count();
-        let low_count = findings.iter().filter(|v| v.severity == Severity::Low).count();
+        let critical_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::Critical)
+            .count();
+        let high_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::High)
+            .count();
+        let medium_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::Medium)
+            .count();
+        let low_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::Low)
+            .count();
 
         Self {
             scan_id,
@@ -120,6 +134,7 @@ pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Re
 }
 
 /// Lista o resumo de todos os scans estruturados gravados em um diretório.
+#[allow(dead_code)]
 pub fn list_scan_logs_from_dir(dir: &PathBuf) -> Result<Vec<ScanRecordSummary>> {
     let mut summaries = Vec::new();
     if !dir.exists() {
@@ -149,6 +164,7 @@ pub fn list_scan_logs_from_dir(dir: &PathBuf) -> Result<Vec<ScanRecordSummary>> 
 }
 
 /// Carrega os metadados completos de um scan dado seu caminho de arquivo.
+#[allow(dead_code)]
 pub fn load_scan_log_from_file(file_path: &PathBuf) -> Result<ScanMetadata> {
     let content = fs::read_to_string(file_path)
         .with_context(|| format!("Falha ao ler arquivo de log {:?}", file_path))?;
@@ -160,11 +176,13 @@ pub fn load_scan_log_from_file(file_path: &PathBuf) -> Result<ScanMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::vulnerability::FindingSource;
     use crate::domain::Severity;
 
     #[test]
     fn test_save_and_load_scan_log() {
-        let temp_dir = std::env::temp_dir().join(format!("smartsec_test_scans_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("smartsec_test_scans_{}", std::process::id()));
         let _ = fs::remove_dir_all(&temp_dir);
 
         let metadata = ScanMetadata::new(
@@ -188,6 +206,10 @@ mod tests {
                 tool: "Nuclei".to_string(),
                 recommendation: "Fix it".to_string(),
                 didactic: "Didactic text".to_string(),
+                source: FindingSource::Real,
+                target: "http://target.local".to_string(),
+                evidence: "test evidence".to_string(),
+                detected_at: "2026-08-31T12:01:00Z".to_string(),
             }],
             "AI Analysis text".to_string(),
         );

@@ -197,6 +197,7 @@ mod tests {
                 ..LlmConfig::default()
             },
             use_real_nuclei: false,
+            demo_mode: false,
         };
         let mut app = AppState::new(config);
         let backend = TestBackend::new(80, 24);

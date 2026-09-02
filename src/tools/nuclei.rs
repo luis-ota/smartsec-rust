@@ -1,5 +1,5 @@
-use crate::orchestrator::decision::{NucleiPlan, NucleiTemplateProfile};
 use crate::domain::security_tool::SecurityToolRunner;
+use crate::orchestrator::decision::{NucleiPlan, NucleiTemplateProfile};
 
 pub struct NucleiTool;
 
@@ -40,7 +40,8 @@ impl SecurityToolRunner for NucleiTool {
     }
 
     async fn parse_output(&self, target: &str) -> Result<String, anyhow::Error> {
-        self.parse_output_with_plan(target, &Self::default_plan()).await
+        self.parse_output_with_plan(target, &Self::default_plan())
+            .await
     }
 }
 
@@ -71,7 +72,9 @@ impl NucleiTool {
             "-silent".to_string(),
         ];
 
-        let base = dirs::home_dir().unwrap_or_default().join("nuclei-templates");
+        let base = dirs::home_dir()
+            .unwrap_or_default()
+            .join("nuclei-templates");
         for template in plan.template_paths() {
             args.push("-t".to_string());
             args.push(base.join(template).to_string_lossy().to_string());
@@ -96,12 +99,10 @@ impl NucleiTool {
             Some(ref p) => format!("{}:{}", host, p),
             None => host,
         };
-        let base = dirs::home_dir().unwrap_or_default().join("nuclei-templates");
-        cmd.arg("-u")
-            .arg(&target_arg)
-            .arg("-jsonl")
-            .arg("-silent")
-        ;
+        let base = dirs::home_dir()
+            .unwrap_or_default()
+            .join("nuclei-templates");
+        cmd.arg("-u").arg(&target_arg).arg("-jsonl").arg("-silent");
 
         for template in plan.template_paths() {
             cmd.arg("-t")
