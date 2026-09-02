@@ -1,4 +1,4 @@
-use crate::domain::vulnerability::{FindingSource, Vulnerability};
+use crate::domain::vulnerability::Vulnerability;
 use crate::domain::Severity;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -57,10 +57,22 @@ impl ScanMetadata {
         agent_analysis: String,
     ) -> Self {
         let findings_count = findings.len();
-        let critical_count = findings.iter().filter(|v| v.severity == Severity::Critical).count();
-        let high_count = findings.iter().filter(|v| v.severity == Severity::High).count();
-        let medium_count = findings.iter().filter(|v| v.severity == Severity::Medium).count();
-        let low_count = findings.iter().filter(|v| v.severity == Severity::Low).count();
+        let critical_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::Critical)
+            .count();
+        let high_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::High)
+            .count();
+        let medium_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::Medium)
+            .count();
+        let low_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::Low)
+            .count();
 
         Self {
             scan_id,
@@ -157,7 +169,8 @@ mod tests {
 
     #[test]
     fn test_save_and_load_scan_log() {
-        let temp_dir = std::env::temp_dir().join(format!("smartsec_test_scans_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("smartsec_test_scans_{}", std::process::id()));
         let _ = fs::remove_dir_all(&temp_dir);
 
         let metadata = ScanMetadata::new(

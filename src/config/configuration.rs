@@ -38,8 +38,8 @@ impl Configuration {
     }
 
     pub fn load_from_path(path: &std::path::Path) -> Result<Self> {
-        let config = crate::config::persistence::load_config_file_from(path)
-            .map_err(anyhow::Error::msg)?;
+        let config =
+            crate::config::persistence::load_config_file_from(path).map_err(anyhow::Error::msg)?;
         let config: Self = config.into();
         Ok(config)
     }
@@ -80,7 +80,10 @@ impl Configuration {
         if target.is_empty() || target.chars().any(char::is_whitespace) {
             return Err("o alvo não pode estar vazio nem conter espaços".to_string());
         }
-        if target.contains("://") && !target.starts_with("http://") && !target.starts_with("https://") {
+        if target.contains("://")
+            && !target.starts_with("http://")
+            && !target.starts_with("https://")
+        {
             return Err("o alvo deve usar HTTP ou HTTPS".to_string());
         }
         let normalized = if target.starts_with("http://") || target.starts_with("https://") {
@@ -102,7 +105,9 @@ impl Configuration {
                     part.is_empty()
                         || part.starts_with('-')
                         || part.ends_with('-')
-                        || !part.chars().all(|character| character.is_ascii_alphanumeric() || character == '-')
+                        || !part
+                            .chars()
+                            .all(|character| character.is_ascii_alphanumeric() || character == '-')
                 }))
         {
             return Err("o alvo deve ser um IP, domínio ou URL válido".to_string());
@@ -164,7 +169,11 @@ mod tests {
 
     #[test]
     fn parse_cli_url_and_auto() {
-        let args = vec!["--url".to_string(), "http://example.com".to_string(), "--auto".to_string()];
+        let args = vec![
+            "--url".to_string(),
+            "http://example.com".to_string(),
+            "--auto".to_string(),
+        ];
         let mut config = Configuration::default();
         config.parse_args(&args).unwrap();
         assert_eq!(config.target_url, "http://example.com");
@@ -174,10 +183,12 @@ mod tests {
     #[test]
     fn parse_cli_short_flags() {
         let args = vec![
-            "-u".to_string(), "http://test.local".to_string(),
+            "-u".to_string(),
+            "http://test.local".to_string(),
             "-a".to_string(),
             "-d".to_string(),
-            "-o".to_string(), "out.md".to_string(),
+            "-o".to_string(),
+            "out.md".to_string(),
         ];
         let mut config = Configuration::default();
         config.parse_args(&args).unwrap();
@@ -205,6 +216,9 @@ mod tests {
         let args = vec!["-p".to_string(), "ollama".to_string()];
         let mut config = Configuration::default();
         config.parse_args(&args).unwrap();
-        assert_eq!(config.llm.provider, crate::config::llm_config::LlmProviderKind::Ollama);
+        assert_eq!(
+            config.llm.provider,
+            crate::config::llm_config::LlmProviderKind::Ollama
+        );
     }
 }

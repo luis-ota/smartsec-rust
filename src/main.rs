@@ -72,14 +72,20 @@ struct ExecutionArgs {
 
 impl Cli {
     fn parse(arguments: &[String]) -> Result<Self> {
-        if arguments.iter().any(|argument| argument == "--version" || argument == "-V") {
+        if arguments
+            .iter()
+            .any(|argument| argument == "--version" || argument == "-V")
+        {
             println!("smartsec-rust 0.2.0");
             return Ok(Self { command: None });
         }
         if arguments.is_empty() {
             return Ok(Self { command: None });
         }
-        if arguments.iter().any(|argument| argument == "--help" || argument == "-h") {
+        if arguments
+            .iter()
+            .any(|argument| argument == "--help" || argument == "-h")
+        {
             print_help();
             return Ok(Self { command: None });
         }
@@ -87,7 +93,9 @@ impl Cli {
         let (tool, start) = match command {
             "scan" => (None, 1),
             "tool" => {
-                let tool = arguments.get(1).ok_or_else(|| anyhow::anyhow!("a ferramenta é obrigatória"))?;
+                let tool = arguments
+                    .get(1)
+                    .ok_or_else(|| anyhow::anyhow!("a ferramenta é obrigatória"))?;
                 (Some(tool.clone()), 2)
             }
             other => anyhow::bail!("comando desconhecido: {other}; use --help para ver as opções"),
@@ -96,7 +104,11 @@ impl Cli {
         let target = target.ok_or_else(|| anyhow::anyhow!("o argumento --target é obrigatório"))?;
         Ok(Self {
             command: Some(if let Some(tool) = tool {
-                CliCommand::Tool(ToolArgs { tool, target, options })
+                CliCommand::Tool(ToolArgs {
+                    tool,
+                    target,
+                    options,
+                })
             } else {
                 CliCommand::Scan(ScanArgs { target, options })
             }),
@@ -112,7 +124,10 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
         let argument = &arguments[index];
         let value = |index: &mut usize, name: &str| -> Result<String> {
             *index += 1;
-            arguments.get(*index).cloned().ok_or_else(|| anyhow::anyhow!("o argumento {name} exige um valor"))
+            arguments
+                .get(*index)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("o argumento {name} exige um valor"))
         };
         match argument.as_str() {
             "--target" | "-t" => target = Some(value(&mut index, "--target")?),
@@ -122,7 +137,9 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
             "--model" => options.model = Some(value(&mut index, "--model")?),
             "--real-nuclei" => options.real_nuclei = true,
             "--demo" => options.demo = true,
-            other => anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções"),
+            other => {
+                anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções")
+            }
         }
         index += 1;
     }
@@ -143,9 +160,11 @@ impl CommandLineInterface {
 
     pub async fn run(self) -> Result<()> {
         let cli = Cli::parse(&self.arguments)?;
-        if self.arguments.iter().any(|argument| {
-            matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V")
-        }) {
+        if self
+            .arguments
+            .iter()
+            .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+        {
             return Ok(());
         }
         match cli.command {
@@ -175,7 +194,9 @@ impl CommandLineInterface {
         println!("  -a, --auto                    Executa em modo automatizado (headless)");
         println!("  -d, --demo                    Executa em modo demonstrativo (dados simulados)");
         println!("  -p, --provider <NOME>         Provedor de IA (mock, ollama, openai)");
-        println!("  -o, --output <ARQUIVO>        Salva o relatorio Markdown no caminho especificado");
+        println!(
+            "  -o, --output <ARQUIVO>        Salva o relatorio Markdown no caminho especificado"
+        );
         println!("  -h, --help                    Exibe esta ajuda");
         println!("  -v, --version                 Exibe a versao");
         println!();
@@ -351,7 +372,10 @@ impl CommandLineInterface {
         println!("  OK Analise concluida.");
         println!("═══════════════════════════════════════════════════════════");
 
-        let output_file = config.output_file.as_deref().unwrap_or("smartsec-report.md");
+        let output_file = config
+            .output_file
+            .as_deref()
+            .unwrap_or("smartsec-report.md");
         crate::report::ReportGenerator::export_to_markdown(&report, output_file)?;
         Ok(())
     }
@@ -368,7 +392,11 @@ fn build_config(
         None => config::Configuration::load_unvalidated(),
     };
     config.target_url = target;
-    config.execution_type = if auto { ExecutionType::Auto } else { ExecutionType::Assisted };
+    config.execution_type = if auto {
+        ExecutionType::Auto
+    } else {
+        ExecutionType::Assisted
+    };
     if let Some(tools) = &options.tools {
         config.active_tools = tools
             .split(',')
@@ -410,7 +438,10 @@ fn build_config(
 fn validate_tools(active_tools: &[String]) -> Result<()> {
     let catalog = ToolInfo::all();
     for selected in active_tools {
-        if !catalog.iter().any(|tool| tool.name.eq_ignore_ascii_case(selected)) {
+        if !catalog
+            .iter()
+            .any(|tool| tool.name.eq_ignore_ascii_case(selected))
+        {
             anyhow::bail!("ferramenta desconhecida: {selected}");
         }
     }
@@ -448,10 +479,14 @@ mod tests {
     fn parses_scan_target_and_options() {
         let cli = Cli::parse(&[
             "scan".to_owned(),
-            "--target".to_owned(), "192.0.2.10".to_owned(),
-            "--tools".to_owned(), "Nmap,Nuclei".to_owned(),
-            "--llm".to_owned(), "ollama".to_owned(),
-            "--model".to_owned(), "llama3.1:8b".to_owned(),
+            "--target".to_owned(),
+            "192.0.2.10".to_owned(),
+            "--tools".to_owned(),
+            "Nmap,Nuclei".to_owned(),
+            "--llm".to_owned(),
+            "ollama".to_owned(),
+            "--model".to_owned(),
+            "llama3.1:8b".to_owned(),
         ])
         .unwrap();
         let Some(CliCommand::Scan(args)) = cli.command else {

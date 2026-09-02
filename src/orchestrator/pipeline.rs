@@ -46,6 +46,38 @@ impl Orchestrator {
         format!("smartsec-{:x}", secs)
     }
 
+    pub fn persist_scan_log(&self) -> Result<std::path::PathBuf> {
+        let records = self
+            .execution_history
+            .iter()
+            .map(
+                |execution| crate::orchestrator::scan_logger::ToolExecutionRecord {
+                    tool_name: execution.tool_name.clone(),
+                    arguments: execution
+                        .arguments
+                        .split_whitespace()
+                        .map(str::to_owned)
+                        .collect(),
+                    executed_at: execution.executed_at.clone(),
+                    output_bytes: execution.output.len(),
+                    output_sample: execution.output.chars().take(512).collect(),
+                },
+            )
+            .collect();
+        let metadata = crate::orchestrator::scan_logger::ScanMetadata::new(
+            self.container_id(),
+            self.config.target_url.clone(),
+            String::new(),
+            String::new(),
+            self.config.execution_type.to_string(),
+            format!("{:?}", self.config.llm.provider),
+            records,
+            self.findings.clone(),
+            self.last_log.clone(),
+        );
+        crate::orchestrator::scan_logger::save_scan_log(&metadata)
+    }
+
     #[allow(dead_code)]
     pub fn status(&self) -> &str {
         if self.cancelled {
@@ -133,10 +165,8 @@ impl Orchestrator {
                 real_findings.extend(parsed);
             }
             if exec.tool_name == "Nmap" && !exec.output.is_empty() {
-                let parsed = crate::orchestrator::nmap_parser::parse_nmap_findings(
-                    &exec.output,
-                    &target,
-                );
+                let parsed =
+                    crate::orchestrator::nmap_parser::parse_nmap_findings(&exec.output, &target);
                 real_findings.extend(parsed);
             }
         }
