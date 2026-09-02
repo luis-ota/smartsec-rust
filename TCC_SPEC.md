@@ -131,6 +131,8 @@ O prototipo possui TUI, configuracao, suporte a mouse, relatorio Markdown e inte
 
 Nenhum finding demonstrativo pode ser misturado a uma execucao real. Dados de demonstracao devem exigir modo explicito e ser marcados como `demo` ou `mock`.
 
+O modo demonstrativo e ativado explicitamente com `--demo`. Cada finding deve manter campos proprietarios e proveniencia com origem, ferramenta, alvo, evidencia e timestamp; o modo real somente aceita achados produzidos pelos parsers dos scanners executados.
+
 ## 8. Macro-sprints
 
 ### Sprint 1 - Nucleo de Orquestracao e Isolamento

@@ -12,6 +12,8 @@ pub struct PersistedConfig {
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
     pub use_real_nuclei: bool,
+    #[serde(default)]
+    pub demo_mode: bool,
 }
 
 impl Default for PersistedConfig {
@@ -22,6 +24,7 @@ impl Default for PersistedConfig {
             execution_type: ExecutionType::Assisted,
             llm: LlmConfig::default(),
             use_real_nuclei: false,
+            demo_mode: false,
         }
     }
 }
@@ -87,6 +90,7 @@ impl From<crate::config::Configuration> for PersistedConfig {
             execution_type: c.execution_type,
             llm: c.llm,
             use_real_nuclei: c.use_real_nuclei,
+            demo_mode: c.demo_mode,
         }
     }
 }
@@ -99,6 +103,7 @@ impl From<&crate::config::Configuration> for PersistedConfig {
             execution_type: c.execution_type,
             llm: c.llm.clone(),
             use_real_nuclei: c.use_real_nuclei,
+            demo_mode: c.demo_mode,
         }
     }
 }

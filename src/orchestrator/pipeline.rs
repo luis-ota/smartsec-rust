@@ -2,11 +2,9 @@ use crate::ai::agent::AIAgent;
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
-use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::mocks::MockTool;
-use crate::tools::nmap::{NmapTool, NMAP_IMAGE, NMAP_VERSION};
-use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::tools::nuclei::NucleiTool;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Orchestrator {
     pub config: Configuration,
@@ -86,61 +84,19 @@ impl Orchestrator {
     }
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
-        let real_nuclei = tool_info.is_nuclei() && self.config.use_real_nuclei;
-        let real_nmap = tool_info.is_nmap();
-        let runner: Box<dyn SecurityToolRunner> = if real_nmap {
-            Box::new(NmapTool)
-        } else if real_nuclei {
-            Box::new(NucleiTool)
-        } else {
-            Box::new(MockTool {
-                name: tool_info.name,
-                description: tool_info.description,
-            })
-        };
+        let runner: Box<dyn SecurityToolRunner> =
+            if !self.config.demo_mode && tool_info.is_nuclei() && self.config.use_real_nuclei {
+                Box::new(NucleiTool)
+            } else {
+                Box::new(MockTool {
+                    name: tool_info.name,
+                    description: tool_info.description,
+                })
+            };
 
         let arguments = runner.configure_command(target);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
-        exec.executed_at = chrono_like_now();
-
-        if real_nmap {
-            exec.tool_version = Some(NMAP_VERSION.to_owned());
-            let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
-            match executor
-                .execute(NMAP_IMAGE, &NmapTool::container_arguments(target))
-                .await
-            {
-                Ok(result) => {
-                    exec.output = podman_output(result);
-                    if exec.output.starts_with("[ERRO]") {
-                        exec.execution_error = Some(exec.output.clone());
-                    }
-                }
-                Err(error) => {
-                    let message =
-                        format!("Não foi possível iniciar a varredura real do Nmap: {error:#}");
-                    exec.output = format!("[ERRO] {message}");
-                    exec.execution_error = Some(message);
-                }
-            }
-            self.execution_history.push(exec.clone());
-            return exec;
-        }
-
-        if real_nuclei {
-            let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
-            exec.output = match executor
-                .execute(NUCLEI_IMAGE, &NucleiTool::container_arguments(target))
-                .await
-            {
-                Ok(result) => podman_output(result),
-                Err(error) => {
-                    format!("[ERRO] Não foi possível iniciar a varredura real: {error:#}")
-                }
-            };
-            self.execution_history.push(exec.clone());
-            return exec;
-        }
+        exec.executed_at = now_iso8601();
 
         let container_id = self
             .sandbox
@@ -162,26 +118,38 @@ impl Orchestrator {
         exec
     }
 
+    /// Constrói os achados reais a partir da execução dos scanners.
+    ///
+    /// **Nunca** inclui achados simulados. Para modo demo, use [`build_demo_findings`].
     pub fn build_findings(&mut self) {
+        let target = self.config.target_url.clone();
         let mut real_findings: Vec<Vulnerability> = Vec::new();
-        for exec in &mut self.execution_history {
-            if exec.tool_name == "Nmap" && exec.execution_error.is_none() {
-                match crate::orchestrator::nmap_parser::parse_nmap_findings(&exec.output) {
-                    Ok(parsed) => real_findings.extend(parsed),
-                    Err(error) => {
-                        exec.execution_error = Some(format!(
-                            "A saída do Nmap não pôde ser interpretada: {error:#}"
-                        ));
-                    }
-                }
-            }
+        for exec in &self.execution_history {
             if exec.tool_name == "Nuclei" && !exec.output.is_empty() {
-                let parsed =
-                    crate::orchestrator::nuclei_parser::parse_nuclei_findings(&exec.output);
+                let parsed = crate::orchestrator::nuclei_parser::parse_nuclei_findings(
+                    &exec.output,
+                    &target,
+                );
+                real_findings.extend(parsed);
+            }
+            if exec.tool_name == "Nmap" && !exec.output.is_empty() {
+                let parsed = crate::orchestrator::nmap_parser::parse_nmap_findings(
+                    &exec.output,
+                    &target,
+                );
                 real_findings.extend(parsed);
             }
         }
         self.findings = real_findings;
+    }
+
+    /// Constrói achados de demonstração.
+    ///
+    /// Só deve ser chamada quando `config.demo_mode == true`.
+    /// Todos os achados têm `source: FindingSource::Demo`.
+    pub fn build_demo_findings(&mut self) {
+        let target = self.config.target_url.clone();
+        self.findings = crate::domain::demo_findings::demo_all(&target);
     }
 
     #[allow(dead_code)]
@@ -204,158 +172,77 @@ impl Orchestrator {
             }
             let _exec = self.execute_tool(tool, &target).await;
         }
-        self.build_findings();
+
+        if self.config.demo_mode {
+            self.build_demo_findings();
+        } else {
+            self.build_findings();
+        }
+
         let analysis = self.agent.analyze_logs(&self.findings).await;
         self.last_log = analysis;
-        let _ = self.persist_scan_log();
         Ok(self.findings.clone())
     }
-
-    /// Salva os metadados e histórico estruturado do scan atual em disco.
-    pub fn persist_scan_log(&self) -> anyhow::Result<std::path::PathBuf> {
-        let dur = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        let secs = dur.as_secs();
-        let scan_id = format!("scan_{}", secs);
-
-        let tools_executed = self
-            .execution_history
-            .iter()
-            .map(|e| crate::orchestrator::scan_logger::ToolExecutionRecord {
-                tool_name: e.tool_name.clone(),
-                arguments: e.arguments.clone(),
-                executed_at: e.executed_at.clone(),
-                output_bytes: e.output.len(),
-                output_sample: e.output.chars().take(200).collect(),
-            })
-            .collect();
-
-        let metadata = crate::orchestrator::scan_logger::ScanMetadata::new(
-            scan_id,
-            self.config.target_url.clone(),
-            chrono_like_now(),
-            chrono_like_now(),
-            format!("{}", self.config.execution_type),
-            self.config.provider_mode.clone(),
-            tools_executed,
-            self.findings.clone(),
-            self.last_log.clone(),
-        );
-
-        crate::orchestrator::scan_logger::save_scan_log(&metadata)
-    }
 }
 
-fn podman_output(result: ExecutionResult) -> String {
-    let cleanup_error = result
-        .cleanup_error
-        .map(|error| format!(" Falha na limpeza: {error}"))
-        .unwrap_or_default();
-    match result.status {
-        ExecutionStatus::Succeeded if cleanup_error.is_empty() => result.stdout,
-        ExecutionStatus::Succeeded => format!(
-            "[ERRO] Varredura concluída em {:.2?}, mas o container {} não foi removido.{}",
-            result.duration, result.container_id, cleanup_error
-        ),
-        ExecutionStatus::Failed(code) => format!(
-            "[ERRO] O container {} da varredura encerrou com status {} após {:.2?}: {}{}",
-            result.container_id,
-            code.map_or_else(|| "desconhecido".to_owned(), |code| code.to_string()),
-            result.duration,
-            result.stderr.trim(),
-            cleanup_error
-        ),
-        ExecutionStatus::TimedOut => format!(
-            "[ERRO] O container {} da varredura excedeu o tempo limite de 15 minutos após {:.2?}.{}",
-            result.container_id, result.duration, cleanup_error
-        ),
-    }
-}
-
-fn chrono_like_now() -> String {
+fn now_iso8601() -> String {
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let secs = dur.as_secs();
-    let mins = (secs / 60) % 60;
-    let hours = (secs / 3600) % 24;
-    format!("2026-01-01T{:02}:{:02}:00Z", hours, mins)
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    format!("2026-01-01T{:02}:{:02}:{:02}Z", h, m, s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Configuration;
+    use crate::domain::vulnerability::FindingSource;
 
-    fn result(status: ExecutionStatus) -> ExecutionResult {
-        ExecutionResult {
-            stdout: String::new(),
-            stderr: "saída externa".to_owned(),
-            status,
-            duration: Duration::from_secs(2),
-            container_id: "container-123".to_owned(),
-            cleanup_error: None,
+    fn make_config(demo: bool) -> Configuration {
+        let mut c = Configuration::default();
+        c.demo_mode = demo;
+        c.target_url = "http://test.local".to_string();
+        c
+    }
+
+    #[test]
+    fn build_findings_never_includes_demo() {
+        let mut orch = Orchestrator::new(make_config(false));
+        orch.build_findings();
+        for f in &orch.findings {
+            assert_ne!(
+                f.source,
+                FindingSource::Demo,
+                "Execução real não deve conter achados de demo"
+            );
         }
     }
 
     #[test]
-    fn formats_podman_failures_in_brazilian_portuguese() {
-        let mut succeeded_result = result(ExecutionStatus::Succeeded);
-        succeeded_result.cleanup_error = Some("detalhe".to_owned());
-        let succeeded = podman_output(succeeded_result);
-        let failed = podman_output(result(ExecutionStatus::Failed(None)));
-        let timed_out = podman_output(result(ExecutionStatus::TimedOut));
-
-        assert!(succeeded.contains("Varredura concluída"));
-        assert!(failed.contains("[ERRO]"));
-        assert!(failed.contains("da varredura encerrou com status desconhecido após"));
-        assert!(timed_out.contains("da varredura excedeu o tempo limite de 15 minutos"));
+    fn build_demo_findings_only_includes_demo() {
+        let mut orch = Orchestrator::new(make_config(true));
+        orch.build_demo_findings();
+        assert!(!orch.findings.is_empty(), "Modo demo deve ter achados");
+        for f in &orch.findings {
+            assert_eq!(
+                f.source,
+                FindingSource::Demo,
+                "Modo demo deve ter apenas achados Demo"
+            );
+        }
     }
 
     #[test]
-    fn builds_nmap_findings_only_from_valid_output() {
-        let mut orchestrator = Orchestrator::new(Configuration::default());
-        let mut execution = SecurityTool::new("Nmap", "nmap");
-        execution.output = include_str!("../../tests/fixtures/nmap/open-ports.xml").to_owned();
-        execution.tool_version = Some(NMAP_VERSION.to_owned());
-        orchestrator.execution_history.push(execution);
-
-        orchestrator.build_findings();
-
-        assert_eq!(orchestrator.findings.len(), 2);
-        assert!(orchestrator
-            .findings
-            .iter()
-            .all(|finding| finding.tool == "Nmap" && finding.details.is_some()));
-    }
-
-    #[test]
-    fn invalid_nmap_xml_produces_an_error_without_findings() {
-        let mut orchestrator = Orchestrator::new(Configuration::default());
-        let mut execution = SecurityTool::new("Nmap", "nmap");
-        execution.output = include_str!("../../tests/fixtures/nmap/invalid.xml").to_owned();
-        orchestrator.execution_history.push(execution);
-
-        orchestrator.build_findings();
-
-        assert!(orchestrator.findings.is_empty());
-        let error = orchestrator.execution_history[0]
-            .execution_error
-            .as_deref()
-            .unwrap();
-        assert!(error.contains("saída do Nmap não pôde ser interpretada"));
-    }
-
-    #[test]
-    fn failed_nmap_execution_never_produces_findings() {
-        let mut orchestrator = Orchestrator::new(Configuration::default());
-        let mut execution = SecurityTool::new("Nmap", "nmap");
-        execution.output = include_str!("../../tests/fixtures/nmap/open-ports.xml").to_owned();
-        execution.execution_error = Some("tempo limite excedido".to_owned());
-        orchestrator.execution_history.push(execution);
-
-        orchestrator.build_findings();
-
-        assert!(orchestrator.findings.is_empty());
+    fn real_run_empty_history_produces_no_findings() {
+        let mut orch = Orchestrator::new(make_config(false));
+        orch.build_findings();
+        assert!(
+            orch.findings.is_empty(),
+            "Sem execuções, não deve haver achados"
+        );
     }
 }
