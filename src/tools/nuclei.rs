@@ -1,140 +1,247 @@
-use crate::domain::security_tool::SecurityToolRunner;
+use crate::config::nuclei_config::NucleiConfig;
+use anyhow::{anyhow, bail, Context};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
-pub struct NucleiTool;
+pub const NUCLEI_IMAGE: &str = "docker.io/projectdiscovery/nuclei@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97";
+const CONTAINER_TEMPLATES_DIRECTORY: &str = "/templates";
 
-pub const NUCLEI_IMAGE: &str = "docker.io/projectdiscovery/nuclei:v3.4.10";
-
-fn split_host_port(target: &str) -> (String, Option<String>) {
-    let mut t = target.trim().to_string();
-    for prefix in ["http://", "https://", "HTTP://", "HTTPS://"] {
-        if let Some(rest) = t.strip_prefix(prefix) {
-            t = rest.to_string();
-            break;
-        }
-    }
-    if let Some(idx) = t.find('/') {
-        t.truncate(idx);
-    }
-    if t.is_empty() {
-        return ("127.0.0.1".to_string(), None);
-    }
-    if let Some(idx) = t.rfind(':') {
-        let host = t[..idx].to_string();
-        let port = t[idx + 1..].to_string();
-        if port.chars().all(|c| c.is_ascii_digit()) && !host.is_empty() {
-            return (host, Some(port));
-        }
-    }
-    (t, None)
-}
-
-#[async_trait::async_trait]
-impl SecurityToolRunner for NucleiTool {
-    fn tool_name(&self) -> &str {
-        "Nuclei"
-    }
-
-    fn configure_command(&self, target: &str) -> String {
-        let (host, port) = split_host_port(target);
-        let target_arg = match port {
-            Some(ref p) => format!("{}:{}", host, p),
-            None => host,
-        };
-        let base = dirs::home_dir()
-            .unwrap_or_default()
-            .join("nuclei-templates");
-        let tmpl_misc = base.join("http/misconfiguration/");
-        format!(
-            "nuclei -u {} -jsonl -silent -t {} -c 200 -timeout 2",
-            target_arg,
-            tmpl_misc.display(),
-        )
-    }
-
-    async fn parse_output(&self, target: &str) -> Result<String, anyhow::Error> {
-        let (host, port) = split_host_port(target);
-        let mut cmd = tokio::process::Command::new("nuclei");
-        let target_arg = match port {
-            Some(ref p) => format!("{}:{}", host, p),
-            None => host,
-        };
-        let base = dirs::home_dir()
-            .unwrap_or_default()
-            .join("nuclei-templates");
-        cmd.arg("-u")
-            .arg(&target_arg)
-            .arg("-jsonl")
-            .arg("-silent")
-            .arg("-t")
-            .arg(
-                base.join("http/misconfiguration/")
-                    .to_string_lossy()
-                    .to_string(),
-            )
-            .arg("-c")
-            .arg("200")
-            .arg("-timeout")
-            .arg("2");
-        let output = cmd.output().await?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if output.stdout.is_empty() {
-                Ok(format!(
-                    "Scan complete — {} template checks run.",
-                    stderr.lines().count()
-                ))
-            } else {
-                Err(anyhow::anyhow!("Nuclei error: {}", stderr))
-            }
-        }
-    }
+pub struct NucleiTool {
+    config: NucleiConfig,
 }
 
 impl NucleiTool {
-    pub fn container_arguments(target: &str) -> Vec<String> {
-        let (host, port) = split_host_port(target);
-        let target_arg = match port {
-            Some(port) => format!("{host}:{port}"),
-            None => host,
-        };
-        vec![
+    pub fn new(config: NucleiConfig) -> anyhow::Result<Self> {
+        validate_config(&config)?;
+        Ok(Self { config })
+    }
+
+    pub fn scan_timeout(&self) -> Duration {
+        Duration::from_secs(self.config.scan_timeout_seconds)
+    }
+
+    pub fn templates_directory(&self) -> &Path {
+        &self.config.templates_directory
+    }
+
+    pub fn configure_command(&self, target: &str) -> String {
+        self.container_arguments(target).join(" ")
+    }
+
+    pub fn container_arguments(&self, target: &str) -> Vec<String> {
+        let mut arguments = vec![
             "-u".to_owned(),
-            target_arg,
+            target.trim().to_owned(),
             "-jsonl".to_owned(),
             "-silent".to_owned(),
             "-c".to_owned(),
-            "25".to_owned(),
+            self.config.concurrency.to_string(),
             "-timeout".to_owned(),
-            "2".to_owned(),
+            self.config.request_timeout_seconds.to_string(),
             "-disable-update-check".to_owned(),
-        ]
+            "-no-stdin".to_owned(),
+        ];
+        for template in &self.config.templates {
+            arguments.push("-t".to_owned());
+            arguments.push(
+                Path::new(CONTAINER_TEMPLATES_DIRECTORY)
+                    .join(template)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        arguments
     }
+
+    pub fn validate_templates(&self) -> anyhow::Result<()> {
+        if !self.config.templates_directory.is_dir() {
+            bail!(
+                "Templates do Nuclei {} (commit {}) não encontrados em '{}'. Instale essa versão nesse diretório antes de iniciar a varredura",
+                crate::config::nuclei_config::NUCLEI_TEMPLATES_VERSION,
+                crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT,
+                self.config.templates_directory.display()
+            );
+        }
+        let revision_file = self.config.templates_directory.join(".git/HEAD");
+        let revision = fs::read_to_string(&revision_file).with_context(|| {
+            format!(
+                "Não foi possível confirmar a versão dos templates em '{}'. Instale-os pelo checkout documentado",
+                revision_file.display()
+            )
+        })?;
+        if revision.trim() != crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT {
+            bail!(
+                "Versão incorreta dos templates do Nuclei em '{}': esperado o commit {}, encontrado '{}'",
+                self.config.templates_directory.display(),
+                crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT,
+                revision.trim()
+            );
+        }
+        for template in &self.config.templates {
+            let path = self.config.templates_directory.join(template);
+            if !path.exists() {
+                bail!(
+                    "Template ou diretório de templates do Nuclei não encontrado: '{}'",
+                    path.display()
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_config(config: &NucleiConfig) -> anyhow::Result<()> {
+    if !(1..=100).contains(&config.concurrency) {
+        bail!("A concorrência do Nuclei deve estar entre 1 e 100");
+    }
+    if config.request_timeout_seconds == 0 {
+        bail!("O timeout de requisição do Nuclei deve ser maior que zero");
+    }
+    if config.scan_timeout_seconds == 0 {
+        bail!("O tempo limite da varredura do Nuclei deve ser maior que zero");
+    }
+    if config.templates.is_empty() {
+        bail!("Selecione ao menos um template ou diretório de templates do Nuclei");
+    }
+    for template in &config.templates {
+        validate_template_selection(template)
+            .with_context(|| format!("Seleção de template inválida: '{template}'"))?;
+    }
+    Ok(())
+}
+
+fn validate_template_selection(template: &str) -> anyhow::Result<()> {
+    let path = PathBuf::from(template);
+    if template.trim().is_empty() || path.is_absolute() {
+        return Err(anyhow!("use um caminho relativo não vazio"));
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(anyhow!("o caminho não pode conter '.' ou '..'"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn templates_directory(revision: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "smartsec-nuclei-templates-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(directory.join(".git")).unwrap();
+        fs::write(directory.join(".git/HEAD"), revision).unwrap();
+        directory
+    }
 
     #[test]
-    fn builds_container_arguments_without_a_host_shell() {
-        let arguments = NucleiTool::container_arguments("https://example.test:8443/path");
+    fn builds_configurable_container_arguments_without_a_host_shell() {
+        let config = NucleiConfig {
+            concurrency: 7,
+            request_timeout_seconds: 11,
+            templates: vec!["http/cves/".to_owned(), "ssl/".to_owned()],
+            ..NucleiConfig::default()
+        };
+        let tool = NucleiTool::new(config).unwrap();
 
         assert_eq!(
-            arguments,
+            tool.container_arguments("https://example.test:8443/caminho?q=ação"),
             [
                 "-u",
-                "example.test:8443",
+                "https://example.test:8443/caminho?q=ação",
                 "-jsonl",
                 "-silent",
                 "-c",
-                "25",
+                "7",
                 "-timeout",
-                "2",
-                "-disable-update-check"
+                "11",
+                "-disable-update-check",
+                "-no-stdin",
+                "-t",
+                "/templates/http/cves/",
+                "-t",
+                "/templates/ssl/"
             ]
         );
+    }
+
+    #[test]
+    fn rejects_unsafe_or_unbounded_configuration() {
+        let mut config = NucleiConfig::default();
+        config.concurrency = 0;
+        assert!(NucleiTool::new(config).is_err());
+
+        let mut config = NucleiConfig::default();
+        config.templates = vec!["../segredo.yaml".to_owned()];
+        let error = NucleiTool::new(config).err().unwrap();
+        assert!(error.to_string().contains("Seleção de template inválida"));
+    }
+
+    #[test]
+    fn reports_a_missing_pinned_template_directory() {
+        let config = NucleiConfig {
+            templates_directory: PathBuf::from("/diretorio/definitivamente/ausente"),
+            ..NucleiConfig::default()
+        };
+        let tool = NucleiTool::new(config).unwrap();
+
+        let error = tool.validate_templates().unwrap_err();
+
+        assert!(error.to_string().contains("Templates do Nuclei v10.2.9"));
+        assert!(error.to_string().contains("não encontrados"));
+    }
+
+    #[test]
+    fn pins_the_multi_architecture_image_and_template_commit() {
+        assert_eq!(
+            NUCLEI_IMAGE,
+            "docker.io/projectdiscovery/nuclei@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97"
+        );
+        assert_eq!(
+            crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT,
+            "8adc92372034777469dcef575af21ba56e336f9d"
+        );
+    }
+
+    #[test]
+    fn rejects_an_unpinned_template_revision() {
+        let directory = templates_directory("commit-incorreto");
+        let config = NucleiConfig {
+            templates_directory: directory.clone(),
+            ..NucleiConfig::default()
+        };
+        let tool = NucleiTool::new(config).unwrap();
+
+        let error = tool.validate_templates().unwrap_err();
+
+        fs::remove_dir_all(directory).unwrap();
+        assert!(error.to_string().contains("Versão incorreta"));
+    }
+
+    #[test]
+    fn reports_a_missing_selected_template() {
+        let directory = templates_directory(crate::config::nuclei_config::NUCLEI_TEMPLATES_COMMIT);
+        let config = NucleiConfig {
+            templates_directory: directory.clone(),
+            templates: vec!["http/ausente.yaml".to_owned()],
+            ..NucleiConfig::default()
+        };
+        let tool = NucleiTool::new(config).unwrap();
+
+        let error = tool.validate_templates().unwrap_err();
+
+        fs::remove_dir_all(directory).unwrap();
+        assert!(error.to_string().contains("não encontrado"));
+        assert!(error.to_string().contains("http/ausente.yaml"));
     }
 }

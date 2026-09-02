@@ -1,5 +1,6 @@
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmConfig;
+use crate::config::nuclei_config::NucleiConfig;
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -11,6 +12,7 @@ pub struct Configuration {
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
     pub use_real_nuclei: bool,
+    pub nuclei: NucleiConfig,
 }
 
 impl Configuration {
@@ -23,6 +25,7 @@ impl Configuration {
             execution_type: persisted.execution_type,
             llm: persisted.llm.clone(),
             use_real_nuclei: persisted.use_real_nuclei,
+            nuclei: persisted.nuclei.clone(),
         })
     }
 
@@ -92,6 +95,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             execution_type: p.execution_type,
             llm,
             use_real_nuclei: p.use_real_nuclei,
+            nuclei: p.nuclei,
         }
     }
 }
