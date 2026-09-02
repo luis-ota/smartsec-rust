@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" args="nmap -sV -oX - closed.example.test" start="1787832000" version="7.95" xmloutputversion="1.05">
+  <host>
+    <status state="up" reason="echo-reply" reason_ttl="64"/>
+    <address addr="192.0.2.20" addrtype="ipv4"/>
+    <hostnames><hostname name="closed.example.test" type="user"/></hostnames>
+    <ports>
+      <port protocol="tcp" portid="80">
+        <state state="closed" reason="reset" reason_ttl="64"/>
+        <service name="http" method="table" conf="3"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>

@@ -88,6 +88,7 @@ pub fn parse_nuclei_findings(jsonl_output: &str) -> Vec<Vulnerability> {
         let didactic_static: &'static str = Box::leak(didactic.into_boxed_str());
 
         vulns.push(Vulnerability {
+            details: None,
             title: title_static,
             severity,
             description: desc_static,
