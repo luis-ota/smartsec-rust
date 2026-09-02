@@ -110,11 +110,11 @@ fn build_record(
     let mut parameters = BTreeMap::new();
     parameters.insert("should_run".to_string(), plan.should_run.to_string());
     parameters.insert("concurrency".to_string(), plan.concurrency.to_string());
-    parameters.insert("timeout_seconds".to_string(), plan.timeout_seconds.to_string());
     parameters.insert(
-        "templates".to_string(),
-        plan.template_paths().join(","),
+        "timeout_seconds".to_string(),
+        plan.timeout_seconds.to_string(),
     );
+    parameters.insert("templates".to_string(), plan.template_paths().join(","));
 
     DecisionRecord {
         source,
@@ -140,10 +140,7 @@ impl NmapSignal {
             let version = port.version.as_deref().unwrap_or("");
             lines.push(format!(
                 "port {} {} {} {}",
-                port.port,
-                service,
-                product,
-                version
+                port.port, service, product, version
             ));
         }
         lines
@@ -196,14 +193,11 @@ fn fallback_ports_from_target(target: &str) -> Vec<NmapPortFinding> {
 
 fn fallback_plan(signal: &NmapSignal, target: &str) -> NucleiPlan {
     let profiles = profiles_for_signal(signal, target);
-    let (concurrency, timeout_seconds) = if profiles.contains(&NucleiTemplateProfile::HttpMisconfiguration)
+    let (concurrency, timeout_seconds) = if profiles
+        .contains(&NucleiTemplateProfile::HttpMisconfiguration)
         || profiles.contains(&NucleiTemplateProfile::HttpExposedPanels)
     {
         (20, 3)
-    } else if profiles.contains(&NucleiTemplateProfile::SshExposure)
-        || profiles.contains(&NucleiTemplateProfile::DatabaseExposure)
-    {
-        (8, 2)
     } else {
         (8, 2)
     };
@@ -263,7 +257,10 @@ fn validate_ai_plan(
     })
 }
 
-fn allowed_profiles_for_signal(signal: &NmapSignal, target: &str) -> BTreeSet<NucleiTemplateProfile> {
+fn allowed_profiles_for_signal(
+    signal: &NmapSignal,
+    target: &str,
+) -> BTreeSet<NucleiTemplateProfile> {
     let mut profiles = BTreeSet::new();
     for port in &signal.ports {
         if is_web_port(port) {
@@ -290,7 +287,9 @@ fn allowed_profiles_for_signal(signal: &NmapSignal, target: &str) -> BTreeSet<Nu
 }
 
 fn profiles_for_signal(signal: &NmapSignal, target: &str) -> Vec<NucleiTemplateProfile> {
-    allowed_profiles_for_signal(signal, target).into_iter().collect()
+    allowed_profiles_for_signal(signal, target)
+        .into_iter()
+        .collect()
 }
 
 fn profiles_for_target(target: &str) -> BTreeSet<NucleiTemplateProfile> {
@@ -348,18 +347,20 @@ fn is_ssh_port(port: &NmapPortFinding) -> bool {
 }
 
 fn is_database_port(port: &NmapPortFinding) -> bool {
-    matches!(port.port.as_str(), "3306" | "5432" | "6379" | "27017" | "1433")
-        || port
-            .service
-            .as_deref()
-            .map(|s| {
-                s.contains("mysql")
-                    || s.contains("postgres")
-                    || s.contains("redis")
-                    || s.contains("mongodb")
-                    || s.contains("mssql")
-            })
-            .unwrap_or(false)
+    matches!(
+        port.port.as_str(),
+        "3306" | "5432" | "6379" | "27017" | "1433"
+    ) || port
+        .service
+        .as_deref()
+        .map(|s| {
+            s.contains("mysql")
+                || s.contains("postgres")
+                || s.contains("redis")
+                || s.contains("mongodb")
+                || s.contains("mssql")
+        })
+        .unwrap_or(false)
 }
 
 fn fallback_justification(signal: &NmapSignal, target: &str) -> String {
@@ -464,8 +465,14 @@ mod tests {
         assert_eq!(ssh.source, DecisionSource::Fallback);
         assert_eq!(web.source, DecisionSource::Fallback);
         assert_eq!(ssh.plan.profiles, vec![NucleiTemplateProfile::SshExposure]);
-        assert!(web.plan.profiles.contains(&NucleiTemplateProfile::HttpMisconfiguration));
-        assert!(web.plan.profiles.contains(&NucleiTemplateProfile::HttpExposedPanels));
+        assert!(web
+            .plan
+            .profiles
+            .contains(&NucleiTemplateProfile::HttpMisconfiguration));
+        assert!(web
+            .plan
+            .profiles
+            .contains(&NucleiTemplateProfile::HttpExposedPanels));
         assert_ne!(ssh.plan.profiles, web.plan.profiles);
         assert_ne!(ssh.plan.concurrency, web.plan.concurrency);
     }
@@ -517,7 +524,9 @@ mod tests {
         let record = decide_nuclei_plan(
             "https://example.local",
             Some(xml),
-            Some(r#"{"should_run":true,"profiles":["http-misconfiguration","http-exposed-panels"],"concurrency":12,"timeout_seconds":4,"justification":"Target has HTTP exposure"}"#),
+            Some(
+                r#"{"should_run":true,"profiles":["http-misconfiguration","http-exposed-panels"],"concurrency":12,"timeout_seconds":4,"justification":"Target has HTTP exposure"}"#,
+            ),
             "gpt-5",
         );
 

@@ -1,6 +1,6 @@
 use crate::config::Configuration;
-use crate::orchestrator::decision::DecisionRecord;
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::decision::DecisionRecord;
 
 pub struct ReportGenerator;
 
@@ -14,20 +14,22 @@ impl ReportGenerator {
         md.push_str("# SmartSec - Relatório de Análise de Segurança\n\n");
         md.push_str(&format!("**URL Alvo:** {}\n\n", config.target_url));
         md.push_str(&format!("**Modo:** {}\n\n", config.execution_type));
+        md.push_str(&format!(
+            "**Dados:** {}\n\n",
+            if config.demo_mode {
+                "DEMO (achados simulados)"
+            } else {
+                "REAL"
+            }
+        ));
         if !decisions.is_empty() {
             md.push_str("## Decisões Dinâmicas\n\n");
             for decision in decisions {
                 md.push_str(&format!("### {}\n\n", decision.summary()));
                 md.push_str(&format!("- Modelo: {}\n", decision.model));
                 md.push_str(&format!("- Justificativa: {}\n", decision.justification));
-                md.push_str(&format!("- Parâmetros: {}\n", decision.parameters.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(", ")));
-                if !decision.evidence.is_empty() {
-                    md.push_str("- Evidências:\n");
-                    for item in &decision.evidence {
-                        md.push_str(&format!("  - {}\n", item));
-                    }
-                }
-                md.push('\n');
+                md.push_str(&format!("- Parâmetros: {:?}\n", decision.parameters));
+                md.push_str(&format!("- Evidências: {:?}\n\n", decision.evidence));
             }
         }
         md.push_str("## Resumo\n\n");
@@ -60,7 +62,7 @@ impl ReportGenerator {
                 md.push_str(&format!("### [{}] {}\n\n", v.severity.label(), v.title));
                 md.push_str(&format!("{}\n\n", v.description));
                 md.push_str(&format!("**Ferramenta:** {}\n\n", v.tool));
-                append_details(&mut md, v);
+                append_provenance(&mut md, v);
                 md.push_str(&format!("**Recomendação:** {}\n\n", v.recommendation));
             }
         }
@@ -73,16 +75,9 @@ impl ReportGenerator {
                 v.tool
             ));
         }
-        let detailed: Vec<_> = vulns
-            .iter()
-            .filter(|vulnerability| vulnerability.details.is_some())
-            .collect();
-        if !detailed.is_empty() {
-            md.push_str("\n## Evidências técnicas\n\n");
-            for vulnerability in detailed {
-                md.push_str(&format!("### {}\n\n", vulnerability.title));
-                append_details(&mut md, vulnerability);
-            }
+        md.push_str("\n## Proveniência dos achados\n\n");
+        for vulnerability in vulns {
+            append_provenance(&mut md, vulnerability);
         }
         md
     }
@@ -98,22 +93,12 @@ impl ReportGenerator {
     }
 }
 
-fn append_details(md: &mut String, vulnerability: &Vulnerability) {
-    let Some(details) = &vulnerability.details else {
-        return;
-    };
+fn append_provenance(md: &mut String, vulnerability: &Vulnerability) {
     md.push_str(&format!(
-        "**Alvo:** {}\n\n**Porta/protocolo:** {}/{}\n\n",
-        details.host, details.port, details.protocol
-    ));
-    if let Some(service) = &details.service {
-        md.push_str(&format!("**Serviço:** {service}\n\n"));
-    }
-    if let Some(version) = &details.version {
-        md.push_str(&format!("**Versão do serviço:** {version}\n\n"));
-    }
-    md.push_str(&format!(
-        "**Versão da ferramenta:** {}\n\n**Evidência:** {}\n\n",
-        details.tool_version, details.evidence
+        "**Origem:** {}  \n**Alvo:** {}  \n**Evidência:** {}  \n**Timestamp:** {}\n\n",
+        vulnerability.source,
+        vulnerability.target,
+        vulnerability.evidence,
+        vulnerability.detected_at
     ));
 }
