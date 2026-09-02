@@ -1,5 +1,6 @@
 use crate::domain::vulnerability::Vulnerability;
 use crate::domain::Severity;
+use crate::orchestrator::decision::DecisionRecord;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -30,8 +31,10 @@ pub struct ScanMetadata {
     pub high_count: usize,
     pub medium_count: usize,
     pub low_count: usize,
-    pub findings: Vec<Vulnerability>,
+    pub findings: Vec<serde_json::Value>,
     pub agent_analysis: String,
+    #[serde(default)]
+    pub decisions: Vec<DecisionRecord>,
 }
 
 /// Resumo compacto para listagem de scans históricos.
@@ -75,8 +78,12 @@ impl ScanMetadata {
             high_count,
             medium_count,
             low_count,
-            findings,
+            findings: findings
+                .iter()
+                .map(|finding| serde_json::to_value(finding).unwrap_or(serde_json::Value::Null))
+                .collect(),
             agent_analysis,
+            decisions: Vec::new(),
         }
     }
 }

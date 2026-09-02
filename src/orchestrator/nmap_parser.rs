@@ -4,9 +4,17 @@ use anyhow::Context;
 use serde::Deserialize;
 use std::collections::HashSet;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NmapPortFinding {
+    pub port: String,
+    pub service: Option<String>,
+    pub product: Option<String>,
+    pub version: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct NmapRun {
-    #[serde(rename = "@version")]
+    #[serde(rename = "@version", default)]
     version: String,
     #[serde(rename = "host", default)]
     hosts: Vec<NmapHost>,
@@ -84,6 +92,36 @@ struct NmapScript {
     id: String,
     #[serde(rename = "@output")]
     output: String,
+}
+
+/// Extrai apenas os sinais de portas abertas usados pela política de decisão.
+pub fn parse_nmap_ports(xml: &str) -> Vec<NmapPortFinding> {
+    let Ok(scan) = quick_xml::de::from_str::<NmapRun>(xml) else {
+        return Vec::new();
+    };
+
+    scan.hosts
+        .into_iter()
+        .flat_map(|host| host.ports.ports)
+        .filter(|port| port.state.state == "open")
+        .map(|port| {
+            let service = port.service.as_ref().and_then(|service| service.name.clone());
+            let product = port
+                .service
+                .as_ref()
+                .and_then(|service| service.product.clone());
+            let version = port
+                .service
+                .as_ref()
+                .and_then(|service| service.version.clone());
+            NmapPortFinding {
+                port: port.port.to_string(),
+                service,
+                product,
+                version,
+            }
+        })
+        .collect()
 }
 
 pub fn parse_nmap_findings(xml: &str) -> anyhow::Result<Vec<Vulnerability>> {
