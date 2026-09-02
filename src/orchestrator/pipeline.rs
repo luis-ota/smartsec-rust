@@ -86,8 +86,8 @@ impl Orchestrator {
     }
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
-        let real_nuclei = tool_info.is_nuclei() && self.config.use_real_nuclei;
-        let real_nmap = tool_info.is_nmap();
+        let real_nuclei = !self.config.demo_mode && tool_info.is_nuclei() && self.config.use_real_nuclei;
+        let real_nmap = !self.config.demo_mode && tool_info.is_nmap();
         let runner: Box<dyn SecurityToolRunner> = if real_nmap {
             Box::new(NmapTool)
         } else if real_nuclei {
@@ -164,6 +164,10 @@ impl Orchestrator {
 
     pub fn build_findings(&mut self) {
         let mut real_findings: Vec<Vulnerability> = Vec::new();
+        if self.config.demo_mode {
+            self.findings = Vulnerability::mock_all();
+            return;
+        }
         for exec in &mut self.execution_history {
             if exec.tool_name == "Nmap" && exec.execution_error.is_none() {
                 match crate::orchestrator::nmap_parser::parse_nmap_findings(&exec.output) {
@@ -357,5 +361,28 @@ mod tests {
         orchestrator.build_findings();
 
         assert!(orchestrator.findings.is_empty());
+    }
+
+    #[test]
+    fn real_execution_never_injects_demo_findings() {
+        let mut orchestrator = Orchestrator::new(Configuration::default());
+        orchestrator.build_findings();
+
+        assert!(orchestrator.findings.is_empty());
+    }
+
+    #[test]
+    fn demo_execution_is_explicit_and_marks_provenance() {
+        let mut config = Configuration::default();
+        config.demo_mode = true;
+        let mut orchestrator = Orchestrator::new(config);
+
+        orchestrator.build_findings();
+
+        assert!(!orchestrator.findings.is_empty());
+        assert!(orchestrator
+            .findings
+            .iter()
+            .all(|finding| finding.provenance.source == "demo"));
     }
 }

@@ -1,4 +1,4 @@
-use crate::domain::vulnerability::Vulnerability;
+use crate::domain::vulnerability::{FindingProvenance, Vulnerability};
 use crate::domain::Severity;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -181,6 +181,14 @@ mod tests {
                 tool: "Nuclei".to_string(),
                 recommendation: "Fix it".to_string(),
                 didactic: "Didactic text".to_string(),
+                provenance: FindingProvenance {
+                    source: "scanner".to_string(),
+                    tool: "Nuclei".to_string(),
+                    target: "http://target.local".to_string(),
+                    evidence: "test evidence".to_string(),
+                    timestamp: "2026-08-31T12:01:00Z".to_string(),
+                },
+                details: None,
             }],
             "AI Analysis text".to_string(),
         );

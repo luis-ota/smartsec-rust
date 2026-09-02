@@ -11,6 +11,7 @@ pub struct Configuration {
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
     pub use_real_nuclei: bool,
+    pub demo_mode: bool,
 }
 
 impl Configuration {
@@ -84,6 +85,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             execution_type: p.execution_type,
             llm,
             use_real_nuclei: p.use_real_nuclei,
+            demo_mode: p.demo_mode,
         }
     }
 }
