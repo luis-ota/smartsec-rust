@@ -97,6 +97,10 @@ impl Orchestrator {
     }
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
+        if tool_info.is_nuclei() && self.config.use_real_nuclei {
+            return self.execute_nuclei_with_plan(tool_info, target).await;
+        }
+
         let real_nuclei = tool_info.is_nuclei() && self.config.use_real_nuclei;
         let real_nmap = tool_info.is_nmap();
         let runner: Box<dyn SecurityToolRunner> = if real_nmap {
@@ -123,6 +127,7 @@ impl Orchestrator {
             {
                 Ok(result) => {
                     exec.output = podman_output(result);
+                    self.latest_nmap_output = Some(exec.output.clone());
                     if exec.output.starts_with("[ERRO]") {
                         exec.execution_error = Some(exec.output.clone());
                     }
@@ -131,6 +136,7 @@ impl Orchestrator {
                     let message =
                         format!("Não foi possível iniciar a varredura real do Nmap: {error:#}");
                     exec.output = format!("[ERRO] {message}");
+                    self.latest_nmap_output = Some(exec.output.clone());
                     exec.execution_error = Some(message);
                 }
             }
@@ -173,34 +179,6 @@ impl Orchestrator {
         exec
     }
 
-    async fn execute_nmap(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
-        let runner = NmapTool;
-        let arguments = runner.configure_command(target);
-        let mut exec = SecurityTool::new(tool_info.name, &arguments);
-        exec.executed_at = chrono_like_now();
-
-        let container_id = self
-            .sandbox
-            .create_isolated_environment(tool_info.category)
-            .unwrap_or_else(|_| format!("fallback-{}", tool_info.name.to_lowercase()));
-        let _ = self.sandbox.run_command(&container_id, &arguments);
-        let _ = self.sandbox.destroy_environment(&container_id);
-
-        match runner.parse_output(target).await {
-            Ok(output) => {
-                self.latest_nmap_output = Some(output.clone());
-                exec.output = output;
-            }
-            Err(e) => {
-                exec.output = format!("[ERROR] {}", e);
-                self.latest_nmap_output = Some(exec.output.clone());
-            }
-        }
-
-        self.execution_history.push(exec.clone());
-        exec
-    }
-
     async fn execute_nuclei_with_plan(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
         let ai_response = self.request_nuclei_plan(target).await;
         let decision = decide_nuclei_plan(
@@ -217,7 +195,7 @@ impl Orchestrator {
         exec.executed_at = chrono_like_now();
 
         if !decision.plan.should_run {
-            exec.output = format!("Nuclei skipped by policy: {}", decision.justification);
+            exec.output = format!("Nuclei ignorado pela política: {}", decision.justification);
             self.execution_history.push(exec.clone());
             return exec;
         }
@@ -318,7 +296,11 @@ impl Orchestrator {
             .iter()
             .map(|e| crate::orchestrator::scan_logger::ToolExecutionRecord {
                 tool_name: e.tool_name.clone(),
-                arguments: e.arguments.clone(),
+                arguments: e
+                    .arguments
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect(),
                 executed_at: e.executed_at.clone(),
                 output_bytes: e.output.len(),
                 output_sample: e.output.chars().take(200).collect(),
@@ -336,6 +318,10 @@ impl Orchestrator {
             self.findings.clone(),
             self.last_log.clone(),
         );
+        let metadata = crate::orchestrator::scan_logger::ScanMetadata {
+            decisions: self.decision_history.clone(),
+            ..metadata
+        };
 
         crate::orchestrator::scan_logger::save_scan_log(&metadata)
     }
