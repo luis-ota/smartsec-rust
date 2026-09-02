@@ -197,6 +197,8 @@ mod tests {
                 ..LlmConfig::default()
             },
             use_real_nuclei: false,
+            nuclei_templates_path: None,
+            nuclei_templates_commit: None,
             demo_mode: false,
             output_file: None,
             show_help: false,

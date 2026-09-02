@@ -6,8 +6,9 @@ use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
 use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::mocks::MockTool;
 use crate::tools::nmap::{NmapTool, NMAP_IMAGE, NMAP_VERSION};
-use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE, NUCLEI_TEMPLATES_COMMIT, NUCLEI_VERSION};
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct Orchestrator {
     pub config: Configuration,
@@ -117,20 +118,47 @@ impl Orchestrator {
         let arguments = runner.configure_command(target);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
         exec.executed_at = now_iso8601();
+        let started_at = Instant::now();
 
         let container_id = self
             .sandbox
             .create_isolated_environment(tool_info.category)
             .unwrap_or_else(|_| format!("fallback-{}", tool_info.name.to_lowercase()));
-        let _ = self.sandbox.run_command(&container_id, &arguments);
-        let _ = self.sandbox.destroy_environment(&container_id);
+        let run_result = self.sandbox.run_command(&container_id, &arguments);
+        let cleanup_result = self.sandbox.destroy_environment(&container_id);
+        exec.duration_ms = started_at.elapsed().as_millis();
+        match (run_result, cleanup_result) {
+            (Ok(output), Ok(_)) => {
+                exec.status = "succeeded".to_string();
+                exec.output = output;
+            }
+            (run, cleanup) => {
+                exec.status = "failed".to_string();
+                exec.execution_error = Some(format!(
+                    "falha na ferramenta: {}; limpeza: {}",
+                    run.err()
+                        .map_or_else(|| "ok".to_string(), |error| error.to_string()),
+                    cleanup
+                        .err()
+                        .map_or_else(|| "ok".to_string(), |error| error.to_string())
+                ));
+                exec.output = format!(
+                    "[ERRO] {}",
+                    exec.execution_error.as_deref().unwrap_or_default()
+                );
+            }
+        }
 
         match runner.parse_output(target).await {
             Ok(output) => {
-                exec.output = output;
+                if exec.status == "succeeded" {
+                    exec.output = output;
+                }
             }
             Err(e) => {
-                exec.output = format!("[ERROR] {}", e);
+                exec.status = "failed".to_string();
+                exec.execution_error = Some(e.to_string());
+                exec.output = format!("[ERRO] {}", e);
             }
         }
 
@@ -143,6 +171,7 @@ impl Orchestrator {
         let arguments = runner.configure_command(target);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
         exec.tool_version = Some(NMAP_VERSION.to_owned());
+        exec.image = Some(NMAP_IMAGE.to_owned());
         exec.executed_at = now_iso8601();
         let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
         match executor
@@ -150,13 +179,18 @@ impl Orchestrator {
             .await
         {
             Ok(result) => {
+                exec.status = execution_status(&result.status);
+                exec.duration_ms = result.duration.as_millis();
+                exec.stderr = sanitize(&result.stderr);
                 exec.output = podman_output(result);
                 self.latest_nmap_output = Some(exec.output.clone());
                 if exec.output.starts_with("[ERRO]") {
+                    exec.status = "failed".to_string();
                     exec.execution_error = Some(exec.output.clone());
                 }
             }
             Err(error) => {
+                exec.status = "failed".to_string();
                 let message =
                     format!("Não foi possível iniciar a varredura real do Nmap: {error:#}");
                 exec.output = format!("[ERRO] {message}");
@@ -184,19 +218,50 @@ impl Orchestrator {
         let runner = NucleiTool;
         let arguments = runner.configure_command_with_plan(target, &decision.plan);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
+        exec.image = Some(NUCLEI_IMAGE.to_string());
+        exec.tool_version = Some(NUCLEI_VERSION.to_string());
         exec.executed_at = now_iso8601();
         if !decision.plan.should_run {
+            exec.status = "skipped".to_string();
             exec.output = format!("Nuclei ignorado pela política: {}", decision.justification);
+            self.execution_history.push(exec.clone());
+            return exec;
+        }
+        let templates = self.nuclei_templates_path();
+        if let Err(error) = validate_templates(
+            &templates,
+            self.config
+                .nuclei_templates_commit
+                .as_deref()
+                .or(Some(NUCLEI_TEMPLATES_COMMIT)),
+        ) {
+            exec.status = "failed".to_string();
+            exec.execution_error = Some(error.to_string());
+            exec.output = format!("[ERRO] {}", error);
             self.execution_history.push(exec.clone());
             return exec;
         }
         let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
         exec.output = match executor
-            .execute(NUCLEI_IMAGE, &NucleiTool::container_arguments(target))
+            .execute_with_mounts(
+                NUCLEI_IMAGE,
+                &NucleiTool::container_arguments_with_plan(target, &decision.plan),
+                &[(templates, "/root/nuclei-templates".to_string())],
+            )
             .await
         {
-            Ok(result) => podman_output(result),
+            Ok(result) => {
+                exec.status = execution_status(&result.status);
+                exec.duration_ms = result.duration.as_millis();
+                exec.stderr = sanitize(&result.stderr);
+                let output = podman_output(result);
+                if exec.status != "succeeded" {
+                    exec.execution_error = Some(output.clone());
+                }
+                output
+            }
             Err(error) => {
+                exec.status = "failed".to_string();
                 exec.execution_error = Some(format!(
                     "Não foi possível iniciar a varredura real do Nuclei: {error:#}"
                 ));
@@ -228,13 +293,19 @@ impl Orchestrator {
     pub fn build_findings(&mut self) {
         let target = self.config.target_url.clone();
         let mut real_findings: Vec<Vulnerability> = Vec::new();
-        for exec in &self.execution_history {
+        for exec in &mut self.execution_history {
             if exec.tool_name == "Nuclei" && !exec.output.is_empty() {
-                let parsed = crate::orchestrator::nuclei_parser::parse_nuclei_findings(
-                    &exec.output,
-                    &target,
-                );
+                let (parsed, errors) =
+                    crate::orchestrator::nuclei_parser::parse_nuclei_findings_with_errors(
+                        &exec.output,
+                        &target,
+                    );
                 real_findings.extend(parsed);
+                if !errors.is_empty() {
+                    // A malformed JSONL record is an execution diagnostic, not a clean scan.
+                    let message = errors.join("; ");
+                    exec.execution_error = Some(message);
+                }
             }
             if exec.tool_name == "Nmap" && !exec.output.is_empty() {
                 let parsed =
@@ -243,6 +314,18 @@ impl Orchestrator {
             }
         }
         self.findings = real_findings;
+    }
+
+    fn nuclei_templates_path(&self) -> PathBuf {
+        self.config
+            .nuclei_templates_path
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_default()
+                    .join("nuclei-templates")
+            })
     }
 
     /// Constrói achados de demonstração.
@@ -307,7 +390,13 @@ impl Orchestrator {
                         .collect(),
                     executed_at: execution.executed_at.clone(),
                     output_bytes: execution.output.len(),
-                    output_sample: execution.output.chars().take(200).collect(),
+                    output_sample: sanitize(&execution.output).chars().take(200).collect(),
+                    stdout: sanitize(&execution.output),
+                    stderr: sanitize(&execution.stderr),
+                    status: execution.status.clone(),
+                    duration_ms: execution.duration_ms,
+                    tool_version: execution.tool_version.clone(),
+                    image: execution.image.clone(),
                 },
             )
             .collect();
@@ -331,14 +420,7 @@ impl Orchestrator {
 }
 
 fn now_iso8601() -> String {
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    format!("2026-01-01T{:02}:{:02}:{:02}Z", h, m, s)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn podman_output(result: ExecutionResult) -> String {
@@ -364,6 +446,66 @@ fn podman_output(result: ExecutionResult) -> String {
             result.container_id, cleanup_error
         ),
     }
+}
+
+fn execution_status(status: &ExecutionStatus) -> String {
+    match status {
+        ExecutionStatus::Succeeded => "succeeded".to_string(),
+        ExecutionStatus::Failed(code) => format!(
+            "failed:{}",
+            code.map_or_else(|| "unknown".to_string(), |c| c.to_string())
+        ),
+        ExecutionStatus::TimedOut => "timeout".to_string(),
+    }
+}
+
+/// Remove credenciais e tokens antes de persistir ou encaminhar qualquer saída.
+fn sanitize(value: &str) -> String {
+    let patterns = [
+        "api_key",
+        "apikey",
+        "token",
+        "authorization",
+        "password",
+        "secret",
+    ];
+    value
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if patterns.iter().any(|pattern| lower.contains(pattern)) {
+                "[REDACTED]"
+            } else if let Some(query_start) = line.find('?') {
+                // Query strings commonly carry API keys even when no key name is obvious.
+                &line[..query_start + 1]
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn validate_templates(path: &std::path::Path, expected: Option<&str>) -> anyhow::Result<()> {
+    if !path.is_dir() {
+        anyhow::bail!(
+            "Templates do Nuclei não encontrados em '{}'; configure nuclei_templates_path",
+            path.display()
+        );
+    }
+    if let Some(expected) = expected {
+        let output = std::process::Command::new("git")
+            .args(["-C", &path.to_string_lossy(), "rev-parse", "HEAD"])
+            .output()
+            .map_err(|error| {
+                anyhow::anyhow!("não foi possível validar o commit dos templates: {error}")
+            })?;
+        let actual = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !output.status.success() || actual != expected {
+            anyhow::bail!("commit dos templates do Nuclei divergente: esperado {expected}, encontrado {actual}");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
