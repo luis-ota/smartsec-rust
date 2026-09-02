@@ -48,7 +48,6 @@ impl ReportGenerator {
                 md.push_str(&format!("{}\n\n", v.description));
                 md.push_str(&format!("**Ferramenta:** {}\n\n", v.tool));
                 append_provenance(&mut md, v);
-                append_details(&mut md, v);
                 md.push_str(&format!("**Recomendação:** {}\n\n", v.recommendation));
             }
         }
@@ -60,17 +59,6 @@ impl ReportGenerator {
                 v.title,
                 v.tool
             ));
-        }
-        let detailed: Vec<_> = vulns
-            .iter()
-            .filter(|vulnerability| vulnerability.details.is_some())
-            .collect();
-        if !detailed.is_empty() {
-            md.push_str("\n## Evidências técnicas\n\n");
-            for vulnerability in detailed {
-                md.push_str(&format!("### {}\n\n", vulnerability.title));
-                append_details(&mut md, vulnerability);
-            }
         }
         md.push_str("\n## Proveniência dos achados\n\n");
         for vulnerability in vulns {
@@ -91,29 +79,11 @@ impl ReportGenerator {
 }
 
 fn append_provenance(md: &mut String, vulnerability: &Vulnerability) {
-    let provenance = &vulnerability.provenance;
     md.push_str(&format!(
         "**Origem:** {}  \n**Alvo:** {}  \n**Evidência:** {}  \n**Timestamp:** {}\n\n",
-        provenance.source, provenance.target, provenance.evidence, provenance.timestamp
-    ));
-}
-
-fn append_details(md: &mut String, vulnerability: &Vulnerability) {
-    let Some(details) = &vulnerability.details else {
-        return;
-    };
-    md.push_str(&format!(
-        "**Alvo:** {}\n\n**Porta/protocolo:** {}/{}\n\n",
-        details.host, details.port, details.protocol
-    ));
-    if let Some(service) = &details.service {
-        md.push_str(&format!("**Serviço:** {service}\n\n"));
-    }
-    if let Some(version) = &details.version {
-        md.push_str(&format!("**Versão do serviço:** {version}\n\n"));
-    }
-    md.push_str(&format!(
-        "**Versão da ferramenta:** {}\n\n**Evidência:** {}\n\n",
-        details.tool_version, details.evidence
+        vulnerability.source,
+        vulnerability.target,
+        vulnerability.evidence,
+        vulnerability.detected_at
     ));
 }
