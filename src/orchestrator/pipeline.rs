@@ -4,6 +4,7 @@ use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::mocks::MockTool;
+use crate::tools::nmap::{NmapTool, NMAP_IMAGE, NMAP_VERSION};
 use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -86,7 +87,10 @@ impl Orchestrator {
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
         let real_nuclei = tool_info.is_nuclei() && self.config.use_real_nuclei;
-        let runner: Box<dyn SecurityToolRunner> = if real_nuclei {
+        let real_nmap = tool_info.is_nmap();
+        let runner: Box<dyn SecurityToolRunner> = if real_nmap {
+            Box::new(NmapTool)
+        } else if real_nuclei {
             Box::new(NucleiTool)
         } else {
             Box::new(MockTool {
@@ -98,6 +102,30 @@ impl Orchestrator {
         let arguments = runner.configure_command(target);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
         exec.executed_at = chrono_like_now();
+
+        if real_nmap {
+            exec.tool_version = Some(NMAP_VERSION.to_owned());
+            let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+            match executor
+                .execute(NMAP_IMAGE, &NmapTool::container_arguments(target))
+                .await
+            {
+                Ok(result) => {
+                    exec.output = podman_output(result);
+                    if exec.output.starts_with("[ERRO]") {
+                        exec.execution_error = Some(exec.output.clone());
+                    }
+                }
+                Err(error) => {
+                    let message =
+                        format!("Não foi possível iniciar a varredura real do Nmap: {error:#}");
+                    exec.output = format!("[ERRO] {message}");
+                    exec.execution_error = Some(message);
+                }
+            }
+            self.execution_history.push(exec.clone());
+            return exec;
+        }
 
         if real_nuclei {
             let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
@@ -136,16 +164,24 @@ impl Orchestrator {
 
     pub fn build_findings(&mut self) {
         let mut real_findings: Vec<Vulnerability> = Vec::new();
-        for exec in &self.execution_history {
+        for exec in &mut self.execution_history {
+            if exec.tool_name == "Nmap" && exec.execution_error.is_none() {
+                match crate::orchestrator::nmap_parser::parse_nmap_findings(&exec.output) {
+                    Ok(parsed) => real_findings.extend(parsed),
+                    Err(error) => {
+                        exec.execution_error = Some(format!(
+                            "A saída do Nmap não pôde ser interpretada: {error:#}"
+                        ));
+                    }
+                }
+            }
             if exec.tool_name == "Nuclei" && !exec.output.is_empty() {
                 let parsed =
                     crate::orchestrator::nuclei_parser::parse_nuclei_findings(&exec.output);
                 real_findings.extend(parsed);
             }
         }
-        let mut findings = real_findings;
-        findings.extend(Vulnerability::mock_all());
-        self.findings = findings;
+        self.findings = real_findings;
     }
 
     #[allow(dead_code)]
@@ -238,5 +274,52 @@ mod tests {
         assert!(failed.contains("[ERRO]"));
         assert!(failed.contains("da varredura encerrou com status desconhecido após"));
         assert!(timed_out.contains("da varredura excedeu o tempo limite de 15 minutos"));
+    }
+
+    #[test]
+    fn builds_nmap_findings_only_from_valid_output() {
+        let mut orchestrator = Orchestrator::new(Configuration::default());
+        let mut execution = SecurityTool::new("Nmap", "nmap");
+        execution.output = include_str!("../../tests/fixtures/nmap/open-ports.xml").to_owned();
+        execution.tool_version = Some(NMAP_VERSION.to_owned());
+        orchestrator.execution_history.push(execution);
+
+        orchestrator.build_findings();
+
+        assert_eq!(orchestrator.findings.len(), 2);
+        assert!(orchestrator
+            .findings
+            .iter()
+            .all(|finding| finding.tool == "Nmap" && finding.details.is_some()));
+    }
+
+    #[test]
+    fn invalid_nmap_xml_produces_an_error_without_findings() {
+        let mut orchestrator = Orchestrator::new(Configuration::default());
+        let mut execution = SecurityTool::new("Nmap", "nmap");
+        execution.output = include_str!("../../tests/fixtures/nmap/invalid.xml").to_owned();
+        orchestrator.execution_history.push(execution);
+
+        orchestrator.build_findings();
+
+        assert!(orchestrator.findings.is_empty());
+        let error = orchestrator.execution_history[0]
+            .execution_error
+            .as_deref()
+            .unwrap();
+        assert!(error.contains("saída do Nmap não pôde ser interpretada"));
+    }
+
+    #[test]
+    fn failed_nmap_execution_never_produces_findings() {
+        let mut orchestrator = Orchestrator::new(Configuration::default());
+        let mut execution = SecurityTool::new("Nmap", "nmap");
+        execution.output = include_str!("../../tests/fixtures/nmap/open-ports.xml").to_owned();
+        execution.execution_error = Some("tempo limite excedido".to_owned());
+        orchestrator.execution_history.push(execution);
+
+        orchestrator.build_findings();
+
+        assert!(orchestrator.findings.is_empty());
     }
 }
