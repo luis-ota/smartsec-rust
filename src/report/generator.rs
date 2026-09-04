@@ -14,14 +14,7 @@ impl ReportGenerator {
         md.push_str("# SmartSec - Relatório de Análise de Segurança\n\n");
         md.push_str(&format!("**URL Alvo:** {}\n\n", config.target_url));
         md.push_str(&format!("**Modo:** {}\n\n", config.execution_type));
-        md.push_str(&format!(
-            "**Dados:** {}\n\n",
-            if config.demo_mode {
-                "DEMO (achados simulados)"
-            } else {
-                "REAL"
-            }
-        ));
+        md.push_str("**Dados:** REAL\n\n");
         if !decisions.is_empty() {
             md.push_str("## Decisões Dinâmicas\n\n");
             for decision in decisions {
@@ -50,9 +43,13 @@ impl ReportGenerator {
             .iter()
             .filter(|v| v.severity == crate::domain::Severity::Low)
             .count();
+        let info = vulns
+            .iter()
+            .filter(|v| v.severity == crate::domain::Severity::Info)
+            .count();
         md.push_str(&format!(
-            "- Critical: {}\n- High: {}\n- Medium: {}\n- Low: {}\n\n",
-            crit, high, med, low
+            "- Critical: {}\n- High: {}\n- Medium: {}\n- Low: {}\n- Info: {}\n\n",
+            crit, high, med, low, info
         ));
         md.push_str("## Pontos Críticos\n\n");
         for v in vulns {
@@ -95,10 +92,38 @@ impl ReportGenerator {
 
 fn append_provenance(md: &mut String, vulnerability: &Vulnerability) {
     md.push_str(&format!(
-        "**Origem:** {}  \n**Alvo:** {}  \n**Evidência:** {}  \n**Timestamp:** {}\n\n",
+        "**Origem:** {}\n\n**Alvo:** {}\n\n**Evidência:** {}\n\n**Timestamp:** {}\n\n",
         vulnerability.source,
         vulnerability.target,
         vulnerability.evidence,
         vulnerability.detected_at
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::vulnerability::FindingSource;
+    use crate::domain::Severity;
+
+    #[test]
+    fn report_counts_informational_findings() {
+        let finding = Vulnerability {
+            title: "Porta aberta".to_string(),
+            severity: Severity::Info,
+            description: "Descrição".to_string(),
+            tool: "Nmap".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: FindingSource::Real,
+            target: "http://target.local".to_string(),
+            evidence: "porta 3000".to_string(),
+            detected_at: "2026-09-04T14:00:00Z".to_string(),
+        };
+
+        let report = ReportGenerator::compile_report(&Configuration::default(), &[finding], &[]);
+
+        assert!(report.contains("- Total de vulnerabilidades: 1"));
+        assert!(report.contains("- Info: 1"));
+    }
 }

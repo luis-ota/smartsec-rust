@@ -3,7 +3,6 @@
 use crate::domain::severity::Severity;
 use crate::domain::vulnerability::{FindingSource, Vulnerability};
 use serde::Deserialize;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NmapPortFinding {
@@ -56,14 +55,7 @@ struct NmapSignalService {
 }
 
 fn now_iso8601() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    format!("2026-01-01T{:02}:{:02}:{:02}Z", h, m, s)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 pub fn parse_nmap_ports(xml: &str) -> Vec<NmapPortFinding> {
@@ -319,4 +311,17 @@ fn severity_for_port(port: &str, product: &str, version: &str) -> Severity {
         return Severity::Medium;
     }
     Severity::Info
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finding_timestamp_uses_the_current_date() {
+        let timestamp = now_iso8601();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&timestamp).unwrap();
+
+        assert_eq!(parsed.date_naive(), chrono::Utc::now().date_naive());
+    }
 }

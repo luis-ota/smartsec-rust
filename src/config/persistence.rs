@@ -11,13 +11,10 @@ pub struct PersistedConfig {
     pub active_tools: Vec<String>,
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
-    pub use_real_nuclei: bool,
     #[serde(default)]
     pub nuclei_templates_path: Option<String>,
     #[serde(default)]
     pub nuclei_templates_commit: Option<String>,
-    #[serde(default)]
-    pub demo_mode: bool,
 }
 
 impl Default for PersistedConfig {
@@ -27,10 +24,8 @@ impl Default for PersistedConfig {
             active_tools: Vec::new(),
             execution_type: ExecutionType::Assisted,
             llm: LlmConfig::default(),
-            use_real_nuclei: false,
             nuclei_templates_path: None,
             nuclei_templates_commit: None,
-            demo_mode: false,
         }
     }
 }
@@ -94,10 +89,8 @@ impl From<crate::config::Configuration> for PersistedConfig {
             active_tools: c.active_tools,
             execution_type: c.execution_type,
             llm: c.llm,
-            use_real_nuclei: c.use_real_nuclei,
             nuclei_templates_path: c.nuclei_templates_path.clone(),
             nuclei_templates_commit: c.nuclei_templates_commit.clone(),
-            demo_mode: c.demo_mode,
         }
     }
 }
@@ -109,10 +102,8 @@ impl From<&crate::config::Configuration> for PersistedConfig {
             active_tools: c.active_tools.clone(),
             execution_type: c.execution_type,
             llm: c.llm.clone(),
-            use_real_nuclei: c.use_real_nuclei,
             nuclei_templates_path: c.nuclei_templates_path.clone(),
             nuclei_templates_commit: c.nuclei_templates_commit.clone(),
-            demo_mode: c.demo_mode,
         }
     }
 }

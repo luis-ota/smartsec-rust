@@ -1,7 +1,6 @@
 use crate::config::llm_config::LlmConfig;
 use crate::config::llm_config::LlmProviderKind;
 use crate::domain::vulnerability::Vulnerability;
-use crate::llm::mock_provider::MockProvider;
 use crate::llm::nvidia_nim::nvidia_nim_provider;
 use crate::llm::ollama_provider::ollama_provider;
 use crate::llm::openai_provider::OpenAIProvider;
@@ -24,7 +23,6 @@ pub struct AIAgent {
 impl AIAgent {
     pub fn from_config(cfg: &LlmConfig) -> Self {
         let provider: Box<dyn LLMProvider> = match cfg.provider {
-            LlmProviderKind::Mock => Box::new(MockProvider),
             LlmProviderKind::Ollama => Box::new(ollama_provider(
                 &cfg.base_url,
                 &cfg.api_key,
@@ -134,7 +132,10 @@ impl AIAgent {
         raw.to_string()
     }
 
-    async fn execute_with_fallback(&mut self, prompt: &str) -> Result<String, anyhow::Error> {
+    pub(crate) async fn execute_with_fallback(
+        &mut self,
+        prompt: &str,
+    ) -> Result<String, anyhow::Error> {
         if let Some(error) = &self.configuration_error {
             return Err(anyhow::anyhow!("configuração inválida da LLM: {error}"));
         }
@@ -169,17 +170,28 @@ impl AIAgent {
     }
 
     fn local_analysis(vulns: &[Vulnerability]) -> String {
-        let crit = vulns
-            .iter()
-            .filter(|v| v.severity == crate::domain::Severity::Critical)
-            .count();
-        let high = vulns
-            .iter()
-            .filter(|v| v.severity == crate::domain::Severity::High)
-            .count();
+        let count = |severity| vulns.iter().filter(|v| v.severity == severity).count();
+        let crit = count(crate::domain::Severity::Critical);
+        let high = count(crate::domain::Severity::High);
+        let medium = count(crate::domain::Severity::Medium);
+        let low = count(crate::domain::Severity::Low);
+        let info = count(crate::domain::Severity::Info);
+        let priority = if crit > 0 {
+            "Corrija imediatamente os achados críticos."
+        } else if high > 0 {
+            "Priorize a correção dos achados de gravidade alta."
+        } else if medium > 0 {
+            "Planeje a correção dos achados de gravidade média."
+        } else if low > 0 {
+            "Revise os achados de gravidade baixa e aplique hardening quando pertinente."
+        } else if info > 0 {
+            "Os achados são informativos; valide a exposição e aplique hardening quando pertinente."
+        } else {
+            "Nenhum achado foi identificado nesta execução."
+        };
         format!(
-            "Análise concluída: {} vulnerabilidades críticas e {} de gravidade alta detectadas.\nRecomenda-se corrigir imediatamente os achados críticos.\nRevise primeiro a autenticação, a validação de entradas e a superfície de dependências.",
-            crit, high
+            "Análise concluída: {} achados ({} críticos, {} altos, {} médios, {} baixos e {} informativos).\n{}",
+            vulns.len(), crit, high, medium, low, info, priority
         )
     }
 }
@@ -187,6 +199,8 @@ impl AIAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::vulnerability::FindingSource;
+    use crate::domain::Severity;
     use async_trait::async_trait;
 
     struct FailingProvider;
@@ -204,6 +218,21 @@ mod tests {
 
     struct SuccessfulProvider;
 
+    fn finding(severity: Severity) -> Vulnerability {
+        Vulnerability {
+            title: "Achado de teste".to_string(),
+            severity,
+            description: "Descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: FindingSource::Real,
+            target: "http://target.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-04T14:00:00Z".to_string(),
+        }
+    }
+
     #[async_trait]
     impl LLMProvider for SuccessfulProvider {
         async fn execute_prompt(
@@ -213,6 +242,15 @@ mod tests {
         ) -> Result<String, anyhow::Error> {
             Ok(format!("resposta alternativa do modelo {model}"))
         }
+    }
+
+    #[test]
+    fn local_analysis_counts_info_without_recommending_critical_fix() {
+        let analysis = AIAgent::local_analysis(&[finding(Severity::Info)]);
+
+        assert!(analysis.contains("1 informativos"));
+        assert!(analysis.contains("Os achados são informativos"));
+        assert!(!analysis.contains("Corrija imediatamente"));
     }
 
     #[tokio::test]
