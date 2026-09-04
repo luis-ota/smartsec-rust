@@ -510,7 +510,29 @@ impl AppState {
         }
         self.config.use_real_nuclei = self.settings_real_nuclei;
         self.config.save();
+        self.reset_settings_draft();
         self.show_settings = false;
+    }
+
+    pub fn reset_settings_draft(&mut self) {
+        self.settings_provider_idx = match self.config.llm.provider {
+            LlmProviderKind::Mock => 0,
+            LlmProviderKind::Ollama => 1,
+            LlmProviderKind::NvidiaNim => 2,
+            LlmProviderKind::OpenAI => 3,
+            LlmProviderKind::Custom => 4,
+        };
+        self.settings_input_base_url = self.config.llm.base_url.clone();
+        self.settings_input_api_key = self.config.llm.api_key.clone();
+        self.settings_input_model = self.config.llm.model.clone();
+        self.settings_input_timeout = self.config.llm.timeout_secs.to_string();
+        self.settings_input_retries = self.config.llm.max_retries.to_string();
+        self.settings_remote_consent = self.config.llm.remote_consent;
+        self.settings_fallback_enabled = self.config.llm.fallback_enabled;
+        self.settings_input_fallback_base_url = self.config.llm.fallback_base_url.clone();
+        self.settings_input_fallback_model = self.config.llm.fallback_model.clone();
+        self.settings_real_nuclei = self.config.use_real_nuclei;
+        self.settings_scroll = 0;
     }
 
     pub fn pause_or_resume(&mut self) {

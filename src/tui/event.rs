@@ -150,6 +150,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::Quit => return true,
         SemanticAction::OpenSettings => {
             app.settings_return_focus = app.focus;
+            app.reset_settings_draft();
             app.show_settings = true;
             app.focus = FocusTarget::SettingsField(app.settings_field);
         }
@@ -182,6 +183,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
             app.focus = app.settings_return_focus;
         }
         SemanticAction::CloseSettings => {
+            app.reset_settings_draft();
             app.show_settings = false;
             app.focus = app.settings_return_focus;
         }
@@ -334,6 +336,7 @@ fn go_back(app: &mut AppState) -> bool {
         return false;
     }
     if app.show_settings {
+        app.reset_settings_draft();
         app.show_settings = false;
         app.focus = app.settings_return_focus;
         return false;
@@ -1113,5 +1116,40 @@ mod tests {
         dispatch_action(&mut app, SemanticAction::ScrollUp);
         assert_eq!(app.detail_scroll, 0);
         assert_eq!(app.result_detail_vuln, Some(0));
+    }
+
+    #[test]
+    fn cancelling_settings_discards_draft_before_reopening() {
+        let mut app = app();
+        app.config.llm.base_url = "https://api.persistida.local/v1".to_string();
+        app.config.llm.model = "modelo-persistido".to_string();
+        app.config.llm.remote_consent = false;
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+        app.settings_input_base_url = "https://rascunho.local/v1".to_string();
+        app.settings_input_model = "modelo-rascunho".to_string();
+        app.settings_remote_consent = true;
+
+        dispatch_action(&mut app, SemanticAction::CloseSettings);
+
+        assert!(!app.show_settings);
+        assert_eq!(app.config.llm.model, "modelo-persistido");
+        assert_eq!(
+            app.settings_input_base_url,
+            "https://api.persistida.local/v1"
+        );
+        assert_eq!(app.settings_input_model, "modelo-persistido");
+        assert!(!app.settings_remote_consent);
+
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+        assert_eq!(
+            app.settings_input_base_url,
+            "https://api.persistida.local/v1"
+        );
+        assert_eq!(app.settings_input_model, "modelo-persistido");
+        assert!(!app.settings_remote_consent);
+
+        app.settings_input_model = "outro-rascunho".to_string();
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.settings_input_model, "modelo-persistido");
     }
 }
