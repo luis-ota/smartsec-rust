@@ -34,11 +34,11 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
     if app.pending_ctrl_x {
         app.pending_ctrl_x = false;
         app.command_palette_hint = None;
-        return key
-            .code
-            .as_char()
-            .and_then(ctrl_x_action)
-            .is_some_and(|action| dispatch_action(app, action));
+        let action = match key.code {
+            KeyCode::Char(character) => ctrl_x_action(character),
+            _ => None,
+        };
+        return action.is_some_and(|action| dispatch_action(app, action));
     }
 
     if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -595,20 +595,6 @@ fn delete_backward(app: &mut AppState) {
             app.settings_input_fallback_model.pop();
         }
         _ => {}
-    }
-}
-
-trait KeyCodeChar {
-    fn as_char(self) -> Option<char>;
-}
-
-impl KeyCodeChar for KeyCode {
-    fn as_char(self) -> Option<char> {
-        if let KeyCode::Char(character) = self {
-            Some(character)
-        } else {
-            None
-        }
     }
 }
 
