@@ -49,7 +49,7 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return dispatch_action(app, SemanticAction::OpenCommandPalette);
     }
 
-    if key.code == KeyCode::Char('?') {
+    if key.code == KeyCode::Char('?') && !accepts_text(app) {
         return dispatch_action(app, SemanticAction::OpenHelp);
     }
 
@@ -934,6 +934,28 @@ mod tests {
         assert!(!press(&mut app, KeyCode::Char('?')));
         assert!(!app.show_help_overlay);
         assert_eq!(app.focus, FocusTarget::ResultsExport);
+    }
+
+    #[test]
+    fn question_mark_is_inserted_in_target_and_text_fields() {
+        let mut app = app();
+        app.config.target_url = "https://exemplo.local/busca".to_string();
+        app.focus = FocusTarget::SplashTarget;
+
+        press(&mut app, KeyCode::Char('?'));
+        for character in "q=teste".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+
+        assert_eq!(app.config.target_url, "https://exemplo.local/busca?q=teste");
+        assert!(!app.show_help_overlay);
+
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+        app.settings_input_base_url = "https://api.exemplo.local/v1".to_string();
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::BaseUrl));
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.settings_input_base_url, "https://api.exemplo.local/v1?");
+        assert!(!app.show_help_overlay);
     }
 
     #[test]

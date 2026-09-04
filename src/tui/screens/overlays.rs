@@ -43,7 +43,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
         shortcut("setas", "navegar ou rolar"),
         shortcut("enter / espaço", "acionar o item em foco"),
         shortcut("esc", "fechar ou voltar"),
-        shortcut("?", "abrir esta ajuda"),
+        shortcut("?", "abrir ajuda fora de campos de texto"),
         shortcut("ctrl+p", "abrir a paleta de comandos"),
         Line::from(""),
         Line::styled(
