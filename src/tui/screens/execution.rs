@@ -152,9 +152,7 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[0],
         "Voltar",
         SemanticAction::Back,
-        back_focused,
-        false,
-        true,
+        chrome::ButtonState::secondary(back_focused),
     );
     chrome::render_button(
         app,
@@ -162,9 +160,12 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[2],
         if app.exec_paused { "Retomar" } else { "Pausar" },
         SemanticAction::PauseResume,
-        pause_focused,
-        app.exec_paused,
-        !app.exec_cancelled,
+        if app.exec_paused {
+            chrome::ButtonState::primary(pause_focused)
+        } else {
+            chrome::ButtonState::secondary(pause_focused)
+        }
+        .enabled(!app.exec_cancelled),
     );
     chrome::render_button(
         app,
@@ -172,8 +173,6 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[4],
         "Cancelar",
         SemanticAction::CancelRun,
-        cancel_focused,
-        false,
-        !app.exec_cancelled,
+        chrome::ButtonState::secondary(cancel_focused).enabled(!app.exec_cancelled),
     );
 }

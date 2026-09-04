@@ -171,9 +171,7 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[0],
         "Cancelar",
         SemanticAction::CloseSettings,
-        cancel_focused,
-        false,
-        true,
+        chrome::ButtonState::secondary(cancel_focused),
     );
     chrome::render_button(
         app,
@@ -181,9 +179,7 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[2],
         "Salvar",
         SemanticAction::SaveSettings,
-        save_focused,
-        true,
-        true,
+        chrome::ButtonState::primary(save_focused),
     );
 }
 

@@ -32,6 +32,19 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return false;
     }
 
+    if app.show_help_overlay {
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return dispatch_action(app, SemanticAction::OpenCommandPalette);
+        }
+        return key_action(app, key).is_some_and(|action| dispatch_action(app, action));
+    }
+    if app.show_command_palette {
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return dispatch_action(app, SemanticAction::Back);
+        }
+        return key_action(app, key).is_some_and(|action| dispatch_action(app, action));
+    }
+
     if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return dispatch_action(app, SemanticAction::OpenCommandPalette);
     }
@@ -136,7 +149,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::Back => return go_back(app),
         SemanticAction::Quit => return true,
         SemanticAction::OpenSettings => {
-            app.overlay_return_focus = app.focus;
+            app.settings_return_focus = app.focus;
             app.show_settings = true;
             app.focus = FocusTarget::SettingsField(app.settings_field);
         }
@@ -166,11 +179,11 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::SelectSettingsField(field) => select_settings_field(app, field),
         SemanticAction::SaveSettings => {
             app.apply_settings();
-            app.focus = app.overlay_return_focus;
+            app.focus = app.settings_return_focus;
         }
         SemanticAction::CloseSettings => {
             app.show_settings = false;
-            app.focus = app.overlay_return_focus;
+            app.focus = app.settings_return_focus;
         }
         SemanticAction::InsertText(text) => insert_text(app, &text),
         SemanticAction::DeleteBackward => delete_backward(app),
@@ -321,7 +334,7 @@ fn go_back(app: &mut AppState) -> bool {
     }
     if app.show_settings {
         app.show_settings = false;
-        app.focus = app.overlay_return_focus;
+        app.focus = app.settings_return_focus;
         return false;
     }
     if app.show_didactic || app.show_detail {
@@ -914,7 +927,7 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         assert!(app.show_help_overlay);
         assert_eq!(app.focus, FocusTarget::HelpClose);
-        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!press(&mut app, KeyCode::Char('?')));
         assert!(!app.show_help_overlay);
         assert_eq!(app.focus, FocusTarget::ResultsExport);
     }
@@ -957,5 +970,25 @@ mod tests {
 
         assert_eq!(app.step, AppStep::ToolSelect);
         assert!(app.show_command_palette);
+    }
+
+    #[test]
+    fn command_from_settings_restores_the_underlying_screen_focus() {
+        let mut app = app();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsExport;
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+        let cancel_index = command_items(&app)
+            .iter()
+            .position(|item| item.action == SemanticAction::CloseSettings)
+            .unwrap();
+
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(cancel_index));
+
+        assert!(!app.show_settings);
+        assert!(!app.show_command_palette);
+        assert_eq!(app.step, AppStep::Results);
+        assert_eq!(app.focus, FocusTarget::ResultsExport);
     }
 }

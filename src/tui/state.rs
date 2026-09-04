@@ -133,6 +133,7 @@ pub struct AppState {
     pub command_cursor: usize,
     pub settings_scroll: usize,
     pub focus: FocusTarget,
+    pub settings_return_focus: FocusTarget,
     pub overlay_return_focus: FocusTarget,
     pub hit_regions: Vec<HitRegion>,
 }
@@ -229,6 +230,7 @@ impl AppState {
             command_cursor: 0,
             settings_scroll: 0,
             focus: FocusTarget::SplashTarget,
+            settings_return_focus: FocusTarget::SplashTarget,
             overlay_return_focus: FocusTarget::SplashTarget,
             hit_regions: Vec::new(),
         }
