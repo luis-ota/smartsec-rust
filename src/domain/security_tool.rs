@@ -47,6 +47,7 @@ pub struct SecurityTool {
     #[allow(dead_code)]
     pub tool_version: Option<String>,
     pub execution_error: Option<String>,
+    pub podman_trace: Vec<String>,
 }
 
 impl SecurityTool {
@@ -62,6 +63,7 @@ impl SecurityTool {
             image: None,
             tool_version: None,
             execution_error: None,
+            podman_trace: Vec::new(),
         }
     }
 

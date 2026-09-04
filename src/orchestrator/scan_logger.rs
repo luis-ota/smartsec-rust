@@ -22,6 +22,9 @@ pub struct ToolExecutionRecord {
     pub image: Option<String>,
     #[serde(default)]
     pub execution_error: Option<String>,
+    /// Trace operacional completo do Podman (comandos, pull, start, limpeza).
+    #[serde(default)]
+    pub podman_trace: Vec<String>,
 }
 
 /// Metadados e log estruturado completo de um scan de segurança.
@@ -220,6 +223,7 @@ mod tests {
                 tool_version: Some("test".to_string()),
                 image: None,
                 execution_error: None,
+                podman_trace: vec!["[12:01:00] $ podman create --name smartsec-test".to_string()],
             }],
             vec![
                 Vulnerability {
@@ -252,13 +256,22 @@ mod tests {
 
         let mut legacy_json = serde_json::to_value(&metadata).unwrap();
         legacy_json.as_object_mut().unwrap().remove("info_count");
+        legacy_json["tools_executed"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("podman_trace");
         let legacy: ScanMetadata = serde_json::from_value(legacy_json).unwrap();
         assert_eq!(legacy.info_count, 0);
+        assert!(legacy.tools_executed[0].podman_trace.is_empty());
 
         let path = save_scan_log_to_dir(&metadata, &temp_dir).expect("save should succeed");
         assert!(path.exists());
 
         let loaded = load_scan_log_from_file(&path).expect("load should succeed");
+        assert_eq!(
+            loaded.tools_executed[0].podman_trace,
+            vec!["[12:01:00] $ podman create --name smartsec-test".to_string()]
+        );
         assert_eq!(loaded.scan_id, "scan_20260831_120000");
         assert_eq!(loaded.findings_count, 2);
         assert_eq!(loaded.high_count, 1);

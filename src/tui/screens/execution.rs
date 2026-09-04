@@ -109,10 +109,22 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .exec_logs
         .iter()
         .map(|log| {
-            let color = if log.contains("FALHA") || log.contains("CANCELADA") {
+            let color = if log.contains("FALHA")
+                || log.contains("CANCELADA")
+                || log.contains("falhou")
+                || log.contains("interrompido")
+            {
                 DANGER
-            } else if log.contains("OK") {
+            } else if log.contains("OK")
+                || log.contains("concluído")
+                || log.contains("criado")
+                || log.contains("removido")
+                || log.contains("verificado")
+                || log.contains("[auditoria] Log salvo")
+            {
                 SUCCESS
+            } else if log.contains("] $ ") {
+                TEXT
             } else {
                 MUTED
             };

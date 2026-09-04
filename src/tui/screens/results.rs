@@ -22,11 +22,8 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
             "Execução concluída com falhas · {}",
             chrome::truncate_width(error, 60)
         )
-    } else if let Some(warning) = &app.llm_warning {
-        format!(
-            "Execução concluída com alternativa local · {}",
-            chrome::truncate_width(warning, 50)
-        )
+    } else if app.llm_warning.is_some() {
+        "Análise local aplicada · LLM indisponível".to_string()
     } else if app.md_exported {
         "Relatório Markdown exportado".to_string()
     } else if vulnerabilities.is_empty() {
@@ -52,18 +49,27 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_overview(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(area);
-    if rows[0].width < 120 {
-        let stacked = Layout::vertical([Constraint::Length(6), Constraint::Min(1)]).split(rows[0]);
-        render_summary(app, frame, stacked[0]);
-        render_list(app, frame, stacked[1]);
-    } else {
-        let columns = Layout::horizontal([Constraint::Percentage(34), Constraint::Percentage(66)])
-            .split(rows[0]);
-        render_summary(app, frame, columns[0]);
-        render_list(app, frame, columns[1]);
-    }
-    render_overview_actions(app, frame, rows[1]);
+    let rows = Layout::vertical([
+        Constraint::Length(6),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .split(area);
+    render_summary(app, frame, rows[0]);
+    render_list(app, frame, rows[1]);
+    render_overview_actions(app, frame, rows[2]);
+}
+
+fn audit_label(path: Option<&std::path::PathBuf>, pending: &str) -> String {
+    path.map_or_else(
+        || pending.to_string(),
+        |path| {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| format!("auditoria  {}", name.to_string_lossy()),
+            )
+        },
+    )
 }
 
 fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -101,10 +107,7 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
                 metric("informativas", info, MUTED),
             ]),
             Line::styled(
-                app.audit_log_path.as_ref().map_or_else(
-                    || "Log de auditoria indisponível".to_string(),
-                    |path| format!("Auditoria: {}", path.display()),
-                ),
+                audit_label(app.audit_log_path.as_ref(), "Log de auditoria indisponível"),
                 Style::default().fg(MUTED),
             ),
         ]
@@ -144,9 +147,9 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
                 ),
             ]),
             Line::styled(
-                app.audit_log_path.as_ref().map_or_else(
-                    || "auditoria  aguardando persistência".to_string(),
-                    |path| format!("auditoria  {}", path.display()),
+                audit_label(
+                    app.audit_log_path.as_ref(),
+                    "auditoria  aguardando persistência",
                 ),
                 Style::default().fg(MUTED),
             ),

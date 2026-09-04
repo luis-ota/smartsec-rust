@@ -8,6 +8,7 @@ use crate::tools::nmap::{NmapTool, NMAP_IMAGE, NMAP_VERSION};
 use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE, NUCLEI_TEMPLATES_COMMIT, NUCLEI_VERSION};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
 
 pub struct Orchestrator {
     pub config: Configuration,
@@ -18,6 +19,10 @@ pub struct Orchestrator {
     pub paused: bool,
     pub cancelled: bool,
     pub last_log: String,
+    /// Sink opcional que recebe ao vivo cada linha do trace operacional do
+    /// Podman (TUI e headless). Quando ausente, o trace segue acumulado em
+    /// cada `SecurityTool` para auditoria.
+    pub trace_sink: Option<mpsc::UnboundedSender<String>>,
     started_at: String,
     latest_nmap_output: Option<String>,
 }
@@ -35,6 +40,7 @@ impl Orchestrator {
             paused: false,
             cancelled: false,
             last_log: String::new(),
+            trace_sink: None,
             started_at: now_iso8601(),
             latest_nmap_output: None,
         }
@@ -67,6 +73,14 @@ impl Orchestrator {
 
     pub fn cancel_execution(&mut self) {
         self.cancelled = true;
+    }
+
+    fn podman_executor(&self) -> PodmanExecutor {
+        let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+        match &self.trace_sink {
+            Some(sink) => executor.with_log_sink(sink.clone()),
+            None => executor,
+        }
     }
 
     pub fn determine_next_step(&self) -> String {
@@ -110,12 +124,13 @@ impl Orchestrator {
         exec.tool_version = Some(NMAP_VERSION.to_owned());
         exec.image = Some(NMAP_IMAGE.to_owned());
         exec.executed_at = now_iso8601();
-        let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+        let executor = self.podman_executor();
         match executor
             .execute(NMAP_IMAGE, &NmapTool::container_arguments(target))
             .await
         {
             Ok(result) => {
+                exec.podman_trace = result.trace.clone();
                 exec.status = execution_status(&result.status);
                 exec.duration_ms = result.duration.as_millis();
                 exec.stderr = sanitize(&result.stderr);
@@ -178,7 +193,7 @@ impl Orchestrator {
             self.execution_history.push(exec.clone());
             return exec;
         }
-        let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+        let executor = self.podman_executor();
         exec.output = match executor
             .execute_with_mounts(
                 NUCLEI_IMAGE,
@@ -188,6 +203,7 @@ impl Orchestrator {
             .await
         {
             Ok(result) => {
+                exec.podman_trace = result.trace.clone();
                 exec.status = execution_status(&result.status);
                 exec.duration_ms = result.duration.as_millis();
                 exec.stderr = sanitize(&result.stderr);
@@ -316,7 +332,12 @@ impl Orchestrator {
                     duration_ms: execution.duration_ms,
                     tool_version: execution.tool_version.clone(),
                     image: execution.image.clone(),
-                    execution_error: execution.execution_error.as_deref().map(sanitize),
+                    execution_error: execution.execution_error.clone(),
+                    podman_trace: execution
+                        .podman_trace
+                        .iter()
+                        .map(|line| sanitize(line))
+                        .collect(),
                 },
             )
             .collect();
