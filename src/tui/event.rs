@@ -223,7 +223,11 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
         ],
         AppStep::Analysis => vec![FocusTarget::AnalysisCancel],
         AppStep::Results if app.result_detail_vuln.is_some() => {
-            vec![FocusTarget::ResultsBack, FocusTarget::ResultsDidactic]
+            vec![
+                FocusTarget::ResultsDetail,
+                FocusTarget::ResultsBack,
+                FocusTarget::ResultsDidactic,
+            ]
         }
         AppStep::Results => vec![
             FocusTarget::ResultsList,
@@ -254,11 +258,7 @@ fn move_vertical(app: &mut AppState, down: bool) {
         FocusTarget::ResultsList if app.result_detail_vuln.is_none() => {
             move_result_cursor(app, down)
         }
-        FocusTarget::ResultsBack | FocusTarget::ResultsDidactic
-            if app.result_detail_vuln.is_some() =>
-        {
-            move_detail_cursor(app, down)
-        }
+        FocusTarget::ResultsDetail => move_detail_cursor(app, down),
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => scroll(app, down, 1),
         FocusTarget::SettingsField(SettingsField::Provider) => move_provider(app, down),
         _ => move_focus(app, down),
@@ -286,6 +286,7 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::ExecutionCancel => SemanticAction::CancelRun,
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => return,
         FocusTarget::ResultsList => SemanticAction::OpenVulnerability(app.result_cursor),
+        FocusTarget::ResultsDetail => return,
         FocusTarget::ResultsNewScan => SemanticAction::NewScan,
         FocusTarget::ResultsExport => SemanticAction::ExportMarkdown,
         FocusTarget::ResultsDidactic => SemanticAction::ShowDidactic,
@@ -422,7 +423,7 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
     if index < app.vulnerabilities().len() {
         app.result_cursor = index;
         app.result_detail_vuln = Some(index);
-        app.focus = FocusTarget::ResultsBack;
+        app.focus = FocusTarget::ResultsDetail;
     }
 }
 
@@ -801,6 +802,29 @@ mod tests {
             .collect();
         assert_eq!(indices.first(), Some(&3));
         assert!(indices.iter().all(|index| *index >= app.tool_scroll));
+    }
+
+    #[test]
+    fn result_hitboxes_include_scroll_offset_and_open_the_right_item() {
+        let mut app = app();
+        app.config.demo_mode = true;
+        app.step = AppStep::Results;
+        app.result_cursor = app.vulnerabilities().len() - 1;
+        render_app(&mut app, 80, 12);
+
+        let first_visible = app
+            .hit_regions
+            .iter()
+            .find_map(|region| match region.action {
+                SemanticAction::OpenVulnerability(index) => Some(index),
+                _ => None,
+            })
+            .expect("a lista deve ter ao menos um item visível");
+        assert_eq!(first_visible, app.result_scroll);
+
+        click_action(&mut app, &SemanticAction::OpenVulnerability(first_visible));
+        assert_eq!(app.result_detail_vuln, Some(first_visible));
+        assert_eq!(app.focus, FocusTarget::ResultsDetail);
     }
 
     #[test]

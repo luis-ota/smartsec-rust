@@ -245,9 +245,7 @@ fn render_vuln_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .style(Style::default().bg(bg)),
         );
     }
-    let para = Paragraph::new(Text::from(lines))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: true });
+    let para = Paragraph::new(Text::from(lines)).style(Style::default().bg(Color::Rgb(12, 12, 24)));
     frame.render_widget(para, inner);
 }
 
@@ -398,9 +396,8 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .skip(app.didactic_scroll)
         .take(visible_h)
         .collect();
-    let para = Paragraph::new(Text::from(visible))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: false });
+    let para =
+        Paragraph::new(Text::from(visible)).style(Style::default().bg(Color::Rgb(12, 12, 24)));
     frame.render_widget(para, inner);
 
     let btn_w = 8u16;
