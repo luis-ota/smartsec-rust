@@ -301,8 +301,9 @@ fn activate_focus(app: &mut AppState) {
         | FocusTarget::ResultsBack
         | FocusTarget::DidacticBack => SemanticAction::Back,
         FocusTarget::ToolRun => SemanticAction::RunTools,
-        FocusTarget::ExecutionPause => SemanticAction::PauseResume,
-        FocusTarget::ExecutionCancel => SemanticAction::CancelRun,
+        FocusTarget::ExecutionPause if !app.exec_cancelled => SemanticAction::PauseResume,
+        FocusTarget::ExecutionCancel if !app.exec_cancelled => SemanticAction::CancelRun,
+        FocusTarget::ExecutionPause | FocusTarget::ExecutionCancel => return,
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => return,
         FocusTarget::ResultsList => SemanticAction::OpenVulnerability(app.result_cursor),
         FocusTarget::ResultsDetail => return,
@@ -459,6 +460,9 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
 }
 
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
+    if app.show_help_overlay {
+        return;
+    }
     if app.show_command_palette {
         move_command_cursor(app, down);
         return;
@@ -990,5 +994,23 @@ mod tests {
         assert!(!app.show_command_palette);
         assert_eq!(app.step, AppStep::Results);
         assert_eq!(app.focus, FocusTarget::ResultsExport);
+    }
+
+    #[test]
+    fn help_blocks_scroll_and_cancelled_actions_stay_disabled() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.log_visible_height = 2;
+        dispatch_action(&mut app, SemanticAction::OpenHelp);
+        dispatch_action(&mut app, SemanticAction::ScrollDown);
+        assert_eq!(app.log_scroll, 0);
+
+        dispatch_action(&mut app, SemanticAction::Back);
+        app.exec_cancelled = true;
+        app.focus = FocusTarget::ExecutionPause;
+        dispatch_action(&mut app, SemanticAction::Activate);
+        assert!(!app.exec_paused);
     }
 }
