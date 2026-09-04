@@ -274,7 +274,7 @@ impl AppState {
 
     pub fn ai_summary(&self) -> &str {
         if self.agent.last_analysis.is_empty() {
-            "[AI analysis will run after execution completes]"
+            "[A análise por IA será executada após a varredura]"
         } else {
             &self.agent.last_analysis
         }
@@ -334,7 +334,7 @@ impl AppState {
         let _ = tool;
 
         self.exec_logs.push(format!(
-            "[{}] Running {}...",
+            "[{}] Executando {}...",
             tool_info.name, tool_info.description
         ));
         let vh = self.log_visible_height.max(1);
@@ -347,7 +347,7 @@ impl AppState {
         self.tools[self.exec_current].status = ToolStatus::Done;
         self.tools[self.exec_current].progress = 100;
         self.exec_logs
-            .push(format!("[{}] OK Scan complete", tool_info.name));
+            .push(format!("[{}] OK Varredura concluída", tool_info.name));
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
@@ -431,7 +431,7 @@ impl AppState {
         self.analysis_phase = AnalysisPhase::Scanning;
         self.analysis_tick = 0;
         self.analysis_text.clear();
-        self.analysis_full_text = "Running security tools and analyzing outputs...\n\nCross-referencing findings across multiple scanners.\nCorrelating results for false positive reduction.\n\nGenerating severity classifications and remediation priorities.\nCompiling didactic explanations for each vulnerability...".to_string();
+        self.analysis_full_text = "Executando ferramentas de segurança e analisando saídas...\n\nCruzando achados entre diferentes scanners.\nCorrelacionando resultados para reduzir falsos positivos.\n\nGerando classificações de severidade e prioridades de correção.\nCompilando explicações didáticas para cada vulnerabilidade...".to_string();
     }
 
     pub fn advance_execution(&mut self) {
@@ -506,10 +506,10 @@ impl AppState {
         self.exec_paused = !self.exec_paused;
         if self.exec_paused {
             self.orchestrator.pause_execution();
-            self.exec_logs.push("|| Execution PAUSED".to_string());
+            self.exec_logs.push("|| Execução PAUSADA".to_string());
         } else {
             self.orchestrator.resume_execution();
-            self.exec_logs.push("> Execution RESUMED".to_string());
+            self.exec_logs.push("> Execução RETOMADA".to_string());
         }
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
@@ -523,7 +523,7 @@ impl AppState {
         }
         self.exec_cancelled = true;
         self.orchestrator.cancel_execution();
-        self.exec_logs.push("X Execution CANCELLED".to_string());
+        self.exec_logs.push("X Execução CANCELADA".to_string());
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);

@@ -35,12 +35,12 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
     let spinner = app.spinner_char();
     let title = if detecting {
         format!(
-            "{} Analyzing project at: {} ...",
+            "{} Analisando o alvo: {} ...",
             spinner, app.config.target_url
         )
     } else {
         format!(
-            "OK Analysis complete - {} tools identified",
+            "OK Análise concluída - {} ferramentas identificadas",
             app.tools.len()
         )
     };
@@ -48,7 +48,10 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
 
     let header = Paragraph::new(Line::from(vec![
         Span::styled(" | ", Style::default().fg(Color::Cyan)),
-        Span::styled("Tool Selection", Style::default().fg(Color::White).bold()),
+        Span::styled(
+            "Seleção de ferramentas",
+            Style::default().fg(Color::White).bold(),
+        ),
         Span::styled(" ", Style::default()),
         Span::styled(title, Style::default().fg(title_color)),
     ]))
@@ -69,7 +72,7 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Line::from(vec![Span::styled(
-            " Security Tools ",
+            " Ferramentas de segurança ",
             Style::default().fg(Color::Cyan).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(12, 12, 24)));
@@ -141,7 +144,7 @@ fn render_tool_detail(app: &AppState, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Line::from(vec![Span::styled(
-            " Details ",
+            " Detalhes ",
             Style::default().fg(Color::Cyan).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(12, 12, 24)));
@@ -156,23 +159,23 @@ fn render_tool_detail(app: &AppState, frame: &mut Frame, area: Rect) {
     let total = app.tools.len();
 
     let status_span = match tool.status {
-        ToolStatus::Pending => Span::styled("[ ] Pending", Style::default().fg(Color::DarkGray)),
+        ToolStatus::Pending => Span::styled("[ ] Pendente", Style::default().fg(Color::DarkGray)),
         ToolStatus::Running => Span::styled(
-            format!("{} Running", app.spinner_char()),
+            format!("{} Em execução", app.spinner_char()),
             Style::default().fg(Color::Yellow),
         ),
-        ToolStatus::Done => Span::styled("OK Complete", Style::default().fg(Color::Green)),
-        ToolStatus::Failed => Span::styled("FAIL Failed", Style::default().fg(Color::Red)),
+        ToolStatus::Done => Span::styled("OK Concluído", Style::default().fg(Color::Green)),
+        ToolStatus::Failed => Span::styled("FALHA", Style::default().fg(Color::Red)),
     };
 
     let detail = ratatui::text::Text::from(vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled(" Name: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Nome: ", Style::default().fg(Color::DarkGray)),
             Span::styled(tool.tool.name, Style::default().fg(Color::White).bold()),
         ]),
         Line::from(vec![
-            Span::styled(" Type: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Tipo: ", Style::default().fg(Color::DarkGray)),
             Span::styled(tool.tool.category, Style::default().fg(Color::Cyan)),
         ]),
         Line::from(""),
@@ -182,12 +185,12 @@ fn render_tool_detail(app: &AppState, frame: &mut Frame, area: Rect) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled(" Status: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Estado: ", Style::default().fg(Color::DarkGray)),
             status_span,
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled(" Selected: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Selecionadas: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 format!("{}/{}", selected_count, total),
                 Style::default().fg(Color::Green),
@@ -209,8 +212,8 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(bar, area);
 
     let mode_text = match app.mode() {
-        ExecutionType::Auto => "AUTO",
-        ExecutionType::Assisted => "ASSISTED",
+        ExecutionType::Auto => "AUTOMÁTICO",
+        ExecutionType::Assisted => "ASSISTIDO",
     };
 
     if app.tool_detecting {
@@ -220,7 +223,10 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 Style::default().fg(Color::Cyan).bold(),
             ),
             Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Detecting tools...", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                "Detectando ferramentas...",
+                Style::default().fg(Color::Cyan),
+            ),
         ]))
         .style(Style::default().bg(Color::Rgb(20, 20, 40)));
         frame.render_widget(footer, inner);
@@ -232,15 +238,15 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             ),
             Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                "Proceeding automatically...",
+                "Continuando automaticamente...",
                 Style::default().fg(Color::Cyan),
             ),
         ]))
         .style(Style::default().bg(Color::Rgb(20, 20, 40)));
         frame.render_widget(footer, inner);
     } else {
-        let run_btn_w = 7u16;
-        let back_btn_w = 7u16;
+        let run_btn_w = 10u16;
+        let back_btn_w = 9u16;
         let run_btn_x = area.x + area.width.saturating_sub(run_btn_w + 2);
         let back_btn_x = run_btn_x.saturating_sub(back_btn_w + 2);
         let run_area = Rect::new(run_btn_x, area.y + 1, run_btn_w, 1);
@@ -255,17 +261,17 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             ),
             Span::styled(" | ", Style::default().fg(Color::DarkGray)),
             Span::styled("Up/Down", Style::default().fg(Color::White)),
-            Span::styled(" Nav ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Navegar ", Style::default().fg(Color::DarkGray)),
             Span::styled("Space", Style::default().fg(Color::White)),
-            Span::styled(" Toggle ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Alternar ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::White)),
-            Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Voltar", Style::default().fg(Color::DarkGray)),
         ]))
         .style(Style::default().bg(Color::Rgb(20, 20, 40)));
         frame.render_widget(footer, inner);
 
         let back_btn = Paragraph::new(Line::from(vec![Span::styled(
-            " Back ",
+            " Voltar ",
             Style::default()
                 .fg(Color::White)
                 .bg(Color::Rgb(80, 80, 100))
@@ -275,7 +281,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
         frame.render_widget(back_btn, back_area);
 
         let run_btn = Paragraph::new(Line::from(vec![Span::styled(
-            " Run ",
+            " Executar ",
             Style::default()
                 .fg(Color::White)
                 .bg(Color::Rgb(0, 120, 0))

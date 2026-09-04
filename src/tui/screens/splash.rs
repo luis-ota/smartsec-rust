@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
@@ -35,7 +36,7 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(logo, chunks[0]);
 
     let subtitle = Paragraph::new(Line::from(Span::styled(
-        "Security Analysis Platform - Rust TUI Prototype",
+        "Plataforma de análise de segurança",
         Style::default().fg(Color::DarkGray).italic(),
     )))
     .alignment(Alignment::Center);
@@ -52,34 +53,54 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let mode_prefix = " Modo: ";
+    let auto_label = " AUTOMÁTICO ";
+    let separator = " / ";
+    let assisted_label = " ASSISTIDO ";
+    let mode_hint = " [Tab para alternar]";
     let mode_line = Line::from(vec![
-        Span::styled(" Mode: ", Style::default().fg(Color::White)),
-        Span::styled(" AUTO ", auto_style),
-        Span::styled(" / ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" ASSISTED ", assisted_style),
-        Span::styled(
-            " [Tab to switch]",
-            Style::default().fg(Color::DarkGray).italic(),
-        ),
+        Span::styled(mode_prefix, Style::default().fg(Color::White)),
+        Span::styled(auto_label, auto_style),
+        Span::styled(separator, Style::default().fg(Color::DarkGray)),
+        Span::styled(assisted_label, assisted_style),
+        Span::styled(mode_hint, Style::default().fg(Color::DarkGray).italic()),
     ]);
     let mode_para = Paragraph::new(mode_line).alignment(Alignment::Center);
     frame.render_widget(mode_para, chunks[4]);
 
-    let mode_total_w = 42u16;
+    let mode_total_w = (mode_prefix.width()
+        + auto_label.width()
+        + separator.width()
+        + assisted_label.width()
+        + mode_hint.width()) as u16;
     let mode_center_offset = (chunks[4].width.saturating_sub(mode_total_w)) / 2;
     app.register_hit_region(
-        Rect::new(chunks[4].x + mode_center_offset, chunks[4].y, 6, 1),
+        Rect::new(
+            chunks[4].x + mode_center_offset + mode_prefix.width() as u16,
+            chunks[4].y,
+            auto_label.width() as u16,
+            1,
+        ),
         SemanticAction::SetMode(ExecutionType::Auto),
     );
     app.register_hit_region(
-        Rect::new(chunks[4].x + mode_center_offset + 17, chunks[4].y, 10, 1),
+        Rect::new(
+            chunks[4].x
+                + mode_center_offset
+                + mode_prefix.width() as u16
+                + auto_label.width() as u16
+                + separator.width() as u16,
+            chunks[4].y,
+            assisted_label.width() as u16,
+            1,
+        ),
         SemanticAction::SetMode(ExecutionType::Assisted),
     );
 
     let provider_label =
         crate::config::llm_config::LlmProviderKind::all_labels()[app.settings_provider_idx];
     let model_display = if app.config.llm.model.is_empty() {
-        "not configured".to_string()
+        "não configurado".to_string()
     } else {
         app.config.llm.model.clone()
     };
@@ -89,7 +110,7 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Yellow))
         .title(Line::from(vec![Span::styled(
-            " AI Model ",
+            " Modelo de IA ",
             Style::default().fg(Color::Yellow).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(16, 16, 32)));
@@ -101,7 +122,7 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Span::styled(" / ", Style::default().fg(Color::DarkGray)),
         Span::styled(model_display, Style::default().fg(Color::Cyan)),
         Span::styled(
-            "  [click to configure]",
+            "  [clique para configurar]",
             Style::default().fg(Color::DarkGray).italic(),
         ),
     ]))
@@ -115,7 +136,7 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(Line::from(vec![Span::styled(
-            " Target URL ",
+            " URL alvo ",
             Style::default().fg(Color::Cyan).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(16, 16, 32)));
@@ -151,17 +172,27 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
         chunks[6],
         SemanticAction::SetFocus(FocusTarget::SplashTarget),
     );
-    app.register_hit_region(chunks[7], SemanticAction::StartScan);
+    let start_hint = "Enter Iniciar  ";
+    let focus_hint = "Tab Foco  ";
+    let command_hint = "C-x Comandos  ";
+    let quit_hint = "Esc Sair";
+    let hint_width =
+        (start_hint.width() + focus_hint.width() + command_hint.width() + quit_hint.width()) as u16;
+    let hint_x = chunks[7].x + chunks[7].width.saturating_sub(hint_width) / 2;
+    app.register_hit_region(
+        Rect::new(hint_x, chunks[7].y, start_hint.width() as u16, 1),
+        SemanticAction::StartScan,
+    );
 
     let hint = Paragraph::new(Line::from(vec![
         Span::styled("Enter", Style::default().fg(Color::White)),
-        Span::styled(" Start  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Iniciar  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Tab", Style::default().fg(Color::White)),
-        Span::styled(" Mode  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Foco  ", Style::default().fg(Color::DarkGray)),
         Span::styled("C-x", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(" Commands  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Comandos  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::White)),
-        Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Sair", Style::default().fg(Color::DarkGray)),
     ]))
     .alignment(Alignment::Center);
     frame.render_widget(hint, chunks[7]);
@@ -176,8 +207,8 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(bar, area);
 
     let mode_text = match app.mode() {
-        ExecutionType::Auto => "AUTO",
-        ExecutionType::Assisted => "ASSISTED",
+        ExecutionType::Auto => "AUTOMÁTICO",
+        ExecutionType::Assisted => "ASSISTIDO",
     };
     let mode_color = match app.mode() {
         ExecutionType::Auto => Color::Cyan,
@@ -203,7 +234,7 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(mode_color).bold(),
         ),
         Span::styled(
-            format!("| AI: {} ", model_short),
+            format!("| IA: {} ", model_short),
             Style::default().fg(Color::Yellow),
         ),
         Span::styled(
@@ -211,7 +242,7 @@ fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            "| Esc: Quit Tab: Mode Enter: Start C-x: Cmds ",
+            "| Esc: sair Tab: foco Enter: ativar C-x: comandos ",
             Style::default().fg(Color::DarkGray),
         ),
     ]))
@@ -250,7 +281,7 @@ fn build_logo() -> Vec<Line<'static>> {
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "        Security Analysis Platform         ",
+            "        Plataforma de análise de segurança         ",
             c2,
         )]),
     ]
