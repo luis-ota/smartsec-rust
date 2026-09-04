@@ -860,7 +860,7 @@ mod tests {
         app.config.demo_mode = true;
         app.step = AppStep::Results;
         app.result_cursor = app.vulnerabilities().len() - 1;
-        render_app(&mut app, 80, 12);
+        render_app(&mut app, 80, 24);
 
         let first_visible = app
             .hit_regions
