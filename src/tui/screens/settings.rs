@@ -1,57 +1,108 @@
 use crate::config::llm_config::LlmProviderKind;
+use crate::tui::chrome::{self, ACCENT, DANGER, SURFACE, TEXT};
+use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::{AppState, SettingsField};
 use ratatui::{
-    layout::{Alignment, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    text::{Line, Span, Text},
+    widgets::Paragraph,
     Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    frame.render_widget(Clear, area);
-    let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
-    frame.render_widget(bg, area);
+    let status = app
+        .llm_warning
+        .clone()
+        .unwrap_or_else(|| "Revise as opções e salve para aplicar".to_string());
+    let shell = chrome::render_shell(app, frame, area, "Configurações", &status);
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(shell.content);
+    render_form(app, frame, rows[0]);
+    render_actions(app, frame, rows[1]);
+}
 
-    let popup = crate::tui::centered_rect(78, 94, area);
-    let block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Line::from(vec![Span::styled(
-            " Configurações ",
-            Style::default().fg(Color::Cyan).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    let labels = LlmProviderKind::all_labels();
-    let provider_label = labels[app.settings_provider_idx];
-    let nuclei_status = if app.settings_real_nuclei {
-        "[X] Ativo"
-    } else {
-        "[ ] Inativo"
+fn render_form(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let fields = settings_fields(app);
+    let focused_index = match app.focus {
+        FocusTarget::SettingsField(field) => SettingsField::ALL
+            .iter()
+            .position(|candidate| *candidate == field),
+        _ => None,
     };
-    let _nuclei_color = if app.settings_real_nuclei {
-        Color::Green
-    } else {
-        Color::DarkGray
-    };
+    let block = chrome::panel("Provedor e execução", focused_index.is_some());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let warning_height = u16::from(app.llm_warning.is_some());
+    let visible = inner.height.saturating_sub(warning_height).max(1) as usize;
+    let max_scroll = fields.len().saturating_sub(visible);
+    app.settings_scroll = app.settings_scroll.min(max_scroll);
+    if let Some(index) = focused_index {
+        if index < app.settings_scroll {
+            app.settings_scroll = index;
+        } else if index >= app.settings_scroll.saturating_add(visible) {
+            app.settings_scroll = index.saturating_sub(visible - 1);
+        }
+    }
 
+    let mut lines = Vec::new();
+    for row in 0..visible.min(fields.len().saturating_sub(app.settings_scroll)) {
+        let index = app.settings_scroll + row;
+        let (label, value, field) = &fields[index];
+        let active = app.focus == FocusTarget::SettingsField(*field);
+        let value_width = inner.width.saturating_sub(25) as usize;
+        let value = chrome::truncate_width(value, value_width);
+        lines.push(
+            Line::from(vec![
+                Span::styled(
+                    format!("{} {:<20}", if active { ">" } else { " " }, label),
+                    Style::default().bold(),
+                ),
+                Span::styled(value, Style::default()),
+                Span::styled(if active { "▏" } else { "" }, Style::default().bold()),
+            ])
+            .style(
+                Style::default()
+                    .fg(if active { Color::Black } else { TEXT })
+                    .bg(if active { ACCENT } else { SURFACE }),
+            ),
+        );
+        app.register_hit_region(
+            Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            SemanticAction::SelectSettingsField(*field),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(warning_height),
+        ),
+    );
+    if let Some(warning) = &app.llm_warning {
+        frame.render_widget(
+            Paragraph::new(format!("aviso  {warning}"))
+                .style(Style::default().fg(DANGER).bg(SURFACE)),
+            Rect::new(
+                inner.x,
+                inner.y + inner.height.saturating_sub(1),
+                inner.width,
+                1,
+            ),
+        );
+    }
+}
+
+fn settings_fields(app: &AppState) -> Vec<(&'static str, String, SettingsField)> {
+    let provider = LlmProviderKind::all_labels()[app.settings_provider_idx].to_string();
     let api_key = if app.settings_input_api_key.is_empty() {
         "(não definida)".to_string()
     } else {
         "********".to_string()
     };
-    let consent = checkbox(app.settings_remote_consent);
-    let fallback = checkbox(app.settings_fallback_enabled);
-    let fields = vec![
-        (
-            "Provedor",
-            provider_label.to_string(),
-            SettingsField::Provider,
-        ),
+    vec![
+        ("Provedor", provider, SettingsField::Provider),
         (
             "URL base",
             app.settings_input_base_url.clone(),
@@ -75,12 +126,12 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         ),
         (
             "Consentimento remoto",
-            consent,
+            checkbox(app.settings_remote_consent),
             SettingsField::RemoteConsent,
         ),
         (
             "Alternativa local",
-            fallback,
+            checkbox(app.settings_fallback_enabled),
             SettingsField::FallbackEnabled,
         ),
         (
@@ -95,82 +146,46 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         ),
         (
             "Nuclei real",
-            nuclei_status.to_string(),
+            if app.settings_real_nuclei {
+                "[x] Ativo".to_string()
+            } else {
+                "[ ] Inativo".to_string()
+            },
             SettingsField::RealNuclei,
         ),
-    ];
+    ]
+}
 
-    let mut lines: Vec<Line> = vec![Line::from("")];
-
-    for (label, value, field) in &fields {
-        let is_active = app.settings_field == *field;
-        let label_style = if is_active {
-            Style::default().fg(Color::Cyan).bold()
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let value_style = if is_active {
-            Style::default().fg(Color::White)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        let cursor = if is_active { " ▸ " } else { "   " };
-
-        lines.push(Line::from(vec![
-            Span::styled(cursor, Style::default().fg(Color::Cyan)),
-            Span::styled(format!("{:<23}", format!("{}:", label)), label_style),
-            Span::styled(value.clone(), value_style),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    let save_w = 12u16;
-    let cancel_w = 14u16;
-    let buttons_y = inner.y + inner.height.saturating_sub(3);
-    let save_x = inner.x + inner.width.saturating_sub(save_w + cancel_w + 4);
-    let cancel_x = save_x + save_w + 2;
-    app.settings_save_rect = Rect::new(save_x, buttons_y, save_w, 1);
-    app.settings_cancel_rect = Rect::new(cancel_x, buttons_y, cancel_w, 1);
-    lines.push(Line::from(""));
-
-    if let Some(ref warning) = app.llm_warning {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled(" AVISO: ", Style::default().fg(Color::Yellow)),
-            Span::styled(warning.clone(), Style::default().fg(Color::Yellow)),
-        ]));
-    }
-
-    let para = Paragraph::new(lines)
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: true })
-        .alignment(Alignment::Left);
-    frame.render_widget(para, inner);
-
-    let save_btn = Paragraph::new(Line::from(vec![Span::styled(
-        " [ Salvar ] ",
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(0, 120, 0))
-            .bold(),
-    )]))
-    .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    frame.render_widget(save_btn, app.settings_save_rect);
-
-    let cancel_btn = Paragraph::new(Line::from(vec![Span::styled(
-        " [ Cancelar ] ",
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(160, 30, 30))
-            .bold(),
-    )]))
-    .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    frame.render_widget(cancel_btn, app.settings_cancel_rect);
+fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let columns = Layout::horizontal([
+        Constraint::Length(11),
+        Constraint::Min(1),
+        Constraint::Length(11),
+    ])
+    .split(area);
+    let cancel_focused = app.focus == FocusTarget::SettingsCancel;
+    let save_focused = app.focus == FocusTarget::SettingsSave;
+    chrome::render_button(
+        app,
+        frame,
+        columns[0],
+        "Cancelar",
+        SemanticAction::CloseSettings,
+        chrome::ButtonState::secondary(cancel_focused),
+    );
+    chrome::render_button(
+        app,
+        frame,
+        columns[2],
+        "Salvar",
+        SemanticAction::SaveSettings,
+        chrome::ButtonState::primary(save_focused),
+    );
 }
 
 fn checkbox(enabled: bool) -> String {
     if enabled {
-        "[X] Sim".to_string()
+        "[x] Sim".to_string()
     } else {
         "[ ] Não".to_string()
     }
@@ -220,7 +235,25 @@ mod tests {
         assert!(screen.contains("Consentimento remoto"));
         assert!(screen.contains("Alternativa local"));
         assert!(screen.contains("Nuclei real"));
-        assert!(screen.contains("[ Salvar ]"));
-        assert!(screen.contains("[ Cancelar ]"));
+        assert!(screen.contains("Cancelar"));
+        assert!(screen.contains("Salvar"));
+    }
+
+    #[test]
+    fn scrolls_form_to_keep_focused_field_visible() {
+        let mut app = AppState::new(Configuration::default());
+        app.show_settings = true;
+        app.settings_field = SettingsField::RealNuclei;
+        app.focus = FocusTarget::SettingsField(SettingsField::RealNuclei);
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|frame| render(&mut app, frame, frame.area()))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+
+        assert!(app.settings_scroll > 0);
+        assert!(screen.contains("Nuclei real"));
     }
 }

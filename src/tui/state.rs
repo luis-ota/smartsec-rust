@@ -5,6 +5,7 @@ use crate::config::Configuration;
 use crate::domain::security_tool::ToolInfo;
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::Orchestrator;
+use crate::tui::interaction::{FocusTarget, HitRegion, SemanticAction};
 use ratatui::layout::Rect;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,6 +57,22 @@ pub enum SettingsField {
     RealNuclei,
 }
 
+impl SettingsField {
+    pub const ALL: [Self; 11] = [
+        Self::Provider,
+        Self::BaseUrl,
+        Self::ApiKey,
+        Self::Model,
+        Self::Timeout,
+        Self::Retries,
+        Self::RemoteConsent,
+        Self::FallbackEnabled,
+        Self::FallbackBaseUrl,
+        Self::FallbackModel,
+        Self::RealNuclei,
+    ];
+}
+
 pub struct ToolItem {
     pub tool: ToolInfo,
     pub selected: bool,
@@ -75,6 +92,7 @@ pub struct AppState {
     pub tools: Vec<ToolItem>,
     pub tool_cursor: usize,
     pub tool_scroll: usize,
+    pub tool_visible_height: usize,
     pub tool_detecting: bool,
     pub tool_detect_tick: u64,
     pub exec_current: usize,
@@ -86,15 +104,16 @@ pub struct AppState {
     pub analysis_tick: u64,
     pub analysis_text: String,
     pub analysis_full_text: String,
-    pub result_action_cursor: usize,
     pub result_cursor: usize,
     pub result_scroll: usize,
     pub result_detail_vuln: Option<usize>,
-    pub result_focus_list: bool,
+    pub detail_scroll: usize,
+    pub detail_max_scroll: usize,
     pub md_exported: bool,
     pub show_didactic: bool,
     pub show_detail: bool,
     pub didactic_scroll: usize,
+    pub didactic_max_scroll: usize,
     pub show_settings: bool,
     pub settings_field: SettingsField,
     pub settings_provider_idx: usize,
@@ -111,31 +130,14 @@ pub struct AppState {
     pub llm_warning: Option<String>,
     pub exec_paused: bool,
     pub exec_cancelled: bool,
-    pub pending_ctrl_x: bool,
-    pub pending_ctrl_x_tick: u64,
-    pub command_palette_hint: Option<String>,
-    pub ai_model_area: Rect,
-
-    // Clickable area tracking
-    pub splash_url_rect: Rect,
-    pub splash_auto_rect: Rect,
-    pub splash_assisted_rect: Rect,
-    pub splash_start_rect: Rect,
-    pub tools_list_rect: Rect,
-    pub tools_run_rect: Rect,
-    pub tools_back_rect: Rect,
-    pub exec_pause_rect: Rect,
-    pub exec_cancel_rect: Rect,
-    pub exec_back_rect: Rect,
-    pub analysis_back_rect: Rect,
-    pub results_list_rect: Rect,
-    pub results_export_rect: Rect,
-    pub results_didactic_rect: Rect,
-    pub results_back_rect: Rect,
-    pub results_new_scan_rect: Rect,
-    pub didactic_back_rect: Rect,
-    pub settings_save_rect: Rect,
-    pub settings_cancel_rect: Rect,
+    pub show_help_overlay: bool,
+    pub show_command_palette: bool,
+    pub command_cursor: usize,
+    pub settings_scroll: usize,
+    pub focus: FocusTarget,
+    pub settings_return_focus: FocusTarget,
+    pub overlay_return_focus: FocusTarget,
+    pub hit_regions: Vec<HitRegion>,
 }
 
 impl AppState {
@@ -189,6 +191,7 @@ impl AppState {
             tools,
             tool_cursor: 0,
             tool_scroll: 0,
+            tool_visible_height: 8,
             tool_detecting: true,
             tool_detect_tick: 0,
             exec_current: 0,
@@ -200,15 +203,16 @@ impl AppState {
             analysis_tick: 0,
             analysis_text: String::new(),
             analysis_full_text: String::new(),
-            result_action_cursor: 0,
             result_cursor: 0,
             result_scroll: 0,
             result_detail_vuln: None,
-            result_focus_list: true,
+            detail_scroll: 0,
+            detail_max_scroll: 0,
             md_exported: false,
             show_didactic: false,
             show_detail: false,
             didactic_scroll: 0,
+            didactic_max_scroll: 0,
             show_settings: false,
             settings_field: SettingsField::Provider,
             settings_provider_idx: provider_idx,
@@ -225,30 +229,34 @@ impl AppState {
             llm_warning: None,
             exec_paused: false,
             exec_cancelled: false,
-            pending_ctrl_x: false,
-            pending_ctrl_x_tick: 0,
-            command_palette_hint: None,
-            ai_model_area: Rect::default(),
-            splash_url_rect: Rect::default(),
-            splash_auto_rect: Rect::default(),
-            splash_assisted_rect: Rect::default(),
-            splash_start_rect: Rect::default(),
-            tools_list_rect: Rect::default(),
-            tools_run_rect: Rect::default(),
-            tools_back_rect: Rect::default(),
-            exec_pause_rect: Rect::default(),
-            exec_cancel_rect: Rect::default(),
-            exec_back_rect: Rect::default(),
-            analysis_back_rect: Rect::default(),
-            results_list_rect: Rect::default(),
-            results_export_rect: Rect::default(),
-            results_didactic_rect: Rect::default(),
-            results_back_rect: Rect::default(),
-            results_new_scan_rect: Rect::default(),
-            didactic_back_rect: Rect::default(),
-            settings_save_rect: Rect::default(),
-            settings_cancel_rect: Rect::default(),
+            show_help_overlay: false,
+            show_command_palette: false,
+            command_cursor: 0,
+            settings_scroll: 0,
+            focus: FocusTarget::SplashTarget,
+            settings_return_focus: FocusTarget::SplashTarget,
+            overlay_return_focus: FocusTarget::SplashTarget,
+            hit_regions: Vec::new(),
         }
+    }
+
+    pub fn begin_frame(&mut self, area: Rect) {
+        self.screen_area = area;
+        self.hit_regions.clear();
+    }
+
+    pub fn register_hit_region(&mut self, area: Rect, action: SemanticAction) {
+        if area.width > 0 && area.height > 0 {
+            self.hit_regions.push(HitRegion { area, action });
+        }
+    }
+
+    pub fn action_at(&self, column: u16, row: u16) -> Option<SemanticAction> {
+        self.hit_regions
+            .iter()
+            .rev()
+            .find(|region| region.contains(column, row))
+            .map(|region| region.action.clone())
     }
 
     pub fn mode(&self) -> ExecutionType {
@@ -274,7 +282,7 @@ impl AppState {
 
     pub fn ai_summary(&self) -> &str {
         if self.agent.last_analysis.is_empty() {
-            "[AI analysis will run after execution completes]"
+            "[A análise por IA será executada após a varredura]"
         } else {
             &self.agent.last_analysis
         }
@@ -288,9 +296,8 @@ impl AppState {
     pub fn tick(&mut self) {
         self.tick += 1;
         self.spinner_idx = (self.spinner_idx + 1) % 10;
-        if self.pending_ctrl_x && self.tick.saturating_sub(self.pending_ctrl_x_tick) > 20 {
-            self.pending_ctrl_x = false;
-            self.command_palette_hint = None;
+        if self.has_blocking_layer() {
+            return;
         }
         match self.mode() {
             ExecutionType::Auto => self.advance_auto(),
@@ -299,6 +306,9 @@ impl AppState {
     }
 
     pub async fn step_tick(&mut self) {
+        if self.has_blocking_layer() {
+            return;
+        }
         if self.step == AppStep::Execution
             && !self.exec_paused
             && !self.exec_cancelled
@@ -309,9 +319,14 @@ impl AppState {
         if self.step == AppStep::Analysis && self.analysis_phase == AnalysisPhase::Complete {
             if self.analysis_tick > 30 {
                 self.step = AppStep::Results;
+                self.focus = FocusTarget::ResultsList;
             }
             self.analysis_tick += 1;
         }
+    }
+
+    fn has_blocking_layer(&self) -> bool {
+        self.show_settings || self.show_help_overlay || self.show_command_palette
     }
 
     async fn execute_real_tool(&mut self) {
@@ -333,7 +348,7 @@ impl AppState {
         let _ = tool;
 
         self.exec_logs.push(format!(
-            "[{}] Running {}...",
+            "[{}] Executando {}...",
             tool_info.name, tool_info.description
         ));
         let vh = self.log_visible_height.max(1);
@@ -346,7 +361,7 @@ impl AppState {
         self.tools[self.exec_current].status = ToolStatus::Done;
         self.tools[self.exec_current].progress = 100;
         self.exec_logs
-            .push(format!("[{}] OK Scan complete", tool_info.name));
+            .push(format!("[{}] OK Varredura concluída", tool_info.name));
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
@@ -362,6 +377,7 @@ impl AppState {
             self.orchestrator.build_findings();
             self.sync_agent_from_orchestrator();
             self.step = AppStep::Analysis;
+            self.focus = FocusTarget::AnalysisCancel;
             self.analysis_phase = AnalysisPhase::Scanning;
             self.analysis_tick = 0;
         }
@@ -377,6 +393,7 @@ impl AppState {
                 if self.tool_detect_tick > 50 {
                     self.tool_detecting = false;
                     self.step = AppStep::Execution;
+                    self.focus = FocusTarget::ExecutionLogs;
                     self.tool_detect_tick = 0;
                     self.exec_current = 0;
                     self.exec_tick = 0;
@@ -428,12 +445,13 @@ impl AppState {
         self.analysis_phase = AnalysisPhase::Scanning;
         self.analysis_tick = 0;
         self.analysis_text.clear();
-        self.analysis_full_text = "Running security tools and analyzing outputs...\n\nCross-referencing findings across multiple scanners.\nCorrelating results for false positive reduction.\n\nGenerating severity classifications and remediation priorities.\nCompiling didactic explanations for each vulnerability...".to_string();
+        self.analysis_full_text = "Executando ferramentas de segurança e analisando saídas...\n\nCruzando achados entre diferentes scanners.\nCorrelacionando resultados para reduzir falsos positivos.\n\nGerando classificações de severidade e prioridades de correção.\nCompilando explicações didáticas para cada vulnerabilidade...".to_string();
     }
 
     pub fn advance_execution(&mut self) {
         if self.exec_cancelled || self.orchestrator.cancelled {
             self.step = AppStep::ToolSelect;
+            self.focus = FocusTarget::ToolList;
         }
     }
 
@@ -492,7 +510,29 @@ impl AppState {
         }
         self.config.use_real_nuclei = self.settings_real_nuclei;
         self.config.save();
+        self.reset_settings_draft();
         self.show_settings = false;
+    }
+
+    pub fn reset_settings_draft(&mut self) {
+        self.settings_provider_idx = match self.config.llm.provider {
+            LlmProviderKind::Mock => 0,
+            LlmProviderKind::Ollama => 1,
+            LlmProviderKind::NvidiaNim => 2,
+            LlmProviderKind::OpenAI => 3,
+            LlmProviderKind::Custom => 4,
+        };
+        self.settings_input_base_url = self.config.llm.base_url.clone();
+        self.settings_input_api_key = self.config.llm.api_key.clone();
+        self.settings_input_model = self.config.llm.model.clone();
+        self.settings_input_timeout = self.config.llm.timeout_secs.to_string();
+        self.settings_input_retries = self.config.llm.max_retries.to_string();
+        self.settings_remote_consent = self.config.llm.remote_consent;
+        self.settings_fallback_enabled = self.config.llm.fallback_enabled;
+        self.settings_input_fallback_base_url = self.config.llm.fallback_base_url.clone();
+        self.settings_input_fallback_model = self.config.llm.fallback_model.clone();
+        self.settings_real_nuclei = self.config.use_real_nuclei;
+        self.settings_scroll = 0;
     }
 
     pub fn pause_or_resume(&mut self) {
@@ -502,10 +542,10 @@ impl AppState {
         self.exec_paused = !self.exec_paused;
         if self.exec_paused {
             self.orchestrator.pause_execution();
-            self.exec_logs.push("|| Execution PAUSED".to_string());
+            self.exec_logs.push("|| Execução PAUSADA".to_string());
         } else {
             self.orchestrator.resume_execution();
-            self.exec_logs.push("> Execution RESUMED".to_string());
+            self.exec_logs.push("> Execução RETOMADA".to_string());
         }
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
@@ -519,7 +559,7 @@ impl AppState {
         }
         self.exec_cancelled = true;
         self.orchestrator.cancel_execution();
-        self.exec_logs.push("X Execution CANCELLED".to_string());
+        self.exec_logs.push("X Execução CANCELADA".to_string());
         let vh = self.log_visible_height.max(1);
         if self.exec_logs.len() > vh {
             self.log_scroll = self.exec_logs.len().saturating_sub(vh);
