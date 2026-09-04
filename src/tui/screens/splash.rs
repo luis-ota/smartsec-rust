@@ -1,288 +1,176 @@
 use crate::config::execution_type::ExecutionType;
+use crate::tui::chrome::{self, ACCENT, MUTED, SURFACE, TEXT};
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::AppState;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
-    text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    text::{Line, Span},
+    widgets::Paragraph,
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
-    frame.render_widget(bg, area);
-    let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(area);
-    render_content(app, frame, chunks[0]);
-    render_status_bar(app, frame, chunks[1]);
-}
-
-fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let center = crate::tui::centered_rect(80, 100, area);
-    let chunks = Layout::vertical([
-        Constraint::Length(8),
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Length(1),
+    let shell = chrome::render_shell(
+        app,
+        frame,
+        area,
+        "Nova análise",
+        "Pronto para configurar a análise",
+    );
+    let content = if shell.content.width > 72 {
+        let horizontal = Layout::horizontal([
+            Constraint::Length(6),
+            Constraint::Min(1),
+            Constraint::Length(6),
+        ])
+        .split(shell.content);
+        horizontal[1]
+    } else {
+        shell.content
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Length(3),
         Constraint::Min(1),
+        Constraint::Length(2),
     ])
-    .split(center);
+    .split(content);
 
-    let logo = Paragraph::new(Text::from(build_logo())).alignment(Alignment::Center);
-    frame.render_widget(logo, chunks[0]);
-
-    let subtitle = Paragraph::new(Line::from(Span::styled(
-        "Plataforma de análise de segurança",
-        Style::default().fg(Color::DarkGray).italic(),
-    )))
-    .alignment(Alignment::Center);
-    frame.render_widget(subtitle, chunks[2]);
-
-    let auto_style = if app.mode() == ExecutionType::Auto {
-        Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let assisted_style = if app.mode() == ExecutionType::Assisted {
-        Style::default().fg(Color::Black).bg(Color::Green).bold()
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let mode_prefix = " Modo: ";
-    let auto_label = " AUTOMÁTICO ";
-    let separator = " / ";
-    let assisted_label = " ASSISTIDO ";
-    let mode_hint = " [Tab para alternar]";
-    let mode_line = Line::from(vec![
-        Span::styled(mode_prefix, Style::default().fg(Color::White)),
-        Span::styled(auto_label, auto_style),
-        Span::styled(separator, Style::default().fg(Color::DarkGray)),
-        Span::styled(assisted_label, assisted_style),
-        Span::styled(mode_hint, Style::default().fg(Color::DarkGray).italic()),
-    ]);
-    let mode_para = Paragraph::new(mode_line).alignment(Alignment::Center);
-    frame.render_widget(mode_para, chunks[4]);
-
-    let mode_total_w = (mode_prefix.width()
-        + auto_label.width()
-        + separator.width()
-        + assisted_label.width()
-        + mode_hint.width()) as u16;
-    let mode_center_offset = (chunks[4].width.saturating_sub(mode_total_w)) / 2;
-    app.register_hit_region(
-        Rect::new(
-            chunks[4].x + mode_center_offset + mode_prefix.width() as u16,
-            chunks[4].y,
-            auto_label.width() as u16,
-            1,
-        ),
-        SemanticAction::SetMode(ExecutionType::Auto),
-    );
-    app.register_hit_region(
-        Rect::new(
-            chunks[4].x
-                + mode_center_offset
-                + mode_prefix.width() as u16
-                + auto_label.width() as u16
-                + separator.width() as u16,
-            chunks[4].y,
-            assisted_label.width() as u16,
-            1,
-        ),
-        SemanticAction::SetMode(ExecutionType::Assisted),
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("SMART", Style::default().fg(TEXT).bold()),
+            Span::styled("SEC", Style::default().fg(ACCENT).bold()),
+            Span::styled(
+                "  análise de segurança assistida",
+                Style::default().fg(MUTED),
+            ),
+        ]))
+        .alignment(Alignment::Center),
+        rows[0],
     );
 
-    let provider_label =
-        crate::config::llm_config::LlmProviderKind::all_labels()[app.settings_provider_idx];
-    let model_display = if app.config.llm.model.is_empty() {
-        "não configurado".to_string()
-    } else {
-        app.config.llm.model.clone()
-    };
+    render_target(app, frame, rows[2]);
+    render_modes(app, frame, rows[4]);
+    render_model(app, frame, rows[6]);
 
-    let ai_block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Yellow))
-        .title(Line::from(vec![Span::styled(
-            " Modelo de IA ",
-            Style::default().fg(Color::Yellow).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(16, 16, 32)));
-    let ai_inner = ai_block.inner(chunks[5]);
-    frame.render_widget(ai_block, chunks[5]);
-
-    let ai_text = Paragraph::new(Line::from(vec![
-        Span::styled(provider_label, Style::default().fg(Color::White).bold()),
-        Span::styled(" / ", Style::default().fg(Color::DarkGray)),
-        Span::styled(model_display, Style::default().fg(Color::Cyan)),
-        Span::styled(
-            "  [clique para configurar]",
-            Style::default().fg(Color::DarkGray).italic(),
-        ),
-    ]))
-    .style(Style::default().bg(Color::Rgb(16, 16, 32)));
-    frame.render_widget(ai_text, ai_inner);
-
-    app.register_hit_region(chunks[5], SemanticAction::OpenSettings);
-
-    let url_block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Line::from(vec![Span::styled(
-            " URL alvo ",
-            Style::default().fg(Color::Cyan).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(16, 16, 32)));
-    let url_inner = url_block.inner(chunks[6]);
-    frame.render_widget(url_block, chunks[6]);
-
-    let cursor_char = if app.tick % 10 < 5 { "|" } else { " " };
-    let display_url = if app.config.target_url.is_empty() {
-        format!(
-            "{}{}",
-            "http://example.com"
-                .chars()
-                .take(url_inner.width.saturating_sub(2) as usize)
-                .collect::<String>(),
-            cursor_char
-        )
-    } else {
-        format!("{}{}", app.config.target_url, cursor_char)
-    };
-    let cursor_color = if app.config.target_url.is_empty() {
-        Color::Rgb(60, 60, 80)
-    } else {
-        Color::White
-    };
-    let url_text = Paragraph::new(Line::from(vec![Span::styled(
-        display_url,
-        Style::default().fg(cursor_color),
-    )]))
-    .style(Style::default().bg(Color::Rgb(16, 16, 32)));
-    frame.render_widget(url_text, url_inner);
-
-    app.register_hit_region(
-        chunks[6],
-        SemanticAction::SetFocus(FocusTarget::SplashTarget),
+    let buttons = Layout::horizontal([
+        Constraint::Min(1),
+        Constraint::Length(16),
+        Constraint::Length(1),
+        Constraint::Length(12),
+    ])
+    .split(rows[8]);
+    chrome::render_button(
+        app,
+        frame,
+        buttons[1],
+        "Configurar IA",
+        SemanticAction::OpenSettings,
+        app.focus == FocusTarget::SplashSettings,
+        false,
+        true,
     );
-    let start_hint = "Enter Iniciar  ";
-    let focus_hint = "Tab Foco  ";
-    let command_hint = "C-x Comandos  ";
-    let quit_hint = "Esc Sair";
-    let hint_width =
-        (start_hint.width() + focus_hint.width() + command_hint.width() + quit_hint.width()) as u16;
-    let hint_x = chunks[7].x + chunks[7].width.saturating_sub(hint_width) / 2;
-    app.register_hit_region(
-        Rect::new(hint_x, chunks[7].y, start_hint.width() as u16, 1),
+    chrome::render_button(
+        app,
+        frame,
+        buttons[3],
+        "Iniciar",
         SemanticAction::StartScan,
+        app.focus == FocusTarget::SplashStart,
+        true,
+        true,
     );
-
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled("Enter", Style::default().fg(Color::White)),
-        Span::styled(" Iniciar  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Tab", Style::default().fg(Color::White)),
-        Span::styled(" Foco  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("C-x", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(" Comandos  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::White)),
-        Span::styled(" Sair", Style::default().fg(Color::DarkGray)),
-    ]))
-    .alignment(Alignment::Center);
-    frame.render_widget(hint, chunks[7]);
 }
 
-fn render_status_bar(app: &AppState, frame: &mut Frame, area: Rect) {
-    let bar = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    let inner = bar.inner(area);
-    frame.render_widget(bar, area);
-
-    let mode_text = match app.mode() {
-        ExecutionType::Auto => "AUTOMÁTICO",
-        ExecutionType::Assisted => "ASSISTIDO",
-    };
-    let mode_color = match app.mode() {
-        ExecutionType::Auto => Color::Cyan,
-        ExecutionType::Assisted => Color::Green,
-    };
-
-    let provider_label =
-        crate::config::llm_config::LlmProviderKind::all_labels()[app.settings_provider_idx];
-    let model_short = if app.config.llm.model.len() > 20 {
-        format!("{}...", &app.config.llm.model[..17])
+fn render_target(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let focused = app.focus == FocusTarget::SplashTarget;
+    let block = chrome::panel("Alvo", focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let value = if app.config.target_url.is_empty() {
+        "http://exemplo.local"
     } else {
-        app.config.llm.model.clone()
+        &app.config.target_url
     };
-
-    let status = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " SMARTSEC ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
-        ),
-        Span::styled(" v0.2.0 ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!(" * {} ", mode_text),
-            Style::default().fg(mode_color).bold(),
-        ),
-        Span::styled(
-            format!("| IA: {} ", model_short),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::styled(
-            format!("({}) ", provider_label),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            "| Esc: sair Tab: foco Enter: ativar C-x: comandos ",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]))
-    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(status, inner);
+    let prefix = if focused { "> " } else { "  " };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(ACCENT).bold()),
+            Span::styled(
+                chrome::truncate_width(value, inner.width.saturating_sub(3) as usize),
+                Style::default().fg(if app.config.target_url.is_empty() {
+                    MUTED
+                } else {
+                    TEXT
+                }),
+            ),
+        ]))
+        .style(Style::default().bg(SURFACE)),
+        inner,
+    );
+    app.register_hit_region(area, SemanticAction::SetFocus(FocusTarget::SplashTarget));
 }
 
-fn build_logo() -> Vec<Line<'static>> {
-    let c1 = Style::default().fg(Color::Cyan).bold();
-    let c2 = Style::default().fg(Color::Rgb(0, 100, 120));
-    vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  ███████╗███╗   ███╗ █████╗ ██████╗ ████████╗    ███████╗███████╗ ██████╗",
-            c1,
-        )]),
-        Line::from(vec![Span::styled(
-            "  ██╔════╝████╗ ████║██╔══██╗██╔══██╗╚══██╔══╝    ██╔════╝██╔════╝██╔════╝",
-            c1,
-        )]),
-        Line::from(vec![Span::styled(
-            "  ███████╗██╔████╔██║███████║██████╔╝   ██║       ███████╗█████╗  ██║     ",
-            c1,
-        )]),
-        Line::from(vec![Span::styled(
-            "  ╚════██║██║╚██╔╝██║██╔══██║██╔══██╗   ██║       ╚════██║██╔══╝  ██║     ",
-            c1,
-        )]),
-        Line::from(vec![Span::styled(
-            "  ███████║██║ ╚═╝ ██║██║  ██║██║  ██║   ██║       ███████║███████╗╚██████╗",
-            c1,
-        )]),
-        Line::from(vec![Span::styled(
-            "  ╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝       ╚══════╝╚══════╝ ╚═════╝",
-            c1,
-        )]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "        Plataforma de análise de segurança         ",
-            c2,
-        )]),
-    ]
+fn render_modes(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let columns =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    for (column, mode, label, focus) in [
+        (
+            columns[0],
+            ExecutionType::Auto,
+            "Automático · fluxo contínuo",
+            FocusTarget::SplashAuto,
+        ),
+        (
+            columns[1],
+            ExecutionType::Assisted,
+            "Assistido · escolha manual",
+            FocusTarget::SplashAssisted,
+        ),
+    ] {
+        let focused = app.focus == focus;
+        let selected = app.mode() == mode;
+        let block = chrome::panel(if selected { "Modo selecionado" } else { "Modo" }, focused);
+        let inner = block.inner(column);
+        frame.render_widget(block, column);
+        frame.render_widget(
+            Paragraph::new(format!("{} {label}", if selected { "[x]" } else { "[ ]" })).style(
+                Style::default()
+                    .fg(if focused { Color::Black } else { TEXT })
+                    .bg(if focused { ACCENT } else { SURFACE })
+                    .bold(),
+            ),
+            inner,
+        );
+        app.register_hit_region(column, SemanticAction::SetMode(mode));
+    }
+}
+
+fn render_model(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let focused = app.focus == FocusTarget::SplashSettings;
+    let block = chrome::panel("Modelo de IA", focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let provider =
+        crate::config::llm_config::LlmProviderKind::all_labels()[app.settings_provider_idx];
+    let model = if app.config.llm.model.is_empty() {
+        "não configurado"
+    } else {
+        &app.config.llm.model
+    };
+    frame.render_widget(
+        Paragraph::new(format!("  {provider}  /  {model}")).style(
+            Style::default()
+                .fg(if focused { TEXT } else { MUTED })
+                .bg(SURFACE),
+        ),
+        inner,
+    );
+    app.register_hit_region(area, SemanticAction::OpenSettings);
 }
