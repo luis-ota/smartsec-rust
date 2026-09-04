@@ -75,8 +75,12 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .style(Style::default().bg(Color::Rgb(12, 12, 24)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    app.tool_visible_height = inner.height.max(1) as usize;
 
-    for row in 0..inner.height.min(app.tools.len() as u16) {
+    for row in 0..inner
+        .height
+        .min(app.tools.len().saturating_sub(app.tool_scroll) as u16)
+    {
         let index = app.tool_scroll + row as usize;
         if index < app.tools.len() {
             app.register_hit_region(

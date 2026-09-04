@@ -385,6 +385,7 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
     let visible_h = inner.height.saturating_sub(3) as usize;
     let max_scroll = lines.len().saturating_sub(visible_h);
+    app.didactic_max_scroll = max_scroll;
     app.didactic_scroll = app.didactic_scroll.min(max_scroll);
     let visible: Vec<Line> = lines
         .into_iter()
