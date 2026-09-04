@@ -380,7 +380,7 @@ fn move_tool_cursor(app: &mut AppState, down: bool) {
 }
 
 fn ensure_tool_visible(app: &mut AppState) {
-    let visible = 8usize;
+    let visible = app.tool_visible_height.max(1);
     if app.tool_cursor < app.tool_scroll {
         app.tool_scroll = app.tool_cursor;
     } else if app.tool_cursor >= app.tool_scroll.saturating_add(visible) {
@@ -425,7 +425,9 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
     if app.show_didactic || app.show_detail {
         app.didactic_scroll = if down {
-            app.didactic_scroll.saturating_add(amount)
+            app.didactic_scroll
+                .saturating_add(amount)
+                .min(app.didactic_max_scroll)
         } else {
             app.didactic_scroll.saturating_sub(amount)
         };
@@ -596,5 +598,220 @@ impl KeyCodeChar for KeyCode {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Configuration;
+    use crate::tui;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn app() -> AppState {
+        AppState::new(Configuration::default())
+    }
+
+    fn press(app: &mut AppState, code: KeyCode) -> bool {
+        handle_key(app, KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn click_action(app: &mut AppState, action: &SemanticAction) -> bool {
+        let region = app
+            .hit_regions
+            .iter()
+            .find(|region| &region.action == action)
+            .expect("a ação deve possuir uma região clicável");
+        handle_mouse(
+            app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: region.area.x,
+                row: region.area.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        )
+    }
+
+    fn render_app(app: &mut AppState, width: u16, height: u16) {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| tui::render(app, frame)).unwrap();
+    }
+
+    #[test]
+    fn keyboard_and_mouse_start_scan_are_equivalent() {
+        let mut keyboard = app();
+        let mut mouse = app();
+        render_app(&mut mouse, 80, 24);
+
+        assert!(!press(&mut keyboard, KeyCode::Enter));
+        assert!(!click_action(&mut mouse, &SemanticAction::StartScan));
+
+        assert_eq!(keyboard.step, mouse.step);
+        assert_eq!(keyboard.focus, mouse.focus);
+        assert_eq!(keyboard.config.target_url, mouse.config.target_url);
+    }
+
+    #[test]
+    fn keyboard_and_mouse_toggle_the_same_scrolled_tool() {
+        let mut keyboard = app();
+        keyboard.step = AppStep::ToolSelect;
+        keyboard.tool_detecting = false;
+        keyboard.focus = FocusTarget::ToolList;
+        keyboard.tool_cursor = 3;
+        keyboard.tool_scroll = 3;
+        let mut mouse = app();
+        mouse.step = AppStep::ToolSelect;
+        mouse.tool_detecting = false;
+        mouse.tool_cursor = 3;
+        mouse.tool_scroll = 3;
+        render_app(&mut mouse, 80, 10);
+
+        press(&mut keyboard, KeyCode::Char(' '));
+        click_action(&mut mouse, &SemanticAction::ToggleTool(3));
+
+        let keyboard_selection: Vec<_> = keyboard.tools.iter().map(|tool| tool.selected).collect();
+        let mouse_selection: Vec<_> = mouse.tools.iter().map(|tool| tool.selected).collect();
+        assert_eq!(keyboard_selection, mouse_selection);
+        assert_eq!(mouse.tool_cursor, 3);
+    }
+
+    #[test]
+    fn settings_toggle_has_keyboard_and_mouse_parity() {
+        let mut keyboard = app();
+        keyboard.show_settings = true;
+        keyboard.settings_field = SettingsField::RemoteConsent;
+        keyboard.focus = FocusTarget::SettingsField(SettingsField::RemoteConsent);
+        let mut mouse = app();
+        mouse.show_settings = true;
+        render_app(&mut mouse, 80, 24);
+
+        press(&mut keyboard, KeyCode::Enter);
+        click_action(
+            &mut mouse,
+            &SemanticAction::SelectSettingsField(SettingsField::RemoteConsent),
+        );
+
+        assert_eq!(
+            keyboard.settings_remote_consent,
+            mouse.settings_remote_consent
+        );
+        assert_eq!(keyboard.focus, mouse.focus);
+    }
+
+    #[test]
+    fn tab_and_backtab_cycle_focus_in_both_directions() {
+        let mut app = app();
+        assert_eq!(app.focus, FocusTarget::SplashTarget);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, FocusTarget::SplashAuto);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, FocusTarget::SplashTarget);
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, FocusTarget::SplashStart);
+    }
+
+    #[test]
+    fn escape_closes_overlays_then_goes_back_and_only_quits_on_splash() {
+        let mut app = app();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsExport;
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_settings);
+        assert_eq!(app.step, AppStep::Results);
+        assert_eq!(app.focus, FocusTarget::ResultsExport);
+
+        app.result_detail_vuln = Some(0);
+        app.focus = FocusTarget::ResultsBack;
+        dispatch_action(&mut app, SemanticAction::ShowDidactic);
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_didactic);
+        assert!(app.result_detail_vuln.is_some());
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(app.result_detail_vuln.is_none());
+        assert_eq!(app.step, AppStep::Results);
+
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert_eq!(app.step, AppStep::Splash);
+        assert!(press(&mut app, KeyCode::Esc));
+    }
+
+    #[test]
+    fn scroll_is_saturating_and_clamped_to_visible_content() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.log_visible_height = 3;
+
+        dispatch_action(&mut app, SemanticAction::ScrollUp);
+        assert_eq!(app.log_scroll, 0);
+        for _ in 0..10 {
+            dispatch_action(&mut app, SemanticAction::ScrollDown);
+        }
+        assert_eq!(app.log_scroll, 7);
+
+        app.show_didactic = true;
+        app.didactic_max_scroll = 4;
+        app.didactic_scroll = usize::MAX;
+        dispatch_action(&mut app, SemanticAction::ScrollDown);
+        assert_eq!(app.didactic_scroll, 4);
+        dispatch_action(&mut app, SemanticAction::ScrollUp);
+        assert_eq!(app.didactic_scroll, 1);
+    }
+
+    #[test]
+    fn list_navigation_handles_empty_lists_and_hitboxes_include_scroll_offset() {
+        let mut empty = app();
+        empty.step = AppStep::ToolSelect;
+        empty.focus = FocusTarget::ToolList;
+        empty.tools.clear();
+        dispatch_action(&mut empty, SemanticAction::MoveDown);
+        assert_eq!(empty.tool_cursor, 0);
+        assert_eq!(empty.tool_scroll, 0);
+
+        let mut app = app();
+        app.step = AppStep::ToolSelect;
+        app.tool_detecting = false;
+        app.tool_cursor = 4;
+        app.tool_scroll = 3;
+        render_app(&mut app, 80, 10);
+        let indices: Vec<_> = app
+            .hit_regions
+            .iter()
+            .filter_map(|region| match region.action {
+                SemanticAction::ToggleTool(index) => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(indices.first(), Some(&3));
+        assert!(indices.iter().all(|index| *index >= app.tool_scroll));
+    }
+
+    #[test]
+    fn hit_regions_are_rebuilt_for_each_frame() {
+        let mut app = app();
+        render_app(&mut app, 80, 24);
+        assert!(app
+            .hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::StartScan));
+
+        app.step = AppStep::Analysis;
+        app.focus = FocusTarget::AnalysisCancel;
+        render_app(&mut app, 80, 24);
+        assert!(!app
+            .hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::StartScan));
+        assert!(app
+            .hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::Back));
     }
 }
