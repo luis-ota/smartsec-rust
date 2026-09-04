@@ -111,7 +111,6 @@ pub struct AppState {
     pub detail_max_scroll: usize,
     pub md_exported: bool,
     pub show_didactic: bool,
-    pub show_detail: bool,
     pub didactic_scroll: usize,
     pub didactic_max_scroll: usize,
     pub show_settings: bool,
@@ -137,6 +136,7 @@ pub struct AppState {
     pub focus: FocusTarget,
     pub settings_return_focus: FocusTarget,
     pub overlay_return_focus: FocusTarget,
+    pub didactic_return_focus: FocusTarget,
     pub hit_regions: Vec<HitRegion>,
 }
 
@@ -210,7 +210,6 @@ impl AppState {
             detail_max_scroll: 0,
             md_exported: false,
             show_didactic: false,
-            show_detail: false,
             didactic_scroll: 0,
             didactic_max_scroll: 0,
             show_settings: false,
@@ -236,6 +235,7 @@ impl AppState {
             focus: FocusTarget::SplashTarget,
             settings_return_focus: FocusTarget::SplashTarget,
             overlay_return_focus: FocusTarget::SplashTarget,
+            didactic_return_focus: FocusTarget::SplashTarget,
             hit_regions: Vec::new(),
         }
     }
