@@ -1,5 +1,6 @@
 use crate::config::execution_type::ExecutionType;
 use crate::domain::Severity;
+use crate::tui::interaction::SemanticAction;
 use crate::tui::state::AppState;
 use crate::utils::helpers::wrap_text;
 use ratatui::{
@@ -176,7 +177,6 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_vuln_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    app.results_list_rect = area;
     let block = Block::default()
         .borders(Borders::all())
         .border_type(BorderType::Rounded)
@@ -197,6 +197,13 @@ fn render_vuln_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
         app.result_scroll = app.result_cursor;
     } else if app.result_cursor >= app.result_scroll + visible_h {
         app.result_scroll = app.result_cursor - visible_h + 1;
+    }
+
+    for row in 0..visible_h.min(vulns.len().saturating_sub(app.result_scroll)) {
+        app.register_hit_region(
+            Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            SemanticAction::OpenVulnerability(app.result_scroll + row),
+        );
     }
 
     let mut lines: Vec<Line> = Vec::new();
@@ -392,7 +399,8 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let btn_w = 8u16;
     let btn_x = area.x + area.width.saturating_sub(btn_w + 3);
     let btn_y = area.y + area.height.saturating_sub(2);
-    app.didactic_back_rect = Rect::new(btn_x, btn_y, btn_w, 1);
+    let back_area = Rect::new(btn_x, btn_y, btn_w, 1);
+    app.register_hit_region(back_area, SemanticAction::Back);
     let back_btn = Paragraph::new(Line::from(vec![Span::styled(
         " Back ",
         Style::default()
@@ -401,7 +409,7 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .bold(),
     )]))
     .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    frame.render_widget(back_btn, app.didactic_back_rect);
+    frame.render_widget(back_btn, back_area);
 }
 
 fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect) {
@@ -486,12 +494,23 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let back_x = didactic_x.saturating_sub(back_w + 4);
 
     if in_detail {
-        app.results_back_rect = Rect::new(back_x, area.y + 1, back_w, 1);
-        app.results_didactic_rect = Rect::new(didactic_x, area.y + 1, didactic_w, 1);
+        let back_area = Rect::new(back_x, area.y + 1, back_w, 1);
+        let didactic_area = Rect::new(didactic_x, area.y + 1, didactic_w, 1);
+        app.register_hit_region(back_area, SemanticAction::Back);
+        app.register_hit_region(didactic_area, SemanticAction::ShowDidactic);
     } else {
-        app.results_new_scan_rect = Rect::new(new_scan_x, area.y + 1, new_scan_w, 1);
-        app.results_export_rect = Rect::new(export_x, area.y + 1, export_w, 1);
-        app.results_didactic_rect = Rect::new(didactic_x, area.y + 1, didactic_w, 1);
+        app.register_hit_region(
+            Rect::new(new_scan_x, area.y + 1, new_scan_w, 1),
+            SemanticAction::NewScan,
+        );
+        app.register_hit_region(
+            Rect::new(export_x, area.y + 1, export_w, 1),
+            SemanticAction::ExportMarkdown,
+        );
+        app.register_hit_region(
+            Rect::new(didactic_x, area.y + 1, didactic_w, 1),
+            SemanticAction::ShowDidactic,
+        );
     }
 
     let spans = vec![
@@ -525,6 +544,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let didactic_label = " Didactic ";
 
     if in_detail {
+        let back_area = Rect::new(back_x, area.y + 1, back_w, 1);
         let back_btn = Paragraph::new(Line::from(vec![Span::styled(
             " Back ",
             Style::default()
@@ -533,8 +553,10 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 .bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(back_btn, app.results_back_rect);
+        frame.render_widget(back_btn, back_area);
     } else {
+        let new_scan_area = Rect::new(new_scan_x, area.y + 1, new_scan_w, 1);
+        let export_area = Rect::new(export_x, area.y + 1, export_w, 1);
         let new_scan_btn = Paragraph::new(Line::from(vec![Span::styled(
             " New Scan ",
             Style::default()
@@ -543,7 +565,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 .bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(new_scan_btn, app.results_new_scan_rect);
+        frame.render_widget(new_scan_btn, new_scan_area);
 
         let export_btn = Paragraph::new(Line::from(vec![Span::styled(
             export_label,
@@ -553,7 +575,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 .bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(export_btn, app.results_export_rect);
+        frame.render_widget(export_btn, export_area);
     }
 
     let didactic_btn = Paragraph::new(Line::from(vec![Span::styled(
@@ -564,5 +586,8 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .bold(),
     )]))
     .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(didactic_btn, app.results_didactic_rect);
+    frame.render_widget(
+        didactic_btn,
+        Rect::new(didactic_x, area.y + 1, didactic_w, 1),
+    );
 }

@@ -1,4 +1,5 @@
 use crate::config::execution_type::ExecutionType;
+use crate::tui::interaction::SemanticAction;
 use crate::tui::state::{AppState, ToolStatus};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -233,9 +234,12 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let cancel_x = area.x + area.width.saturating_sub(cancel_btn_w + 2);
     let pause_x = cancel_x.saturating_sub(pause_btn_w + 2);
     let back_x = pause_x.saturating_sub(back_btn_w + 2);
-    app.exec_cancel_rect = Rect::new(cancel_x, area.y + 1, cancel_btn_w, 1);
-    app.exec_pause_rect = Rect::new(pause_x, area.y + 1, pause_btn_w, 1);
-    app.exec_back_rect = Rect::new(back_x, area.y + 1, back_btn_w, 1);
+    let cancel_area = Rect::new(cancel_x, area.y + 1, cancel_btn_w, 1);
+    let pause_area = Rect::new(pause_x, area.y + 1, pause_btn_w, 1);
+    let back_area = Rect::new(back_x, area.y + 1, back_btn_w, 1);
+    app.register_hit_region(cancel_area, SemanticAction::CancelRun);
+    app.register_hit_region(pause_area, SemanticAction::PauseResume);
+    app.register_hit_region(back_area, SemanticAction::Back);
 
     let spans = vec![
         Span::styled(
@@ -263,7 +267,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .bold(),
     )]))
     .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(back_btn, app.exec_back_rect);
+    frame.render_widget(back_btn, back_area);
 
     let pause_label = if app.exec_paused {
         " Resume "
@@ -278,7 +282,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .bold(),
     )]))
     .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(pause_btn, app.exec_pause_rect);
+    frame.render_widget(pause_btn, pause_area);
 
     let cancel_btn = Paragraph::new(Line::from(vec![Span::styled(
         " Cancel ",
@@ -288,5 +292,5 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .bold(),
     )]))
     .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(cancel_btn, app.exec_cancel_rect);
+    frame.render_widget(cancel_btn, cancel_area);
 }

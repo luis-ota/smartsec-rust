@@ -1,4 +1,5 @@
 use crate::config::execution_type::ExecutionType;
+use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::AppState;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
@@ -66,8 +67,14 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
     let mode_total_w = 42u16;
     let mode_center_offset = (chunks[4].width.saturating_sub(mode_total_w)) / 2;
-    app.splash_auto_rect = Rect::new(chunks[4].x + mode_center_offset, chunks[4].y, 6, 1);
-    app.splash_assisted_rect = Rect::new(chunks[4].x + mode_center_offset + 17, chunks[4].y, 10, 1);
+    app.register_hit_region(
+        Rect::new(chunks[4].x + mode_center_offset, chunks[4].y, 6, 1),
+        SemanticAction::SetMode(ExecutionType::Auto),
+    );
+    app.register_hit_region(
+        Rect::new(chunks[4].x + mode_center_offset + 17, chunks[4].y, 10, 1),
+        SemanticAction::SetMode(ExecutionType::Assisted),
+    );
 
     let provider_label =
         crate::config::llm_config::LlmProviderKind::all_labels()[app.settings_provider_idx];
@@ -101,7 +108,7 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
     .style(Style::default().bg(Color::Rgb(16, 16, 32)));
     frame.render_widget(ai_text, ai_inner);
 
-    app.ai_model_area = chunks[5];
+    app.register_hit_region(chunks[5], SemanticAction::OpenSettings);
 
     let url_block = Block::default()
         .borders(Borders::all())
@@ -140,8 +147,11 @@ fn render_content(app: &mut AppState, frame: &mut Frame, area: Rect) {
     .style(Style::default().bg(Color::Rgb(16, 16, 32)));
     frame.render_widget(url_text, url_inner);
 
-    app.splash_url_rect = chunks[6];
-    app.splash_start_rect = chunks[7];
+    app.register_hit_region(
+        chunks[6],
+        SemanticAction::SetFocus(FocusTarget::SplashTarget),
+    );
+    app.register_hit_region(chunks[7], SemanticAction::StartScan);
 
     let hint = Paragraph::new(Line::from(vec![
         Span::styled("Enter", Style::default().fg(Color::White)),

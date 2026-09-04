@@ -1,4 +1,5 @@
 use crate::config::execution_type::ExecutionType;
+use crate::tui::interaction::SemanticAction;
 use crate::tui::state::{AnalysisPhase, AppState};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -341,7 +342,8 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
     let cancel_btn_w = 10u16;
     let cancel_x = area.x + area.width.saturating_sub(cancel_btn_w + 2);
-    app.analysis_back_rect = Rect::new(cancel_x, area.y + 1, cancel_btn_w, 1);
+    let cancel_area = Rect::new(cancel_x, area.y + 1, cancel_btn_w, 1);
+    app.register_hit_region(cancel_area, SemanticAction::Back);
 
     let spinner = app.spinner_char();
     let msg = match app.analysis_phase {
@@ -374,5 +376,5 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .bold(),
     )]))
     .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(cancel_btn, app.analysis_back_rect);
+    frame.render_widget(cancel_btn, cancel_area);
 }

@@ -1,4 +1,5 @@
 use crate::config::llm_config::LlmProviderKind;
+use crate::tui::interaction::SemanticAction;
 use crate::tui::state::{AppState, SettingsField};
 use ratatui::{
     layout::{Alignment, Rect},
@@ -123,14 +124,23 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         ]));
     }
 
+    for (index, (_, _, field)) in fields.iter().enumerate() {
+        app.register_hit_region(
+            Rect::new(inner.x, inner.y + 1 + index as u16, inner.width, 1),
+            SemanticAction::SelectSettingsField(*field),
+        );
+    }
+
     lines.push(Line::from(""));
     let save_w = 12u16;
     let cancel_w = 14u16;
     let buttons_y = inner.y + inner.height.saturating_sub(3);
     let save_x = inner.x + inner.width.saturating_sub(save_w + cancel_w + 4);
     let cancel_x = save_x + save_w + 2;
-    app.settings_save_rect = Rect::new(save_x, buttons_y, save_w, 1);
-    app.settings_cancel_rect = Rect::new(cancel_x, buttons_y, cancel_w, 1);
+    let save_area = Rect::new(save_x, buttons_y, save_w, 1);
+    let cancel_area = Rect::new(cancel_x, buttons_y, cancel_w, 1);
+    app.register_hit_region(save_area, SemanticAction::SaveSettings);
+    app.register_hit_region(cancel_area, SemanticAction::CloseSettings);
     lines.push(Line::from(""));
 
     if let Some(ref warning) = app.llm_warning {
@@ -155,7 +165,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .bold(),
     )]))
     .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    frame.render_widget(save_btn, app.settings_save_rect);
+    frame.render_widget(save_btn, save_area);
 
     let cancel_btn = Paragraph::new(Line::from(vec![Span::styled(
         " [ Cancelar ] ",
@@ -165,7 +175,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .bold(),
     )]))
     .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    frame.render_widget(cancel_btn, app.settings_cancel_rect);
+    frame.render_widget(cancel_btn, cancel_area);
 }
 
 fn checkbox(enabled: bool) -> String {

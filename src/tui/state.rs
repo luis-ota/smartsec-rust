@@ -5,6 +5,7 @@ use crate::config::Configuration;
 use crate::domain::security_tool::ToolInfo;
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::Orchestrator;
+use crate::tui::interaction::{FocusTarget, HitRegion, SemanticAction};
 use ratatui::layout::Rect;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,6 +57,22 @@ pub enum SettingsField {
     RealNuclei,
 }
 
+impl SettingsField {
+    pub const ALL: [Self; 11] = [
+        Self::Provider,
+        Self::BaseUrl,
+        Self::ApiKey,
+        Self::Model,
+        Self::Timeout,
+        Self::Retries,
+        Self::RemoteConsent,
+        Self::FallbackEnabled,
+        Self::FallbackBaseUrl,
+        Self::FallbackModel,
+        Self::RealNuclei,
+    ];
+}
+
 pub struct ToolItem {
     pub tool: ToolInfo,
     pub selected: bool,
@@ -86,11 +103,9 @@ pub struct AppState {
     pub analysis_tick: u64,
     pub analysis_text: String,
     pub analysis_full_text: String,
-    pub result_action_cursor: usize,
     pub result_cursor: usize,
     pub result_scroll: usize,
     pub result_detail_vuln: Option<usize>,
-    pub result_focus_list: bool,
     pub md_exported: bool,
     pub show_didactic: bool,
     pub show_detail: bool,
@@ -114,28 +129,9 @@ pub struct AppState {
     pub pending_ctrl_x: bool,
     pub pending_ctrl_x_tick: u64,
     pub command_palette_hint: Option<String>,
-    pub ai_model_area: Rect,
-
-    // Clickable area tracking
-    pub splash_url_rect: Rect,
-    pub splash_auto_rect: Rect,
-    pub splash_assisted_rect: Rect,
-    pub splash_start_rect: Rect,
-    pub tools_list_rect: Rect,
-    pub tools_run_rect: Rect,
-    pub tools_back_rect: Rect,
-    pub exec_pause_rect: Rect,
-    pub exec_cancel_rect: Rect,
-    pub exec_back_rect: Rect,
-    pub analysis_back_rect: Rect,
-    pub results_list_rect: Rect,
-    pub results_export_rect: Rect,
-    pub results_didactic_rect: Rect,
-    pub results_back_rect: Rect,
-    pub results_new_scan_rect: Rect,
-    pub didactic_back_rect: Rect,
-    pub settings_save_rect: Rect,
-    pub settings_cancel_rect: Rect,
+    pub focus: FocusTarget,
+    pub overlay_return_focus: FocusTarget,
+    pub hit_regions: Vec<HitRegion>,
 }
 
 impl AppState {
@@ -200,11 +196,9 @@ impl AppState {
             analysis_tick: 0,
             analysis_text: String::new(),
             analysis_full_text: String::new(),
-            result_action_cursor: 0,
             result_cursor: 0,
             result_scroll: 0,
             result_detail_vuln: None,
-            result_focus_list: true,
             md_exported: false,
             show_didactic: false,
             show_detail: false,
@@ -228,27 +222,29 @@ impl AppState {
             pending_ctrl_x: false,
             pending_ctrl_x_tick: 0,
             command_palette_hint: None,
-            ai_model_area: Rect::default(),
-            splash_url_rect: Rect::default(),
-            splash_auto_rect: Rect::default(),
-            splash_assisted_rect: Rect::default(),
-            splash_start_rect: Rect::default(),
-            tools_list_rect: Rect::default(),
-            tools_run_rect: Rect::default(),
-            tools_back_rect: Rect::default(),
-            exec_pause_rect: Rect::default(),
-            exec_cancel_rect: Rect::default(),
-            exec_back_rect: Rect::default(),
-            analysis_back_rect: Rect::default(),
-            results_list_rect: Rect::default(),
-            results_export_rect: Rect::default(),
-            results_didactic_rect: Rect::default(),
-            results_back_rect: Rect::default(),
-            results_new_scan_rect: Rect::default(),
-            didactic_back_rect: Rect::default(),
-            settings_save_rect: Rect::default(),
-            settings_cancel_rect: Rect::default(),
+            focus: FocusTarget::SplashTarget,
+            overlay_return_focus: FocusTarget::SplashTarget,
+            hit_regions: Vec::new(),
         }
+    }
+
+    pub fn begin_frame(&mut self, area: Rect) {
+        self.screen_area = area;
+        self.hit_regions.clear();
+    }
+
+    pub fn register_hit_region(&mut self, area: Rect, action: SemanticAction) {
+        if area.width > 0 && area.height > 0 {
+            self.hit_regions.push(HitRegion { area, action });
+        }
+    }
+
+    pub fn action_at(&self, column: u16, row: u16) -> Option<SemanticAction> {
+        self.hit_regions
+            .iter()
+            .rev()
+            .find(|region| region.contains(column, row))
+            .map(|region| region.action.clone())
     }
 
     pub fn mode(&self) -> ExecutionType {
@@ -309,6 +305,7 @@ impl AppState {
         if self.step == AppStep::Analysis && self.analysis_phase == AnalysisPhase::Complete {
             if self.analysis_tick > 30 {
                 self.step = AppStep::Results;
+                self.focus = FocusTarget::ResultsList;
             }
             self.analysis_tick += 1;
         }
@@ -362,6 +359,7 @@ impl AppState {
             self.orchestrator.build_findings();
             self.sync_agent_from_orchestrator();
             self.step = AppStep::Analysis;
+            self.focus = FocusTarget::AnalysisCancel;
             self.analysis_phase = AnalysisPhase::Scanning;
             self.analysis_tick = 0;
         }
@@ -377,6 +375,7 @@ impl AppState {
                 if self.tool_detect_tick > 50 {
                     self.tool_detecting = false;
                     self.step = AppStep::Execution;
+                    self.focus = FocusTarget::ExecutionLogs;
                     self.tool_detect_tick = 0;
                     self.exec_current = 0;
                     self.exec_tick = 0;
@@ -434,6 +433,7 @@ impl AppState {
     pub fn advance_execution(&mut self) {
         if self.exec_cancelled || self.orchestrator.cancelled {
             self.step = AppStep::ToolSelect;
+            self.focus = FocusTarget::ToolList;
         }
     }
 

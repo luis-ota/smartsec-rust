@@ -1,4 +1,5 @@
 pub mod event;
+pub mod interaction;
 pub mod screens;
 pub mod state;
 
@@ -13,7 +14,7 @@ use ratatui::{
 
 pub fn render(app: &mut AppState, frame: &mut Frame) {
     let area = frame.area();
-    app.screen_area = area;
+    app.begin_frame(area);
 
     if app.show_settings {
         screens::settings::render(app, frame, area);

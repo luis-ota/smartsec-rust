@@ -1,4 +1,5 @@
 use crate::config::execution_type::ExecutionType;
+use crate::tui::interaction::SemanticAction;
 use crate::tui::state::{AppState, ToolStatus};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -63,7 +64,6 @@ fn render_tools(app: &mut AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    app.tools_list_rect = area;
     let block = Block::default()
         .borders(Borders::all())
         .border_type(BorderType::Rounded)
@@ -76,10 +76,21 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    for row in 0..inner.height.min(app.tools.len() as u16) {
+        let index = app.tool_scroll + row as usize;
+        if index < app.tools.len() {
+            app.register_hit_region(
+                Rect::new(inner.x, inner.y + row, inner.width, 1),
+                SemanticAction::ToggleTool(index),
+            );
+        }
+    }
+
     let items: Vec<ListItem> = app
         .tools
         .iter()
         .enumerate()
+        .skip(app.tool_scroll)
         .map(|(i, t)| {
             let is_cursor = i == app.tool_cursor && app.mode() == ExecutionType::Assisted;
             let check = if t.selected { "[X]" } else { "[ ]" };
@@ -112,7 +123,7 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
     let mut state = ListState::default();
     if app.mode() == ExecutionType::Assisted && !app.tool_detecting {
-        state.select(Some(app.tool_cursor));
+        state.select(Some(app.tool_cursor.saturating_sub(app.tool_scroll)));
     }
     let list = List::new(items)
         .style(Style::default().bg(Color::Rgb(12, 12, 24)))
@@ -228,8 +239,10 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
         let back_btn_w = 7u16;
         let run_btn_x = area.x + area.width.saturating_sub(run_btn_w + 2);
         let back_btn_x = run_btn_x.saturating_sub(back_btn_w + 2);
-        app.tools_run_rect = Rect::new(run_btn_x, area.y + 1, run_btn_w, 1);
-        app.tools_back_rect = Rect::new(back_btn_x, area.y + 1, back_btn_w, 1);
+        let run_area = Rect::new(run_btn_x, area.y + 1, run_btn_w, 1);
+        let back_area = Rect::new(back_btn_x, area.y + 1, back_btn_w, 1);
+        app.register_hit_region(run_area, SemanticAction::RunTools);
+        app.register_hit_region(back_area, SemanticAction::Back);
 
         let footer = Paragraph::new(Line::from(vec![
             Span::styled(
@@ -255,7 +268,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 .bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(back_btn, app.tools_back_rect);
+        frame.render_widget(back_btn, back_area);
 
         let run_btn = Paragraph::new(Line::from(vec![Span::styled(
             " Run ",
@@ -265,6 +278,6 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 .bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(run_btn, app.tools_run_rect);
+        frame.render_widget(run_btn, run_area);
     }
 }
