@@ -55,14 +55,17 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
 
     let header = Paragraph::new(Line::from(vec![
         Span::styled(" | ", Style::default().fg(Color::Cyan)),
-        Span::styled("Execution", Style::default().fg(Color::White).bold()),
+        Span::styled("Execução", Style::default().fg(Color::White).bold()),
         Span::styled(
-            format!(" {} Running ", running),
+            format!(" {} em execução ", running),
             Style::default().fg(Color::Yellow),
         ),
-        Span::styled(format!("{} Done ", done), Style::default().fg(Color::Green)),
         Span::styled(
-            format!("({}% complete)", overall_pct),
+            format!("{} concluídas ", done),
+            Style::default().fg(Color::Green),
+        ),
+        Span::styled(
+            format!("({}% concluído)", overall_pct),
             Style::default().fg(Color::DarkGray),
         ),
     ]))
@@ -83,7 +86,7 @@ fn render_progress_list(app: &AppState, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Line::from(vec![Span::styled(
-            " Scan Progress ",
+            " Progresso da varredura ",
             Style::default().fg(Color::Cyan).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(12, 12, 24)));
@@ -156,7 +159,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Line::from(vec![Span::styled(
-            " Output Log ",
+            " Log de saída ",
             Style::default().fg(Color::Cyan).bold(),
         )]))
         .style(Style::default().bg(Color::Rgb(8, 12, 8)));
@@ -165,7 +168,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
     if app.exec_logs.is_empty() {
         let waiting = Paragraph::new(Line::from(Span::styled(
-            "Waiting for scan output...",
+            "Aguardando a saída da varredura...",
             Style::default().fg(Color::DarkGray).italic(),
         )))
         .alignment(ratatui::layout::Alignment::Center)
@@ -216,21 +219,24 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .iter()
         .all(|t| !t.selected || t.status == ToolStatus::Done);
     let status = if app.exec_cancelled {
-        ("X CANCELLED - returning to tool selection", Color::Red)
+        (
+            "X CANCELADA - voltando à seleção de ferramentas",
+            Color::Red,
+        )
     } else if app.exec_paused {
-        ("|| PAUSED - press C-x p to resume", Color::Yellow)
+        ("|| PAUSADA - pressione C-x p para retomar", Color::Yellow)
     } else if all_done {
         (
-            "All scans complete — proceeding to analysis...",
+            "Todas as varreduras concluídas - iniciando a análise...",
             Color::Green,
         )
     } else {
-        ("Running security scans...", Color::Yellow)
+        ("Executando varreduras de segurança...", Color::Yellow)
     };
 
-    let cancel_btn_w = 9u16;
+    let cancel_btn_w = 10u16;
     let pause_btn_w = 9u16;
-    let back_btn_w = 7u16;
+    let back_btn_w = 9u16;
     let cancel_x = area.x + area.width.saturating_sub(cancel_btn_w + 2);
     let pause_x = cancel_x.saturating_sub(pause_btn_w + 2);
     let back_x = pause_x.saturating_sub(back_btn_w + 2);
@@ -246,8 +252,8 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
             format!(
                 " | {} ",
                 match app.mode() {
-                    ExecutionType::Auto => "AUTO",
-                    ExecutionType::Assisted => "ASSISTED",
+                    ExecutionType::Auto => "AUTOMÁTICO",
+                    ExecutionType::Assisted => "ASSISTIDO",
                 }
             ),
             Style::default().fg(Color::Cyan).bold(),
@@ -260,7 +266,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(footer, inner);
 
     let back_btn = Paragraph::new(Line::from(vec![Span::styled(
-        " Back ",
+        " Voltar ",
         Style::default()
             .fg(Color::White)
             .bg(Color::Rgb(80, 80, 100))
@@ -270,9 +276,9 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(back_btn, back_area);
 
     let pause_label = if app.exec_paused {
-        " Resume "
+        " Retomar "
     } else {
-        " Pause  "
+        " Pausar  "
     };
     let pause_btn = Paragraph::new(Line::from(vec![Span::styled(
         pause_label,
@@ -285,7 +291,7 @@ fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(pause_btn, pause_area);
 
     let cancel_btn = Paragraph::new(Line::from(vec![Span::styled(
-        " Cancel ",
+        " Cancelar ",
         Style::default()
             .fg(Color::White)
             .bg(Color::Rgb(160, 30, 30))

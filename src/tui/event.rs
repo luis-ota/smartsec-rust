@@ -44,8 +44,9 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
     if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.pending_ctrl_x = true;
         app.pending_ctrl_x_tick = app.tick;
-        app.command_palette_hint =
-            Some("C-x _  (c)onfigurações (s)air (p)ausar (x)cancelar (e)xecutar".to_string());
+        app.command_palette_hint = Some(
+            "C-x _  (s) configurações (q) sair (p) pausar (c) cancelar (r) executar".to_string(),
+        );
         return false;
     }
 
@@ -54,11 +55,11 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
 
 fn ctrl_x_action(key: char) -> Option<SemanticAction> {
     match key.to_ascii_lowercase() {
-        'c' => Some(SemanticAction::OpenSettings),
-        's' => Some(SemanticAction::Quit),
+        's' => Some(SemanticAction::OpenSettings),
+        'q' => Some(SemanticAction::Quit),
         'p' => Some(SemanticAction::PauseResume),
-        'x' => Some(SemanticAction::CancelRun),
-        'e' => Some(SemanticAction::RunTools),
+        'c' => Some(SemanticAction::CancelRun),
+        'r' => Some(SemanticAction::RunTools),
         _ => None,
     }
 }
@@ -73,6 +74,9 @@ fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
         KeyCode::Right => Some(SemanticAction::MoveRight),
         KeyCode::Enter | KeyCode::Char(' ') => Some(SemanticAction::Activate),
         KeyCode::Esc => Some(SemanticAction::Back),
+        KeyCode::Backspace if app.show_settings => Some(SemanticAction::DeleteBackward),
+        KeyCode::Backspace if app.show_didactic || app.show_detail => Some(SemanticAction::Back),
+        KeyCode::Backspace if app.result_detail_vuln.is_some() => Some(SemanticAction::Back),
         KeyCode::Backspace => Some(SemanticAction::DeleteBackward),
         _ => None,
     };
@@ -449,10 +453,16 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
             };
         }
         AppStep::Results => {
-            for _ in 0..amount {
-                move_result_cursor(app, down);
+            if app.result_detail_vuln.is_some() {
+                for _ in 0..amount {
+                    move_detail_cursor(app, down);
+                }
+            } else {
+                for _ in 0..amount {
+                    move_result_cursor(app, down);
+                }
+                app.focus = FocusTarget::ResultsList;
             }
-            app.focus = FocusTarget::ResultsList;
         }
         _ => {}
     }
