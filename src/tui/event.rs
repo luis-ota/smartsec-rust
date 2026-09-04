@@ -88,7 +88,7 @@ fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
         KeyCode::Enter | KeyCode::Char(' ') => Some(SemanticAction::Activate),
         KeyCode::Esc => Some(SemanticAction::Back),
         KeyCode::Backspace if app.show_settings => Some(SemanticAction::DeleteBackward),
-        KeyCode::Backspace if app.show_didactic || app.show_detail => Some(SemanticAction::Back),
+        KeyCode::Backspace if app.show_didactic => Some(SemanticAction::Back),
         KeyCode::Backspace if app.result_detail_vuln.is_some() => Some(SemanticAction::Back),
         KeyCode::Backspace => Some(SemanticAction::DeleteBackward),
         _ => None,
@@ -174,7 +174,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::OpenVulnerability(index) => open_vulnerability(app, index),
         SemanticAction::ExportMarkdown => export_markdown(app),
         SemanticAction::ShowDidactic => {
-            app.overlay_return_focus = app.focus;
+            app.didactic_return_focus = app.focus;
             app.show_didactic = true;
             app.didactic_scroll = 0;
             app.focus = FocusTarget::DidacticContent;
@@ -222,7 +222,7 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
         order.extend([FocusTarget::SettingsSave, FocusTarget::SettingsCancel]);
         return order;
     }
-    if app.show_didactic || app.show_detail {
+    if app.show_didactic {
         return vec![FocusTarget::DidacticContent, FocusTarget::DidacticBack];
     }
     match app.step {
@@ -342,11 +342,10 @@ fn go_back(app: &mut AppState) -> bool {
         app.focus = app.settings_return_focus;
         return false;
     }
-    if app.show_didactic || app.show_detail {
+    if app.show_didactic {
         app.show_didactic = false;
-        app.show_detail = false;
         app.didactic_scroll = 0;
-        app.focus = app.overlay_return_focus;
+        app.focus = app.didactic_return_focus;
         return false;
     }
     if app.result_detail_vuln.is_some() {
@@ -473,7 +472,7 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
         }
         return;
     }
-    if app.show_didactic || app.show_detail {
+    if app.show_didactic {
         app.didactic_scroll = if down {
             app.didactic_scroll
                 .saturating_add(amount)
@@ -596,7 +595,6 @@ fn new_scan(app: &mut AppState) {
     app.detail_scroll = 0;
     app.detail_max_scroll = 0;
     app.show_didactic = false;
-    app.show_detail = false;
     app.md_exported = false;
     app.focus = FocusTarget::SplashTarget;
 }
@@ -871,6 +869,26 @@ mod tests {
         assert!(!press(&mut app, KeyCode::Esc));
         assert_eq!(app.step, AppStep::Splash);
         assert!(press(&mut app, KeyCode::Esc));
+    }
+
+    #[test]
+    fn nested_help_over_didactic_restores_both_focus_layers() {
+        let mut app = app();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsExport;
+        dispatch_action(&mut app, SemanticAction::ShowDidactic);
+        assert_eq!(app.focus, FocusTarget::DidacticContent);
+
+        dispatch_action(&mut app, SemanticAction::OpenHelp);
+        assert!(app.show_help_overlay);
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_help_overlay);
+        assert!(app.show_didactic);
+        assert_eq!(app.focus, FocusTarget::DidacticContent);
+
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_didactic);
+        assert_eq!(app.focus, FocusTarget::ResultsExport);
     }
 
     #[test]
