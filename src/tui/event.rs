@@ -36,7 +36,7 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return dispatch_action(app, SemanticAction::OpenCommandPalette);
     }
 
-    if key.code == KeyCode::Char('?') && !accepts_text(app) {
+    if key.code == KeyCode::Char('?') {
         return dispatch_action(app, SemanticAction::OpenHelp);
     }
 
@@ -448,6 +448,12 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
     if app.show_command_palette {
         move_command_cursor(app, down);
+        return;
+    }
+    if app.show_settings {
+        for _ in 0..amount {
+            move_focus(app, down);
+        }
         return;
     }
     if app.show_didactic || app.show_detail {

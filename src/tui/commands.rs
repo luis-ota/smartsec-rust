@@ -27,10 +27,23 @@ impl CommandItem {
 }
 
 pub fn command_items(app: &AppState) -> Vec<CommandItem> {
-    let mut items = vec![
-        CommandItem::new("Abrir ajuda", "?", SemanticAction::OpenHelp),
-        CommandItem::new("Abrir configurações", "", SemanticAction::OpenSettings),
-    ];
+    let mut items = vec![CommandItem::new(
+        "Abrir ajuda",
+        "?",
+        SemanticAction::OpenHelp,
+    )];
+    if app.show_settings {
+        items.extend([
+            CommandItem::new("Salvar configurações", "", SemanticAction::SaveSettings),
+            CommandItem::new("Cancelar alterações", "esc", SemanticAction::CloseSettings),
+        ]);
+        return items;
+    }
+    items.push(CommandItem::new(
+        "Abrir configurações",
+        "",
+        SemanticAction::OpenSettings,
+    ));
 
     match app.step {
         AppStep::Splash => items.extend([
