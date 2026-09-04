@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::io::AsyncReadExt;
+use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const PODMAN_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -25,12 +26,50 @@ pub struct ExecutionResult {
     pub duration: Duration,
     pub container_id: String,
     pub cleanup_error: Option<String>,
+    pub trace: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PodmanExecutor {
     binary: PathBuf,
     timeout: Duration,
+    log_sink: Option<mpsc::UnboundedSender<String>>,
+}
+
+/// Coletor do trace operacional completo de uma execução Podman.
+///
+/// Cada linha recebe timestamp e é acumulada para auditoria; quando há um
+/// `sink`, a mesma linha é encaminhada ao vivo (TUI/headless). Nada do que o
+/// Podman emite é descartado: comandos executados, saída do pull de imagem,
+/// saída do scanner e resultado da limpeza.
+struct TraceCollector {
+    sink: Option<mpsc::UnboundedSender<String>>,
+    lines: Vec<String>,
+}
+
+impl TraceCollector {
+    fn new(sink: Option<mpsc::UnboundedSender<String>>) -> Self {
+        Self {
+            sink,
+            lines: Vec::new(),
+        }
+    }
+
+    fn sender(&self) -> Option<mpsc::UnboundedSender<String>> {
+        self.sink.clone()
+    }
+
+    fn emit(&mut self, line: impl Into<String>) {
+        let line = format!("[{}] {}", timestamp(), line.into());
+        if let Some(sink) = &self.sink {
+            let _ = sink.send(line.clone());
+        }
+        self.lines.push(line);
+    }
+}
+
+fn timestamp() -> String {
+    chrono::Utc::now().format("%H:%M:%S").to_string()
 }
 
 impl PodmanExecutor {
@@ -38,12 +77,22 @@ impl PodmanExecutor {
         Self {
             binary: PathBuf::from("podman"),
             timeout,
+            log_sink: None,
         }
+    }
+
+    pub fn with_log_sink(mut self, sink: mpsc::UnboundedSender<String>) -> Self {
+        self.log_sink = Some(sink);
+        self
     }
 
     #[cfg(test)]
     fn with_binary(binary: PathBuf, timeout: Duration) -> Self {
-        Self { binary, timeout }
+        Self {
+            binary,
+            timeout,
+            log_sink: None,
+        }
     }
 
     pub async fn execute(
@@ -60,7 +109,8 @@ impl PodmanExecutor {
         command: &[String],
         mounts: &[(PathBuf, String)],
     ) -> anyhow::Result<ExecutionResult> {
-        self.ensure_rootless().await?;
+        let mut trace = TraceCollector::new(self.log_sink.clone());
+        self.ensure_rootless(&mut trace).await?;
 
         let created_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -72,43 +122,46 @@ impl PodmanExecutor {
             CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
         let mut cleanup_guard = ContainerCleanup::new(self.binary.clone(), &name);
+        let mut create_args: Vec<String> = vec![
+            "create".to_owned(),
+            "--name".to_owned(),
+            name.clone(),
+            "--network".to_owned(),
+            ROOTLESS_NETWORK.to_owned(),
+            "--memory".to_owned(),
+            "512m".to_owned(),
+            "--cpus".to_owned(),
+            "1".to_owned(),
+            "--pids-limit".to_owned(),
+            "256".to_owned(),
+            "--cap-drop".to_owned(),
+            "all".to_owned(),
+            "--security-opt".to_owned(),
+            "no-new-privileges".to_owned(),
+            "--read-only".to_owned(),
+            "--tmpfs".to_owned(),
+            "/tmp:rw,noexec,nosuid,nodev,size=128m".to_owned(),
+            "--tmpfs".to_owned(),
+            "/root/.config:rw,noexec,nosuid,nodev,size=16m".to_owned(),
+        ];
+        for (host, container) in mounts {
+            create_args.push("--volume".to_owned());
+            create_args.push(format!("{}:{}:ro", host.display(), container));
+        }
+        create_args.push(image.to_owned());
+        create_args.extend(command.iter().cloned());
+        trace.emit(format!("$ podman {}", create_args.join(" ")));
         let mut create_command = self.podman_command();
-        create_command
-            .args([
-                "create",
-                "--name",
-                &name,
-                "--network",
-                ROOTLESS_NETWORK,
-                "--memory",
-                "512m",
-                "--cpus",
-                "1",
-                "--pids-limit",
-                "256",
-                "--cap-drop",
-                "all",
-                "--security-opt",
-                "no-new-privileges",
-                "--read-only",
-                "--tmpfs",
-                "/tmp:rw,noexec,nosuid,nodev,size=128m",
-                "--tmpfs",
-                "/root/.config:rw,noexec,nosuid,nodev,size=16m",
-            ])
-            .args(mounts.iter().flat_map(|(host, container)| {
-                [
-                    "--volume".to_owned(),
-                    format!("{}:{}:ro", host.display(), container),
-                ]
-            }))
-            .arg(image)
-            .args(command);
+        create_command.args(&create_args);
         let create_output = match tokio::time::timeout(self.timeout, create_command.output()).await
         {
             Ok(output) => output.with_context(|| self.unavailable_message())?,
             Err(_) => {
-                let cleanup = self.remove_container(&name).await.err();
+                trace.emit(format!(
+                    "tempo limite de {:.0?} excedido ao criar o container '{name}'",
+                    self.timeout
+                ));
+                let cleanup = self.remove_container(&name, &mut trace).await.err();
                 if cleanup.is_none() {
                     cleanup_guard.disarm();
                 }
@@ -124,9 +177,15 @@ impl PodmanExecutor {
                 ));
             }
         };
+        for line in String::from_utf8_lossy(&create_output.stdout).lines() {
+            trace.emit(line.to_owned());
+        }
+        for line in String::from_utf8_lossy(&create_output.stderr).lines() {
+            trace.emit(line.to_owned());
+        }
 
         if !create_output.status.success() {
-            let cleanup_error = self.remove_container(&name).await.err();
+            let cleanup_error = self.remove_container(&name, &mut trace).await.err();
             if cleanup_error.is_none() {
                 cleanup_guard.disarm();
             }
@@ -143,7 +202,7 @@ impl PodmanExecutor {
             .trim()
             .to_owned();
         if container_id.is_empty() {
-            let cleanup = self.remove_container(&name).await.err();
+            let cleanup = self.remove_container(&name, &mut trace).await.err();
             if cleanup.is_none() {
                 cleanup_guard.disarm();
             }
@@ -155,10 +214,13 @@ impl PodmanExecutor {
                 )
             ));
         }
+        trace.emit(format!(
+            "container {container_id} criado a partir da imagem '{image}'"
+        ));
 
-        let execution = self.run_attached(&container_id).await;
+        let execution = self.run_attached(&container_id, &mut trace).await;
         let cleanup_error = self
-            .remove_container(&container_id)
+            .remove_container(&container_id, &mut trace)
             .await
             .err()
             .map(|error| {
@@ -186,10 +248,12 @@ impl PodmanExecutor {
             duration,
             container_id,
             cleanup_error,
+            trace: trace.lines,
         })
     }
 
-    async fn ensure_rootless(&self) -> anyhow::Result<()> {
+    async fn ensure_rootless(&self, trace: &mut TraceCollector) -> anyhow::Result<()> {
+        trace.emit("$ podman info --format {{.Host.Security.Rootless}}");
         let mut command = self.podman_command();
         command.args(["info", "--format", "{{.Host.Security.Rootless}}"]);
         let output = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output())
@@ -210,13 +274,16 @@ impl PodmanExecutor {
                 "Podman não está em modo rootless. Execute o SmartSec como usuário comum e confirme que `podman info --format '{{{{.Host.Security.Rootless}}}}'` retorna true."
             ));
         }
+        trace.emit("podman rootless verificado");
         Ok(())
     }
 
     async fn run_attached(
         &self,
         container_id: &str,
+        trace: &mut TraceCollector,
     ) -> anyhow::Result<(String, String, ExecutionStatus, Duration)> {
+        trace.emit(format!("$ podman start --attach {container_id}"));
         let mut child = self
             .podman_command()
             .args(["start", "--attach", container_id])
@@ -234,8 +301,12 @@ impl PodmanExecutor {
             .stderr
             .take()
             .context("não foi possível capturar o stderr do Podman")?;
-        let stdout_task = tokio::spawn(read_stream(stdout));
-        let stderr_task = tokio::spawn(read_stream(stderr));
+        let sink = trace.sender();
+        let stdout_task = tokio::spawn({
+            let sink = sink.clone();
+            async move { read_stream_live(stdout, sink).await }
+        });
+        let stderr_task = tokio::spawn(async move { read_stream_live(stderr, sink).await });
         let started_at = Instant::now();
 
         let status = match tokio::time::timeout(self.timeout, child.wait()).await {
@@ -248,6 +319,9 @@ impl PodmanExecutor {
                 }
             }
             Err(_) => {
+                trace.emit(format!(
+                    "tempo limite excedido; interrompendo o container {container_id}"
+                ));
                 let _ = child.kill().await;
                 let mut kill_command = self.podman_command();
                 kill_command.args(["kill", container_id]);
@@ -256,14 +330,28 @@ impl PodmanExecutor {
             }
         };
 
-        let stdout = stdout_task
+        let (stdout, stdout_lines) = stdout_task
             .await
-            .context("falha na tarefa de captura do stdout")?
-            .context("não foi possível ler o stdout do Podman")?;
-        let stderr = stderr_task
+            .context("falha na tarefa de captura do stdout")?;
+        let (stderr, stderr_lines) = stderr_task
             .await
-            .context("falha na tarefa de captura do stderr")?
-            .context("não foi possível ler o stderr do Podman")?;
+            .context("falha na tarefa de captura do stderr")?;
+        trace.lines.extend(stdout_lines);
+        trace.lines.extend(stderr_lines);
+        match &status {
+            ExecutionStatus::Succeeded => {
+                trace.emit(format!("container {container_id} concluído com sucesso"));
+            }
+            ExecutionStatus::Failed(code) => {
+                trace.emit(format!(
+                    "container {container_id} encerrou com status {}",
+                    code.map_or_else(|| "desconhecido".to_owned(), |code| code.to_string())
+                ));
+            }
+            ExecutionStatus::TimedOut => {
+                trace.emit(format!("container {container_id} interrompido"));
+            }
+        }
 
         Ok((
             String::from_utf8_lossy(&stdout).into_owned(),
@@ -273,7 +361,12 @@ impl PodmanExecutor {
         ))
     }
 
-    async fn remove_container(&self, container_id: &str) -> anyhow::Result<()> {
+    async fn remove_container(
+        &self,
+        container_id: &str,
+        trace: &mut TraceCollector,
+    ) -> anyhow::Result<()> {
+        trace.emit(format!("$ podman rm --force --ignore {container_id}"));
         let mut command = self.podman_command();
         command.args(["rm", "--force", "--ignore", container_id]);
         let output = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output())
@@ -281,12 +374,17 @@ impl PodmanExecutor {
             .context("a limpeza do Podman não terminou em até 10 segundos")?
             .context("falha ao executar a limpeza pelo Podman")?;
         if output.status.success() {
+            trace.emit(format!("container {container_id} removido"));
             Ok(())
         } else {
-            Err(anyhow!(
+            let error = anyhow!(
                 "Podman não conseguiu remover o container {container_id}: {}",
                 output_message(&output.stderr)
-            ))
+            );
+            trace.emit(format!(
+                "falha na limpeza do container {container_id}: {error:#}"
+            ));
+            Err(error)
         }
     }
 
@@ -360,13 +458,40 @@ fn output_message(stderr: &[u8]) -> String {
     }
 }
 
-async fn read_stream<R>(mut stream: R) -> std::io::Result<Vec<u8>>
+/// Lê um stream do container linha a linha, preservando os bytes exatos para
+/// auditoria e encaminhando cada linha ao vivo para o `sink` (TUI/headless).
+///
+/// `read_until` mantém o terminador quando presente, então a saída
+/// reconstruída é byte a byte idêntica à original.
+async fn read_stream_live<R>(
+    stream: R,
+    sink: Option<mpsc::UnboundedSender<String>>,
+) -> (Vec<u8>, Vec<String>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    let mut reader = tokio::io::BufReader::new(stream);
     let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).await?;
-    Ok(bytes)
+    let mut lines = Vec::new();
+    let mut chunk = Vec::new();
+    loop {
+        match reader.read_until(b'\n', &mut chunk).await {
+            Ok(0) => break,
+            Ok(_) => {
+                bytes.extend_from_slice(&chunk);
+                let display = String::from_utf8_lossy(&chunk);
+                let display = display.trim_end_matches(['\r', '\n']);
+                let line = format!("[{}] {display}", timestamp());
+                if let Some(sink) = &sink {
+                    let _ = sink.send(line.clone());
+                }
+                lines.push(line);
+                chunk.clear();
+            }
+            Err(_) => break,
+        }
+    }
+    (bytes, lines)
 }
 
 #[cfg(test)]
@@ -528,6 +653,49 @@ mod tests {
         let cleanup_error = result.cleanup_error.unwrap();
         assert!(cleanup_error.contains("storage busy"));
         assert!(cleanup_error.contains("podman rm --force container-123"));
+    }
+
+    #[tokio::test]
+    async fn trace_sink_receives_the_complete_podman_lifecycle() {
+        let fake = FakePodman::with_scripts(
+            "printf 'Trying to pull example/scanner:1...\\n' >&2; printf 'container-123\\n'",
+            "printf 'scanner line 1\\n'; printf 'scanner line 2\\n'; printf 'scanner warning\\n' >&2",
+            "exit 0",
+        );
+        let (sink, mut receiver) = mpsc::unbounded_channel();
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(5))
+            .with_log_sink(sink);
+
+        let result = executor
+            .execute("example/scanner:1", &["scan".to_owned()])
+            .await
+            .unwrap();
+
+        let mut live = Vec::new();
+        while let Ok(line) = receiver.try_recv() {
+            live.push(line);
+        }
+        let mut live_sorted = live.clone();
+        live_sorted.sort();
+        let mut stored_sorted = result.trace.clone();
+        stored_sorted.sort();
+        assert_eq!(live_sorted, stored_sorted);
+        let trace = result.trace.join("\n");
+        assert!(trace.contains("$ podman info --format"));
+        assert!(trace.contains("podman rootless verificado"));
+        assert!(trace.contains("$ podman create --name smartsec-"));
+        assert!(trace.contains("Trying to pull example/scanner:1..."));
+        assert!(trace.contains("container-123"));
+        assert!(trace.contains("criado a partir da imagem 'example/scanner:1'"));
+        assert!(trace.contains("$ podman start --attach container-123"));
+        assert!(trace.contains("scanner line 1"));
+        assert!(trace.contains("scanner line 2"));
+        assert!(trace.contains("scanner warning"));
+        assert!(trace.contains("concluído com sucesso"));
+        assert!(trace.contains("$ podman rm --force --ignore container-123"));
+        assert!(trace.contains("container-123 removido"));
+        assert_eq!(result.stdout, "scanner line 1\nscanner line 2\n");
+        assert_eq!(result.stderr, "scanner warning\n");
     }
 
     #[tokio::test]

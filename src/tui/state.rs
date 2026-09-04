@@ -84,6 +84,7 @@ pub struct ToolItem {
 
 enum RunEvent {
     ToolStarted(usize),
+    ToolLog(String),
     ToolFinished {
         index: usize,
         execution: Box<SecurityTool>,
@@ -354,10 +355,25 @@ impl AppState {
                 RunEvent::ToolStarted(index) => {
                     self.exec_current = index;
                     self.tools[index].status = ToolStatus::Running;
-                    self.exec_logs.push(format!(
-                        "[{}] Executando {}...",
-                        self.tools[index].tool.name, self.tools[index].tool.description
-                    ));
+                }
+                RunEvent::ToolLog(line) => {
+                    let prefix = self
+                        .tools
+                        .iter()
+                        .find(|tool| tool.status == ToolStatus::Running)
+                        .map(|tool| format!("[{}] ", tool.tool.name))
+                        .unwrap_or_default();
+                    for part in line.split('\n') {
+                        if part.trim().is_empty() {
+                            continue;
+                        }
+                        self.exec_logs.push(format!("{prefix}{part}"));
+                    }
+                    const MAX_EXEC_LOGS: usize = 5000;
+                    let overflow = self.exec_logs.len().saturating_sub(MAX_EXEC_LOGS);
+                    if overflow > 0 {
+                        self.exec_logs.drain(..overflow);
+                    }
                 }
                 RunEvent::ToolFinished { index, execution } => {
                     let succeeded = execution.execution_error.is_none()
@@ -390,7 +406,14 @@ impl AppState {
                     audit_log,
                 } => {
                     self.orchestrator = *orchestrator;
-                    self.llm_warning = self.orchestrator.agent.execution_history.last().cloned();
+                    let llm_detail = self.orchestrator.agent.execution_history.last().cloned();
+                    if let Some(detail) = llm_detail {
+                        self.exec_logs.push(format!("[ia] {detail}"));
+                        self.llm_warning =
+                            Some("LLM indisponível — análise local aplicada".to_string());
+                    } else {
+                        self.llm_warning = None;
+                    }
                     for execution in &self.orchestrator.execution_history {
                         let Some(error) = &execution.execution_error else {
                             continue;
@@ -550,7 +573,21 @@ impl AppState {
                 if sender.send(RunEvent::ToolStarted(index)).is_err() {
                     return;
                 }
+                let (trace_tx, mut trace_rx) = mpsc::unbounded_channel::<String>();
+                orchestrator.trace_sink = Some(trace_tx);
+                let forwarder = tokio::spawn({
+                    let sender = sender.clone();
+                    async move {
+                        while let Some(line) = trace_rx.recv().await {
+                            if sender.send(RunEvent::ToolLog(line)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                });
                 let execution = orchestrator.execute_tool(&tool, &target).await;
+                orchestrator.trace_sink = None;
+                let _ = forwarder.await;
                 if sender
                     .send(RunEvent::ToolFinished {
                         index,
@@ -738,7 +775,16 @@ mod tests {
         sender.send(RunEvent::ToolStarted(0)).unwrap();
         app.process_run_events().await;
         assert_eq!(app.tools[0].status, ToolStatus::Running);
-        assert!(app.exec_logs[0].contains("Executando"));
+        assert!(app.exec_logs.is_empty());
+
+        sender
+            .send(RunEvent::ToolLog(
+                "[12:00:01] $ podman create --name smartsec-test".to_string(),
+            ))
+            .unwrap();
+        app.process_run_events().await;
+        assert!(app.exec_logs[0].contains("$ podman create"));
+        assert!(app.exec_logs[0].starts_with("[Nmap]"));
 
         sender
             .send(RunEvent::ToolFinished {

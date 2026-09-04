@@ -241,6 +241,13 @@ impl CommandLineInterface {
         let selected = selected_tools(&all_tools, &config.active_tools);
 
         println!("[1/3] Running security tools...");
+        let (trace_tx, mut trace_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        orchestrator.trace_sink = Some(trace_tx);
+        let trace_printer = tokio::spawn(async move {
+            while let Some(line) = trace_rx.recv().await {
+                println!("  │ {line}");
+            }
+        });
         let total = selected.len();
         for (i, tool) in selected.iter().enumerate() {
             if orchestrator.cancelled {
@@ -255,20 +262,20 @@ impl CommandLineInterface {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
-            print!("  [{:>2}/{:>2}] {:<12} ", i + 1, total, tool.name);
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
+            println!("  [{:>2}/{:>2}] {:<12} ", i + 1, total, tool.name);
             let exec = orchestrator.execute_tool(tool, &config.target_url).await;
             if let Some(error) = &exec.execution_error {
-                println!("FALHA ({error})");
+                println!("  FALHA ({error})");
             } else {
                 println!(
-                    "OK ({}, {} bytes output)",
+                    "  OK ({}, {} bytes output)",
                     exec.executed_at,
                     exec.output.len()
                 );
             }
         }
+        orchestrator.trace_sink = None;
+        let _ = trace_printer.await;
         println!();
 
         orchestrator.build_findings();
