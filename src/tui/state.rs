@@ -128,9 +128,10 @@ pub struct AppState {
     pub llm_warning: Option<String>,
     pub exec_paused: bool,
     pub exec_cancelled: bool,
-    pub pending_ctrl_x: bool,
-    pub pending_ctrl_x_tick: u64,
-    pub command_palette_hint: Option<String>,
+    pub show_help_overlay: bool,
+    pub show_command_palette: bool,
+    pub command_cursor: usize,
+    pub settings_scroll: usize,
     pub focus: FocusTarget,
     pub overlay_return_focus: FocusTarget,
     pub hit_regions: Vec<HitRegion>,
@@ -223,9 +224,10 @@ impl AppState {
             llm_warning: None,
             exec_paused: false,
             exec_cancelled: false,
-            pending_ctrl_x: false,
-            pending_ctrl_x_tick: 0,
-            command_palette_hint: None,
+            show_help_overlay: false,
+            show_command_palette: false,
+            command_cursor: 0,
+            settings_scroll: 0,
             focus: FocusTarget::SplashTarget,
             overlay_return_focus: FocusTarget::SplashTarget,
             hit_regions: Vec::new(),
@@ -288,10 +290,6 @@ impl AppState {
     pub fn tick(&mut self) {
         self.tick += 1;
         self.spinner_idx = (self.spinner_idx + 1) % 10;
-        if self.pending_ctrl_x && self.tick.saturating_sub(self.pending_ctrl_x_tick) > 20 {
-            self.pending_ctrl_x = false;
-            self.command_palette_hint = None;
-        }
         match self.mode() {
             ExecutionType::Auto => self.advance_auto(),
             ExecutionType::Assisted => self.advance_assisted(),

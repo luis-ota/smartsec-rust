@@ -1,5 +1,6 @@
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmProviderKind;
+use crate::tui::commands::command_items;
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::{AppState, AppStep, SettingsField};
 use crossterm::event::{
@@ -31,40 +32,35 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return false;
     }
 
-    if app.pending_ctrl_x {
-        app.pending_ctrl_x = false;
-        app.command_palette_hint = None;
-        let action = match key.code {
-            KeyCode::Char(character) => ctrl_x_action(character),
-            _ => None,
-        };
-        return action.is_some_and(|action| dispatch_action(app, action));
+    if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return dispatch_action(app, SemanticAction::OpenCommandPalette);
     }
 
-    if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        app.pending_ctrl_x = true;
-        app.pending_ctrl_x_tick = app.tick;
-        app.command_palette_hint = Some(
-            "C-x _  (s) configurações (q) sair (p) pausar (c) cancelar (r) executar".to_string(),
-        );
-        return false;
+    if key.code == KeyCode::Char('?') && !accepts_text(app) {
+        return dispatch_action(app, SemanticAction::OpenHelp);
     }
 
     key_action(app, key).is_some_and(|action| dispatch_action(app, action))
 }
 
-fn ctrl_x_action(key: char) -> Option<SemanticAction> {
-    match key.to_ascii_lowercase() {
-        's' => Some(SemanticAction::OpenSettings),
-        'q' => Some(SemanticAction::Quit),
-        'p' => Some(SemanticAction::PauseResume),
-        'c' => Some(SemanticAction::CancelRun),
-        'r' => Some(SemanticAction::RunTools),
-        _ => None,
-    }
-}
-
 fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
+    if app.show_help_overlay {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') => Some(SemanticAction::Back),
+            _ => None,
+        };
+    }
+    if app.show_command_palette {
+        return match key.code {
+            KeyCode::Esc => Some(SemanticAction::Back),
+            KeyCode::Up | KeyCode::BackTab => Some(SemanticAction::MoveUp),
+            KeyCode::Down | KeyCode::Tab => Some(SemanticAction::MoveDown),
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                Some(SemanticAction::ExecuteCommand(app.command_cursor))
+            }
+            _ => None,
+        };
+    }
     let navigation = match key.code {
         KeyCode::Tab => Some(SemanticAction::FocusNext),
         KeyCode::BackTab => Some(SemanticAction::FocusPrevious),
@@ -178,6 +174,9 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         }
         SemanticAction::InsertText(text) => insert_text(app, &text),
         SemanticAction::DeleteBackward => delete_backward(app),
+        SemanticAction::OpenHelp => open_help(app),
+        SemanticAction::OpenCommandPalette => open_command_palette(app),
+        SemanticAction::ExecuteCommand(index) => return execute_command(app, index),
     }
     false
 }
@@ -190,6 +189,12 @@ fn set_focus(app: &mut AppState, focus: FocusTarget) {
 }
 
 fn focus_order(app: &AppState) -> Vec<FocusTarget> {
+    if app.show_help_overlay {
+        return vec![FocusTarget::HelpClose];
+    }
+    if app.show_command_palette {
+        return vec![FocusTarget::CommandList];
+    }
     if app.show_settings {
         let mut order: Vec<_> = SettingsField::ALL
             .iter()
@@ -261,6 +266,7 @@ fn move_vertical(app: &mut AppState, down: bool) {
         FocusTarget::ResultsDetail => move_detail_cursor(app, down),
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => scroll(app, down, 1),
         FocusTarget::SettingsField(SettingsField::Provider) => move_provider(app, down),
+        FocusTarget::CommandList => move_command_cursor(app, down),
         _ => move_focus(app, down),
     }
 }
@@ -296,11 +302,23 @@ fn activate_focus(app: &mut AppState) {
         }
         FocusTarget::SettingsSave => SemanticAction::SaveSettings,
         FocusTarget::SettingsCancel => SemanticAction::CloseSettings,
+        FocusTarget::HelpClose => SemanticAction::Back,
+        FocusTarget::CommandList => SemanticAction::ExecuteCommand(app.command_cursor),
     };
     dispatch_action(app, action);
 }
 
 fn go_back(app: &mut AppState) -> bool {
+    if app.show_help_overlay {
+        app.show_help_overlay = false;
+        app.focus = app.overlay_return_focus;
+        return false;
+    }
+    if app.show_command_palette {
+        app.show_command_palette = false;
+        app.focus = app.overlay_return_focus;
+        return false;
+    }
     if app.show_settings {
         app.show_settings = false;
         app.focus = app.overlay_return_focus;
@@ -428,6 +446,10 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
 }
 
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
+    if app.show_command_palette {
+        move_command_cursor(app, down);
+        return;
+    }
     if app.show_didactic || app.show_detail {
         app.didactic_scroll = if down {
             app.didactic_scroll
@@ -467,6 +489,48 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
         }
         _ => {}
     }
+}
+
+fn open_help(app: &mut AppState) {
+    if !app.show_command_palette {
+        app.overlay_return_focus = app.focus;
+    }
+    app.show_command_palette = false;
+    app.show_help_overlay = true;
+    app.focus = FocusTarget::HelpClose;
+}
+
+fn open_command_palette(app: &mut AppState) {
+    if !app.show_help_overlay {
+        app.overlay_return_focus = app.focus;
+    }
+    app.show_help_overlay = false;
+    app.show_command_palette = true;
+    app.command_cursor = 0;
+    app.focus = FocusTarget::CommandList;
+}
+
+fn move_command_cursor(app: &mut AppState, down: bool) {
+    let count = command_items(app).len();
+    if count == 0 {
+        app.command_cursor = 0;
+    } else if down {
+        app.command_cursor = (app.command_cursor + 1) % count;
+    } else {
+        app.command_cursor = app.command_cursor.checked_sub(1).unwrap_or(count - 1);
+    }
+}
+
+fn execute_command(app: &mut AppState, index: usize) -> bool {
+    let Some(item) = command_items(app).get(index).cloned() else {
+        return false;
+    };
+    if !item.enabled {
+        return false;
+    }
+    app.show_command_palette = false;
+    app.focus = app.overlay_return_focus;
+    dispatch_action(app, item.action)
 }
 
 fn cancel_execution(app: &mut AppState) {
@@ -833,5 +897,59 @@ mod tests {
             .hit_regions
             .iter()
             .any(|region| region.action == SemanticAction::Back));
+    }
+
+    #[test]
+    fn help_opens_contextually_and_escape_restores_focus() {
+        let mut app = app();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsExport;
+
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.show_help_overlay);
+        assert_eq!(app.focus, FocusTarget::HelpClose);
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_help_overlay);
+        assert_eq!(app.focus, FocusTarget::ResultsExport);
+    }
+
+    #[test]
+    fn command_palette_is_navigable_and_keyboard_mouse_are_equivalent() {
+        let mut keyboard = app();
+        handle_key(
+            &mut keyboard,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        );
+        assert!(keyboard.show_command_palette);
+        press(&mut keyboard, KeyCode::Down);
+        assert_eq!(keyboard.command_cursor, 1);
+        press(&mut keyboard, KeyCode::Up);
+        press(&mut keyboard, KeyCode::Enter);
+
+        let mut mouse = app();
+        dispatch_action(&mut mouse, SemanticAction::OpenCommandPalette);
+        render_app(&mut mouse, 80, 24);
+        click_action(&mut mouse, &SemanticAction::ExecuteCommand(0));
+
+        assert_eq!(keyboard.show_help_overlay, mouse.show_help_overlay);
+        assert_eq!(keyboard.show_command_palette, mouse.show_command_palette);
+        assert_eq!(keyboard.focus, mouse.focus);
+    }
+
+    #[test]
+    fn disabled_palette_command_does_not_execute_or_close() {
+        let mut app = app();
+        app.step = AppStep::ToolSelect;
+        app.tool_detecting = true;
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+        let run_index = command_items(&app)
+            .iter()
+            .position(|item| item.action == SemanticAction::RunTools)
+            .unwrap();
+
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(run_index));
+
+        assert_eq!(app.step, AppStep::ToolSelect);
+        assert!(app.show_command_palette);
     }
 }
