@@ -25,12 +25,16 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let context = match app.step {
-        AppStep::Splash => "Defina o alvo, o modo de execução e inicie a análise.",
-        AppStep::ToolSelect => "Escolha as ferramentas que serão executadas contra o alvo.",
-        AppStep::Execution => "Acompanhe o progresso, pause ou cancele a execução.",
-        AppStep::Analysis => "Aguarde a correlação dos achados e a geração das recomendações.",
-        AppStep::Results => "Revise os achados, abra detalhes e exporte o relatório.",
+    let context = if app.show_settings {
+        "Configure o provedor de IA, consentimento e opções de execução."
+    } else {
+        match app.step {
+            AppStep::Splash => "Defina o alvo, o modo de execução e inicie a análise.",
+            AppStep::ToolSelect => "Escolha as ferramentas que serão executadas contra o alvo.",
+            AppStep::Execution => "Acompanhe o progresso, pause ou cancele a execução.",
+            AppStep::Analysis => "Aguarde a correlação dos achados e a geração das recomendações.",
+            AppStep::Results => "Revise os achados, abra detalhes e exporte o relatório.",
+        }
     };
     let lines = vec![
         Line::styled(context, Style::default().fg(Color::Gray)),
