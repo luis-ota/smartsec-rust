@@ -1,3 +1,4 @@
+use crate::tui::chrome::{ACCENT, SURFACE};
 use crate::tui::commands::command_items;
 use crate::tui::interaction::SemanticAction;
 use crate::tui::state::{AppState, AppStep};
@@ -8,9 +9,6 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
-
-const SURFACE: Color = Color::Rgb(18, 20, 24);
-const ACCENT: Color = Color::Rgb(70, 190, 200);
 
 pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
     app.hit_regions.clear();
