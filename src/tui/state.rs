@@ -292,6 +292,9 @@ impl AppState {
     pub fn tick(&mut self) {
         self.tick += 1;
         self.spinner_idx = (self.spinner_idx + 1) % 10;
+        if self.has_blocking_layer() {
+            return;
+        }
         match self.mode() {
             ExecutionType::Auto => self.advance_auto(),
             ExecutionType::Assisted => self.advance_assisted(),
@@ -299,6 +302,9 @@ impl AppState {
     }
 
     pub async fn step_tick(&mut self) {
+        if self.has_blocking_layer() {
+            return;
+        }
         if self.step == AppStep::Execution
             && !self.exec_paused
             && !self.exec_cancelled
@@ -313,6 +319,10 @@ impl AppState {
             }
             self.analysis_tick += 1;
         }
+    }
+
+    fn has_blocking_layer(&self) -> bool {
+        self.show_settings || self.show_help_overlay || self.show_command_palette
     }
 
     async fn execute_real_tool(&mut self) {
