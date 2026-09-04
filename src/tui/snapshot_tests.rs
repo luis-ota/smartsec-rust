@@ -31,7 +31,7 @@ fn assert_snapshot(app: &mut AppState, expected: &[&str]) -> String {
         "{snapshot}"
     );
     assert!(snapshot.contains("SmartSec"), "{snapshot}");
-    assert!(snapshot.contains("? ajuda"), "{snapshot}");
+    assert!(snapshot.contains("f1 ajuda"), "{snapshot}");
     assert!(snapshot.contains("ctrl+p comandos"), "{snapshot}");
     for text in expected {
         assert!(snapshot.contains(text), "texto ausente: {text}\n{snapshot}");
@@ -153,14 +153,17 @@ fn settings_help_and_palette_match_80x24_snapshots() {
     app.show_help_overlay = true;
     app.overlay_return_focus = app.focus;
     app.focus = FocusTarget::HelpClose;
-    assert_snapshot(&mut app, &["Ajuda", "mover o foco", "mesmas ações"]);
+    assert_snapshot(
+        &mut app,
+        &["Ajuda", "f1", "qualquer contexto", "mesmas ações"],
+    );
 
     app.show_help_overlay = false;
     app.show_command_palette = true;
     app.focus = FocusTarget::CommandList;
     assert_snapshot(
         &mut app,
-        &["Comandos", "Salvar configurações", "enter executar"],
+        &["Comandos", "Abrir ajuda", "f1", "Salvar configurações"],
     );
 }
 

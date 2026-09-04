@@ -108,7 +108,7 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect, title: &str) {
 }
 
 fn render_status_bar(app: &mut AppState, frame: &mut Frame, area: Rect, status: &str) {
-    const HELP: &str = "? ajuda";
+    const HELP: &str = "f1 ajuda";
     const COMMANDS: &str = "ctrl+p comandos";
     let right_width = HELP.width() + 2 + COMMANDS.width() + 1;
     let right_x = area.x + area.width.saturating_sub(right_width as u16);
