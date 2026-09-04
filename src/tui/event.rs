@@ -1013,4 +1013,39 @@ mod tests {
         dispatch_action(&mut app, SemanticAction::Activate);
         assert!(!app.exec_paused);
     }
+
+    #[tokio::test]
+    async fn blocking_layers_suspend_and_resume_underlying_transitions() {
+        let mut app = app();
+        app.set_mode(ExecutionType::Auto);
+        app.step = AppStep::ToolSelect;
+        app.focus = FocusTarget::ToolList;
+        app.tool_detecting = true;
+        app.tool_detect_tick = 50;
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+
+        app.tick();
+        app.step_tick().await;
+        assert_eq!(app.step, AppStep::ToolSelect);
+        assert_eq!(app.tool_detect_tick, 50);
+        dispatch_action(&mut app, SemanticAction::CloseSettings);
+        assert_eq!(app.focus, FocusTarget::ToolList);
+        app.tick();
+        assert_eq!(app.step, AppStep::Execution);
+
+        app.step = AppStep::Analysis;
+        app.focus = FocusTarget::AnalysisCancel;
+        app.analysis_phase = crate::tui::state::AnalysisPhase::Complete;
+        app.analysis_tick = 31;
+        dispatch_action(&mut app, SemanticAction::OpenHelp);
+        app.tick();
+        app.step_tick().await;
+        assert_eq!(app.step, AppStep::Analysis);
+        assert_eq!(app.analysis_tick, 31);
+        dispatch_action(&mut app, SemanticAction::Back);
+        assert_eq!(app.focus, FocusTarget::AnalysisCancel);
+        app.step_tick().await;
+        assert_eq!(app.step, AppStep::Results);
+        assert_eq!(app.focus, FocusTarget::ResultsList);
+    }
 }
