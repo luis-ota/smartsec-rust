@@ -96,9 +96,7 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
             "Cancelar"
         },
         SemanticAction::Back,
-        focused,
-        false,
-        true,
+        chrome::ButtonState::secondary(focused),
     );
     if app.analysis_phase == AnalysisPhase::Complete {
         frame.render_widget(

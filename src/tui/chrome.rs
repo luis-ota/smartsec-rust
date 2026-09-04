@@ -24,6 +24,35 @@ pub struct ShellAreas {
     pub content: Rect,
 }
 
+pub struct ButtonState {
+    pub focused: bool,
+    pub primary: bool,
+    pub enabled: bool,
+}
+
+impl ButtonState {
+    pub const fn primary(focused: bool) -> Self {
+        Self {
+            focused,
+            primary: true,
+            enabled: true,
+        }
+    }
+
+    pub const fn secondary(focused: bool) -> Self {
+        Self {
+            focused,
+            primary: false,
+            enabled: true,
+        }
+    }
+
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
 pub fn render_shell(
     app: &mut AppState,
     frame: &mut Frame,
@@ -149,26 +178,27 @@ pub fn render_button(
     area: Rect,
     label: &str,
     action: SemanticAction,
-    focused: bool,
-    primary: bool,
-    enabled: bool,
+    state: ButtonState,
 ) {
-    let (foreground, background) = if !enabled {
+    let (foreground, background) = if !state.enabled {
         (MUTED, SURFACE)
-    } else if primary {
+    } else if state.primary {
         (Color::Black, ACCENT)
-    } else if focused {
+    } else if state.focused {
         (TEXT, SURFACE_ACTIVE)
     } else {
         (MUTED, SURFACE)
     };
     frame.render_widget(
-        Paragraph::new(format!(" {label} "))
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(foreground).bg(background).bold()),
+        Paragraph::new(format!(
+            " {}{label} ",
+            if state.focused { "> " } else { "" }
+        ))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(foreground).bg(background).bold()),
         area,
     );
-    if enabled {
+    if state.enabled {
         app.register_hit_region(area, action);
     }
 }

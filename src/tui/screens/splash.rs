@@ -72,9 +72,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         buttons[1],
         "Configurar IA",
         SemanticAction::OpenSettings,
-        app.focus == FocusTarget::SplashSettings,
-        false,
-        true,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::SplashSettings),
     );
     chrome::render_button(
         app,
@@ -82,9 +80,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         buttons[3],
         "Iniciar",
         SemanticAction::StartScan,
-        app.focus == FocusTarget::SplashStart,
-        true,
-        true,
+        chrome::ButtonState::primary(app.focus == FocusTarget::SplashStart),
     );
 }
 

@@ -205,9 +205,7 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[0],
         "Nova análise",
         SemanticAction::NewScan,
-        new_focused,
-        false,
-        true,
+        chrome::ButtonState::secondary(new_focused),
     );
     chrome::render_button(
         app,
@@ -219,9 +217,7 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
             "Exportar"
         },
         SemanticAction::ExportMarkdown,
-        export_focused,
-        true,
-        true,
+        chrome::ButtonState::primary(export_focused),
     );
     chrome::render_button(
         app,
@@ -229,9 +225,7 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[4],
         "Explicação",
         SemanticAction::ShowDidactic,
-        didactic_focused,
-        false,
-        true,
+        chrome::ButtonState::secondary(didactic_focused),
     );
 }
 
@@ -297,9 +291,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
         actions[0],
         "Voltar",
         SemanticAction::Back,
-        app.focus == FocusTarget::ResultsBack,
-        false,
-        true,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::ResultsBack),
     );
     chrome::render_button(
         app,
@@ -307,9 +299,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
         actions[2],
         "Explicação",
         SemanticAction::ShowDidactic,
-        app.focus == FocusTarget::ResultsDidactic,
-        true,
-        true,
+        chrome::ButtonState::primary(app.focus == FocusTarget::ResultsDidactic),
     );
 }
 
@@ -362,9 +352,7 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         actions[0],
         "Voltar",
         SemanticAction::Back,
-        app.focus == FocusTarget::DidacticBack,
-        false,
-        true,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::DidacticBack),
     );
 }
 

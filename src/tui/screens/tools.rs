@@ -142,9 +142,7 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[0],
         "Voltar",
         SemanticAction::Back,
-        app.focus == FocusTarget::ToolBack,
-        false,
-        true,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::ToolBack),
     );
     chrome::render_button(
         app,
@@ -152,8 +150,7 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[2],
         "Executar",
         SemanticAction::RunTools,
-        app.focus == FocusTarget::ToolRun,
-        true,
-        !app.tool_detecting && app.tools.iter().any(|tool| tool.selected),
+        chrome::ButtonState::primary(app.focus == FocusTarget::ToolRun)
+            .enabled(!app.tool_detecting && app.tools.iter().any(|tool| tool.selected)),
     );
 }
