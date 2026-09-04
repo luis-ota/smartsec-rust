@@ -276,7 +276,7 @@ fn move_vertical(app: &mut AppState, down: bool) {
         FocusTarget::ResultsList if app.result_detail_vuln.is_none() => {
             move_result_cursor(app, down)
         }
-        FocusTarget::ResultsDetail => move_detail_cursor(app, down),
+        FocusTarget::ResultsDetail => scroll_detail(app, down, 1),
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => scroll(app, down, 1),
         FocusTarget::SettingsField(SettingsField::Provider) => move_provider(app, down),
         FocusTarget::CommandList => move_command_cursor(app, down),
@@ -347,6 +347,8 @@ fn go_back(app: &mut AppState) -> bool {
     }
     if app.result_detail_vuln.is_some() {
         app.result_detail_vuln = None;
+        app.detail_scroll = 0;
+        app.detail_max_scroll = 0;
         app.focus = FocusTarget::ResultsList;
         return false;
     }
@@ -439,22 +441,12 @@ fn move_result_cursor(app: &mut AppState, down: bool) {
     }
 }
 
-fn move_detail_cursor(app: &mut AppState, down: bool) {
-    let count = app.vulnerabilities().len();
-    let Some(index) = app.result_detail_vuln else {
-        return;
-    };
-    app.result_detail_vuln = Some(if down {
-        (index + 1).min(count.saturating_sub(1))
-    } else {
-        index.saturating_sub(1)
-    });
-}
-
 fn open_vulnerability(app: &mut AppState, index: usize) {
     if index < app.vulnerabilities().len() {
         app.result_cursor = index;
         app.result_detail_vuln = Some(index);
+        app.detail_scroll = 0;
+        app.detail_max_scroll = 0;
         app.focus = FocusTarget::ResultsDetail;
     }
 }
@@ -500,9 +492,7 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
         }
         AppStep::Results => {
             if app.result_detail_vuln.is_some() {
-                for _ in 0..amount {
-                    move_detail_cursor(app, down);
-                }
+                scroll_detail(app, down, amount);
             } else {
                 for _ in 0..amount {
                     move_result_cursor(app, down);
@@ -512,6 +502,16 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
         }
         _ => {}
     }
+}
+
+fn scroll_detail(app: &mut AppState, down: bool, amount: usize) {
+    app.detail_scroll = if down {
+        app.detail_scroll
+            .saturating_add(amount)
+            .min(app.detail_max_scroll)
+    } else {
+        app.detail_scroll.saturating_sub(amount)
+    };
 }
 
 fn open_help(app: &mut AppState) {
@@ -577,6 +577,8 @@ fn export_markdown(app: &mut AppState) {
 fn new_scan(app: &mut AppState) {
     app.step = AppStep::Splash;
     app.result_detail_vuln = None;
+    app.detail_scroll = 0;
+    app.detail_max_scroll = 0;
     app.show_didactic = false;
     app.show_detail = false;
     app.md_exported = false;
@@ -718,10 +720,11 @@ mod tests {
         )
     }
 
-    fn render_app(app: &mut AppState, width: u16, height: u16) {
+    fn render_app(app: &mut AppState, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| tui::render(app, frame)).unwrap();
+        terminal.backend().to_string()
     }
 
     #[test]
@@ -1069,5 +1072,46 @@ mod tests {
         app.step_tick().await;
         assert_eq!(app.step, AppStep::Results);
         assert_eq!(app.focus, FocusTarget::ResultsList);
+    }
+
+    #[test]
+    fn long_vulnerability_detail_scrolls_with_keyboard_and_mouse() {
+        let mut app = app();
+        let mut finding = crate::domain::demo_findings::demo_all("https://exemplo.local")
+            .into_iter()
+            .next()
+            .unwrap();
+        finding.description = "Descrição técnica extensa com evidência reproduzível. ".repeat(30);
+        finding.recommendation = "Aplique a correção indicada e valide novamente. ".repeat(30);
+        app.orchestrator.findings = vec![finding];
+        app.step = AppStep::Results;
+        dispatch_action(&mut app, SemanticAction::OpenVulnerability(0));
+
+        let screen = render_app(&mut app, 80, 24);
+        assert!(app.detail_max_scroll > 0);
+        assert!(screen.contains("↑↓ rolar · linhas"));
+
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.detail_scroll, 1);
+        assert_eq!(app.result_detail_vuln, Some(0));
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 40,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.detail_scroll, 4);
+        for _ in 0..app.detail_max_scroll + 1 {
+            dispatch_action(&mut app, SemanticAction::ScrollDown);
+        }
+        assert_eq!(app.detail_scroll, app.detail_max_scroll);
+
+        app.detail_scroll = 0;
+        dispatch_action(&mut app, SemanticAction::ScrollUp);
+        assert_eq!(app.detail_scroll, 0);
+        assert_eq!(app.result_detail_vuln, Some(0));
     }
 }
