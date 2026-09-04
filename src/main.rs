@@ -66,8 +66,6 @@ struct ExecutionArgs {
     tools: Option<String>,
     llm: Option<String>,
     model: Option<String>,
-    real_nuclei: bool,
-    demo: bool,
 }
 
 impl Cli {
@@ -135,8 +133,6 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
             "--tools" => options.tools = Some(value(&mut index, "--tools")?),
             "--llm" => options.llm = Some(value(&mut index, "--llm")?),
             "--model" => options.model = Some(value(&mut index, "--model")?),
-            "--real-nuclei" => options.real_nuclei = true,
-            "--demo" => options.demo = true,
             other => {
                 anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções")
             }
@@ -150,7 +146,7 @@ fn print_help() {
     println!("SmartSec - Plataforma de análise de segurança");
     println!("Uso: smartsec <scan|tool> --target <ALVO> [OPÇÕES]");
     println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas separadas por vírgulas\n      --llm <PROVEDOR>  mock, ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n      --real-nuclei  Executa Nuclei via Podman\n  -h, --help\n  -V, --version");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -h, --help\n  -V, --version");
 }
 
 impl CommandLineInterface {
@@ -183,30 +179,6 @@ impl CommandLineInterface {
         }
     }
 
-    #[allow(dead_code)]
-    fn print_help() {
-        println!("SmartSec - Security Analysis Platform");
-        println!();
-        println!("USO:");
-        println!("  smartsec [OPCOES]");
-        println!();
-        println!("OPCOES:");
-        println!("  -u, --url <URL>               Define a URL/alvo para o scan");
-        println!("  -a, --auto                    Executa em modo automatizado (headless)");
-        println!("  -d, --demo                    Executa em modo demonstrativo (dados simulados)");
-        println!("  -p, --provider <NOME>         Provedor de IA (mock, ollama, openai)");
-        println!(
-            "  -o, --output <ARQUIVO>        Salva o relatorio Markdown no caminho especificado"
-        );
-        println!("  -h, --help                    Exibe esta ajuda");
-        println!("  -v, --version                 Exibe a versao");
-        println!();
-        println!("EXEMPLOS:");
-        println!("  smartsec");
-        println!("  smartsec --auto --url http://target.local");
-        println!("  smartsec --auto --url http://target.local --demo -o relatorio.md");
-    }
-
     async fn display_tui(initial_config: config::Configuration) -> Result<()> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -237,6 +209,7 @@ impl CommandLineInterface {
 
             let should_quit = tui::event::handle_events(app)?;
             if should_quit || app.should_quit {
+                app.shutdown_run().await;
                 return Ok(());
             }
 
@@ -244,6 +217,7 @@ impl CommandLineInterface {
             app.step_tick().await;
 
             if app.should_quit {
+                app.shutdown_run().await;
                 return Ok(());
             }
         }
@@ -257,20 +231,9 @@ impl CommandLineInterface {
         println!("═══════════════════════════════════════════════════════════");
         println!("  Target: {}", config.target_url);
         println!("  Mode:   {}", config.execution_type);
-        if config.demo_mode {
-            println!("  Dados:  DEMO (findings simulados; nenhum scanner real)");
-        } else {
-            println!("  Dados:  REAL");
-        }
+        println!("  Dados:  REAL");
         println!("  LLM:    {:?} ({})", config.llm.provider, config.llm.model);
-        println!(
-            "  Nuclei: {}",
-            if config.use_real_nuclei {
-                "REAL execution"
-            } else {
-                "emulated execution"
-            }
-        );
+        println!("  Scanners: Podman rootless");
         println!();
 
         let mut orchestrator = Orchestrator::new(config.clone());
@@ -309,13 +272,11 @@ impl CommandLineInterface {
         println!();
 
         orchestrator.build_findings();
-        if let Some(failure) = orchestrator
+        let scan_failure = orchestrator
             .execution_history
             .iter()
             .find_map(|execution| execution.execution_error.as_deref())
-        {
-            anyhow::bail!("A varredura não foi concluída: {failure}");
-        }
+            .map(str::to_owned);
         let analysis = orchestrator
             .agent
             .analyze_logs(&orchestrator.findings)
@@ -356,31 +317,42 @@ impl CommandLineInterface {
             .iter()
             .filter(|v| v.severity == Severity::Low)
             .count();
+        let info = orchestrator
+            .findings
+            .iter()
+            .filter(|v| v.severity == Severity::Info)
+            .count();
 
         println!("[3/3] Summary");
         println!("───────────────────────────────────────────────────────────");
         println!("  Total findings: {}", orchestrator.findings.len());
         println!(
-            "  CRITICAL: {}   HIGH: {}   MEDIUM: {}   LOW: {}",
-            crit, high, med, low
+            "  CRITICAL: {}   HIGH: {}   MEDIUM: {}   LOW: {}   INFO: {}",
+            crit, high, med, low, info
         );
         println!();
         println!("  Next step: {}", orchestrator.determine_next_step());
         println!("  Container: {}", orchestrator.container_id());
         println!();
-        println!("═══════════════════════════════════════════════════════════");
-        println!("  OK Relatorio exportado: smartsec-report.md");
-        if let Ok(log_path) = orchestrator.persist_scan_log() {
-            println!("  OK Log estruturado: {}", log_path.display());
-        }
-        println!("  OK Analise concluida.");
-        println!("═══════════════════════════════════════════════════════════");
-
         let output_file = config
             .output_file
             .as_deref()
             .unwrap_or("smartsec-report.md");
-        crate::report::ReportGenerator::export_to_markdown(&report, output_file)?;
+        let log_result = orchestrator.persist_scan_log();
+        let report_result =
+            crate::report::ReportGenerator::export_to_markdown(&report, output_file);
+        let log_path = log_result?;
+        report_result?;
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  OK Relatório exportado: {output_file}");
+        println!("  OK Log estruturado: {}", log_path.display());
+        if let Some(failure) = scan_failure {
+            println!("  FALHA Varredura concluída com erros.");
+            println!("═══════════════════════════════════════════════════════════");
+            anyhow::bail!("A varredura não foi concluída: {failure}");
+        }
+        println!("  OK Análise concluída.");
+        println!("═══════════════════════════════════════════════════════════");
         Ok(())
     }
 }
@@ -401,6 +373,14 @@ fn build_config(
     } else {
         ExecutionType::Assisted
     };
+    if options.tools.is_none() && manual_tool.is_none() {
+        let catalog = ToolInfo::all();
+        config.active_tools.retain(|selected| {
+            catalog
+                .iter()
+                .any(|tool| tool.name.eq_ignore_ascii_case(selected))
+        });
+    }
     if let Some(tools) = &options.tools {
         config.active_tools = tools
             .split(',')
@@ -430,10 +410,6 @@ fn build_config(
         }
         config.llm.model = model.clone();
     }
-    if options.real_nuclei {
-        config.use_real_nuclei = true;
-    }
-    config.demo_mode = options.demo;
     config.validate_target().map_err(anyhow::Error::msg)?;
     config.llm.validate().map_err(anyhow::Error::msg)?;
     Ok(config)
@@ -454,7 +430,6 @@ fn validate_tools(active_tools: &[String]) -> Result<()> {
 
 fn parse_provider(provider: &str) -> Result<config::llm_config::LlmProviderKind> {
     match provider.to_ascii_lowercase().as_str() {
-        "mock" | "integrado" => Ok(config::llm_config::LlmProviderKind::Mock),
         "ollama" => Ok(config::llm_config::LlmProviderKind::Ollama),
         "openai" => Ok(config::llm_config::LlmProviderKind::OpenAI),
         "nvidia-nim" | "nvidia_nim" => Ok(config::llm_config::LlmProviderKind::NvidiaNim),
@@ -508,8 +483,6 @@ mod tests {
             tools: Some("Nmap".to_owned()),
             llm: None,
             model: None,
-            real_nuclei: false,
-            demo: false,
         };
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
         assert_eq!(configured.active_tools, vec!["Nmap"]);
@@ -522,8 +495,6 @@ mod tests {
             tools: Some("Inexistente".to_owned()),
             llm: None,
             model: None,
-            real_nuclei: false,
-            demo: false,
         };
         assert!(build_config(&options, "não é um alvo".to_owned(), None, true).is_err());
         assert!(build_config(
@@ -539,11 +510,14 @@ mod tests {
     }
 
     #[test]
-    fn demo_requires_explicit_cli_flag() {
-        let mut config = config::Configuration::default();
-        config.demo_mode = ["--demo".to_owned()].iter().any(|arg| arg == "--demo");
-        assert!(config.demo_mode);
-        assert!(!config::Configuration::default().demo_mode);
+    fn rejects_removed_demo_mode() {
+        assert!(Cli::parse(&[
+            "scan".to_owned(),
+            "--target".to_owned(),
+            "192.0.2.10".to_owned(),
+            "--demo".to_owned(),
+        ])
+        .is_err());
     }
 }
 

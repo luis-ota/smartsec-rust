@@ -20,6 +20,8 @@ pub struct ToolExecutionRecord {
     pub duration_ms: u128,
     pub tool_version: Option<String>,
     pub image: Option<String>,
+    #[serde(default)]
+    pub execution_error: Option<String>,
 }
 
 /// Metadados e log estruturado completo de um scan de segurança.
@@ -37,6 +39,8 @@ pub struct ScanMetadata {
     pub high_count: usize,
     pub medium_count: usize,
     pub low_count: usize,
+    #[serde(default)]
+    pub info_count: usize,
     pub findings: Vec<serde_json::Value>,
     pub agent_analysis: String,
     #[serde(default)]
@@ -84,6 +88,10 @@ impl ScanMetadata {
             .iter()
             .filter(|v| v.severity == Severity::Low)
             .count();
+        let info_count = findings
+            .iter()
+            .filter(|v| v.severity == Severity::Info)
+            .count();
 
         Self {
             scan_id,
@@ -98,6 +106,7 @@ impl ScanMetadata {
             high_count,
             medium_count,
             low_count,
+            info_count,
             findings: findings
                 .iter()
                 .map(|finding| serde_json::to_value(finding).unwrap_or(serde_json::Value::Null))
@@ -210,30 +219,51 @@ mod tests {
                 duration_ms: 10,
                 tool_version: Some("test".to_string()),
                 image: None,
+                execution_error: None,
             }],
-            vec![Vulnerability {
-                title: "Test Vuln".to_string(),
-                severity: Severity::High,
-                description: "Test description".to_string(),
-                tool: "Nuclei".to_string(),
-                recommendation: "Fix it".to_string(),
-                didactic: "Didactic text".to_string(),
-                source: FindingSource::Real,
-                target: "http://target.local".to_string(),
-                evidence: "test evidence".to_string(),
-                detected_at: "2026-08-31T12:01:00Z".to_string(),
-            }],
+            vec![
+                Vulnerability {
+                    title: "Test Vuln".to_string(),
+                    severity: Severity::High,
+                    description: "Test description".to_string(),
+                    tool: "Nuclei".to_string(),
+                    recommendation: "Fix it".to_string(),
+                    didactic: "Didactic text".to_string(),
+                    source: FindingSource::Real,
+                    target: "http://target.local".to_string(),
+                    evidence: "test evidence".to_string(),
+                    detected_at: "2026-08-31T12:01:00Z".to_string(),
+                },
+                Vulnerability {
+                    title: "Informational finding".to_string(),
+                    severity: Severity::Info,
+                    description: "Informational description".to_string(),
+                    tool: "Nmap".to_string(),
+                    recommendation: "Review it".to_string(),
+                    didactic: "Didactic text".to_string(),
+                    source: FindingSource::Real,
+                    target: "http://target.local".to_string(),
+                    evidence: "port open".to_string(),
+                    detected_at: "2026-08-31T12:01:00Z".to_string(),
+                },
+            ],
             "AI Analysis text".to_string(),
         );
+
+        let mut legacy_json = serde_json::to_value(&metadata).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("info_count");
+        let legacy: ScanMetadata = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(legacy.info_count, 0);
 
         let path = save_scan_log_to_dir(&metadata, &temp_dir).expect("save should succeed");
         assert!(path.exists());
 
         let loaded = load_scan_log_from_file(&path).expect("load should succeed");
         assert_eq!(loaded.scan_id, "scan_20260831_120000");
-        assert_eq!(loaded.findings_count, 1);
+        assert_eq!(loaded.findings_count, 2);
         assert_eq!(loaded.high_count, 1);
         assert_eq!(loaded.critical_count, 0);
+        assert_eq!(loaded.info_count, 1);
 
         let summaries = list_scan_logs_from_dir(&temp_dir).expect("list should succeed");
         assert_eq!(summaries.len(), 1);

@@ -144,15 +144,6 @@ fn settings_fields(app: &AppState) -> Vec<(&'static str, String, SettingsField)>
             app.settings_input_fallback_model.clone(),
             SettingsField::FallbackModel,
         ),
-        (
-            "Nuclei real",
-            if app.settings_real_nuclei {
-                "[x] Ativo".to_string()
-            } else {
-                "[ ] Inativo".to_string()
-            },
-            SettingsField::RealNuclei,
-        ),
     ]
 }
 
@@ -211,10 +202,8 @@ mod tests {
                 api_key: "secret-value".to_string(),
                 ..LlmConfig::default()
             },
-            use_real_nuclei: false,
             nuclei_templates_path: None,
             nuclei_templates_commit: None,
-            demo_mode: false,
             output_file: None,
             show_help: false,
             show_version: false,
@@ -231,10 +220,9 @@ mod tests {
         assert!(!screen.contains("secret-value"));
         assert!(screen.contains("********"));
         assert!(screen.contains("Configurações"));
-        assert!(screen.contains("Integrado"));
+        assert!(screen.contains("Ollama"));
         assert!(screen.contains("Consentimento remoto"));
         assert!(screen.contains("Alternativa local"));
-        assert!(screen.contains("Nuclei real"));
         assert!(screen.contains("Cancelar"));
         assert!(screen.contains("Salvar"));
     }
@@ -243,8 +231,8 @@ mod tests {
     fn scrolls_form_to_keep_focused_field_visible() {
         let mut app = AppState::new(Configuration::default());
         app.show_settings = true;
-        app.settings_field = SettingsField::RealNuclei;
-        app.focus = FocusTarget::SettingsField(SettingsField::RealNuclei);
+        app.settings_field = SettingsField::FallbackModel;
+        app.focus = FocusTarget::SettingsField(SettingsField::FallbackModel);
         let backend = TestBackend::new(80, 12);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -254,6 +242,6 @@ mod tests {
         let screen = terminal.backend().to_string();
 
         assert!(app.settings_scroll > 0);
-        assert!(screen.contains("Nuclei real"));
+        assert!(screen.contains("Modelo alternativo"));
     }
 }

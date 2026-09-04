@@ -170,7 +170,6 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::RunTools => run_tools(app),
         SemanticAction::ScrollUp => scroll(app, false, 3),
         SemanticAction::ScrollDown => scroll(app, true, 3),
-        SemanticAction::PauseResume => app.pause_or_resume(),
         SemanticAction::CancelRun => cancel_execution(app),
         SemanticAction::OpenVulnerability(index) => open_vulnerability(app, index),
         SemanticAction::ExportMarkdown => export_markdown(app),
@@ -242,7 +241,6 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
         AppStep::Execution => vec![
             FocusTarget::ExecutionLogs,
             FocusTarget::ExecutionBack,
-            FocusTarget::ExecutionPause,
             FocusTarget::ExecutionCancel,
         ],
         AppStep::Analysis => vec![FocusTarget::AnalysisCancel],
@@ -307,9 +305,8 @@ fn activate_focus(app: &mut AppState) {
         | FocusTarget::ResultsBack
         | FocusTarget::DidacticBack => SemanticAction::Back,
         FocusTarget::ToolRun => SemanticAction::RunTools,
-        FocusTarget::ExecutionPause if !app.exec_cancelled => SemanticAction::PauseResume,
         FocusTarget::ExecutionCancel if !app.exec_cancelled => SemanticAction::CancelRun,
-        FocusTarget::ExecutionPause | FocusTarget::ExecutionCancel => return,
+        FocusTarget::ExecutionCancel => return,
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => return,
         FocusTarget::ResultsList => SemanticAction::OpenVulnerability(app.result_cursor),
         FocusTarget::ResultsDetail => return,
@@ -380,9 +377,13 @@ fn go_back(app: &mut AppState) -> bool {
 }
 
 fn start_scan(app: &mut AppState) {
-    if app.config.target_url.is_empty() {
-        app.config.target_url = "http://localhost:8080".to_string();
+    app.config.target_url = app.config.target_url.trim().to_string();
+    if let Err(error) = app.config.validate_target() {
+        app.run_error = Some(error);
+        app.focus = FocusTarget::SplashTarget;
+        return;
     }
+    app.run_error = None;
     app.step = AppStep::ToolSelect;
     app.tool_detecting = true;
     app.tool_detect_tick = 0;
@@ -578,8 +579,13 @@ fn cancel_execution(app: &mut AppState) {
 
 fn export_markdown(app: &mut AppState) {
     if app.step == AppStep::Results {
-        let _ = std::fs::write("smartsec-report.md", app.export_md());
-        app.md_exported = true;
+        match std::fs::write("smartsec-report.md", app.export_md()) {
+            Ok(()) => app.md_exported = true,
+            Err(error) => {
+                app.md_exported = false;
+                app.run_error = Some(format!("Falha ao exportar relatório: {error}"));
+            }
+        }
         app.focus = FocusTarget::ResultsExport;
     }
 }
@@ -612,7 +618,6 @@ fn activate_settings_field(app: &mut AppState, field: SettingsField) {
         SettingsField::FallbackEnabled => {
             app.settings_fallback_enabled = !app.settings_fallback_enabled
         }
-        SettingsField::RealNuclei => app.settings_real_nuclei = !app.settings_real_nuclei,
         _ => {}
     }
 }
@@ -639,7 +644,10 @@ fn insert_text(app: &mut AppState, text: &str) {
         return;
     }
     match app.focus {
-        FocusTarget::SplashTarget => app.config.target_url.push_str(text),
+        FocusTarget::SplashTarget => {
+            app.config.target_url.push_str(text);
+            app.run_error = None;
+        }
         FocusTarget::SettingsField(SettingsField::BaseUrl) => {
             app.settings_input_base_url.push_str(text)
         }
@@ -671,6 +679,7 @@ fn delete_backward(app: &mut AppState) {
     match app.focus {
         FocusTarget::SplashTarget => {
             app.config.target_url.pop();
+            app.run_error = None;
         }
         FocusTarget::SettingsField(SettingsField::BaseUrl) => {
             app.settings_input_base_url.pop();
@@ -709,6 +718,21 @@ mod tests {
         AppState::new(Configuration::default())
     }
 
+    fn finding() -> crate::domain::vulnerability::Vulnerability {
+        crate::domain::vulnerability::Vulnerability {
+            title: "Achado de teste".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "Descrição técnica".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Aplique a correção".to_string(),
+            didactic: "Explicação didática".to_string(),
+            source: crate::domain::vulnerability::FindingSource::Real,
+            target: "https://exemplo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-04T14:00:00Z".to_string(),
+        }
+    }
+
     fn press(app: &mut AppState, code: KeyCode) -> bool {
         handle_key(app, KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -740,7 +764,9 @@ mod tests {
     #[test]
     fn keyboard_and_mouse_start_scan_are_equivalent() {
         let mut keyboard = app();
+        keyboard.config.target_url = "https://exemplo.local".to_string();
         let mut mouse = app();
+        mouse.config.target_url = "https://exemplo.local".to_string();
         render_app(&mut mouse, 80, 24);
 
         assert!(!press(&mut keyboard, KeyCode::Enter));
@@ -752,27 +778,36 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_and_mouse_toggle_the_same_scrolled_tool() {
+    fn invalid_target_stays_on_splash_and_shows_the_error() {
+        let mut app = app();
+        app.config.target_url = "ftp://exemplo.local".to_string();
+
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.step, AppStep::Splash);
+        assert!(app.run_error.as_deref().unwrap().contains("HTTP ou HTTPS"));
+    }
+
+    #[test]
+    fn keyboard_and_mouse_toggle_the_same_tool() {
         let mut keyboard = app();
         keyboard.step = AppStep::ToolSelect;
         keyboard.tool_detecting = false;
         keyboard.focus = FocusTarget::ToolList;
-        keyboard.tool_cursor = 3;
-        keyboard.tool_scroll = 3;
+        keyboard.tool_cursor = 1;
         let mut mouse = app();
         mouse.step = AppStep::ToolSelect;
         mouse.tool_detecting = false;
-        mouse.tool_cursor = 3;
-        mouse.tool_scroll = 3;
-        render_app(&mut mouse, 80, 10);
+        mouse.tool_cursor = 1;
+        render_app(&mut mouse, 80, 16);
 
         press(&mut keyboard, KeyCode::Char(' '));
-        click_action(&mut mouse, &SemanticAction::ToggleTool(3));
+        click_action(&mut mouse, &SemanticAction::ToggleTool(1));
 
         let keyboard_selection: Vec<_> = keyboard.tools.iter().map(|tool| tool.selected).collect();
         let mouse_selection: Vec<_> = mouse.tools.iter().map(|tool| tool.selected).collect();
         assert_eq!(keyboard_selection, mouse_selection);
-        assert_eq!(mouse.tool_cursor, 3);
+        assert_eq!(mouse.tool_cursor, 1);
     }
 
     #[test]
@@ -875,9 +910,9 @@ mod tests {
         let mut app = app();
         app.step = AppStep::ToolSelect;
         app.tool_detecting = false;
-        app.tool_cursor = 4;
-        app.tool_scroll = 3;
-        render_app(&mut app, 80, 10);
+        app.tool_cursor = 1;
+        app.tool_scroll = 0;
+        render_app(&mut app, 80, 16);
         let indices: Vec<_> = app
             .hit_regions
             .iter()
@@ -886,14 +921,14 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(indices.first(), Some(&3));
+        assert_eq!(indices.first(), Some(&0));
         assert!(indices.iter().all(|index| *index >= app.tool_scroll));
     }
 
     #[test]
     fn result_hitboxes_include_scroll_offset_and_open_the_right_item() {
         let mut app = app();
-        app.config.demo_mode = true;
+        app.orchestrator.findings = vec![finding()];
         app.step = AppStep::Results;
         app.result_cursor = app.vulnerabilities().len() - 1;
         render_app(&mut app, 80, 24);
@@ -1069,9 +1104,9 @@ mod tests {
 
         dispatch_action(&mut app, SemanticAction::Back);
         app.exec_cancelled = true;
-        app.focus = FocusTarget::ExecutionPause;
+        app.focus = FocusTarget::ExecutionCancel;
         dispatch_action(&mut app, SemanticAction::Activate);
-        assert!(!app.exec_paused);
+        assert!(app.exec_cancelled);
     }
 
     #[tokio::test]
@@ -1112,10 +1147,7 @@ mod tests {
     #[test]
     fn long_vulnerability_detail_scrolls_with_keyboard_and_mouse() {
         let mut app = app();
-        let mut finding = crate::domain::demo_findings::demo_all("https://exemplo.local")
-            .into_iter()
-            .next()
-            .unwrap();
+        let mut finding = finding();
         finding.description = "Descrição técnica extensa com evidência reproduzível. ".repeat(30);
         finding.recommendation = "Aplique a correção indicada e valide novamente. ".repeat(30);
         app.orchestrator.findings = vec![finding];

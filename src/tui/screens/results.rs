@@ -17,7 +17,17 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .iter()
         .filter(|item| item.severity == Severity::Critical)
         .count();
-    let status = if app.md_exported {
+    let status = if let Some(error) = &app.run_error {
+        format!(
+            "Execução concluída com falhas · {}",
+            chrome::truncate_width(error, 60)
+        )
+    } else if let Some(warning) = &app.llm_warning {
+        format!(
+            "Execução concluída com alternativa local · {}",
+            chrome::truncate_width(warning, 50)
+        )
+    } else if app.md_exported {
         "Relatório Markdown exportado".to_string()
     } else if vulnerabilities.is_empty() {
         "Análise concluída sem vulnerabilidades".to_string()
@@ -43,7 +53,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
 fn render_overview(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(area);
-    if rows[0].width < 100 {
+    if rows[0].width < 120 {
         let stacked = Layout::vertical([Constraint::Length(6), Constraint::Min(1)]).split(rows[0]);
         render_summary(app, frame, stacked[0]);
         render_list(app, frame, stacked[1]);
@@ -71,7 +81,34 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
     let high = counts(Severity::High);
     let medium = counts(Severity::Medium);
     let low = counts(Severity::Low);
-    let lines = if vulnerabilities.is_empty() {
+    let info = counts(Severity::Info);
+    let lines = if let Some(error) = &app.run_error {
+        vec![
+            Line::styled(
+                chrome::truncate_width(error, inner.width as usize),
+                Style::default().fg(DANGER).bold(),
+            ),
+            Line::from(vec![
+                metric("críticas", critical, DANGER),
+                Span::raw("   "),
+                metric("altas", high, Color::Rgb(220, 130, 90)),
+                Span::raw("   "),
+                metric("médias", medium, WARNING),
+            ]),
+            Line::from(vec![
+                metric("baixas", low, ACCENT),
+                Span::raw("   "),
+                metric("informativas", info, MUTED),
+            ]),
+            Line::styled(
+                app.audit_log_path.as_ref().map_or_else(
+                    || "Log de auditoria indisponível".to_string(),
+                    |path| format!("Auditoria: {}", path.display()),
+                ),
+                Style::default().fg(MUTED),
+            ),
+        ]
+    } else if vulnerabilities.is_empty() {
         vec![
             Line::styled(
                 "Nenhum achado identificado.",
@@ -90,10 +127,12 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
                 metric("altas", high, Color::Rgb(220, 130, 90)),
                 Span::raw("   "),
                 metric("médias", medium, WARNING),
-                Span::raw("   "),
-                metric("baixas", low, ACCENT),
             ]),
-            Line::from(""),
+            Line::from(vec![
+                metric("baixas", low, ACCENT),
+                Span::raw("   "),
+                metric("informativas", info, MUTED),
+            ]),
             Line::from(vec![
                 Span::styled("alvo  ", Style::default().fg(MUTED)),
                 Span::styled(
@@ -104,6 +143,13 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
                     Style::default().fg(TEXT),
                 ),
             ]),
+            Line::styled(
+                app.audit_log_path.as_ref().map_or_else(
+                    || "auditoria  aguardando persistência".to_string(),
+                    |path| format!("auditoria  {}", path.display()),
+                ),
+                Style::default().fg(MUTED),
+            ),
         ]
     };
     frame.render_widget(

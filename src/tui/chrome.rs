@@ -152,8 +152,6 @@ fn render_status_bar(app: &mut AppState, frame: &mut Frame, area: Rect, status: 
 fn status_color(app: &AppState) -> Color {
     if app.exec_cancelled || app.llm_warning.is_some() {
         DANGER
-    } else if app.exec_paused {
-        WARNING
     } else {
         SUCCESS
     }

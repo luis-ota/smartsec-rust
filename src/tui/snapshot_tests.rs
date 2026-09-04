@@ -2,6 +2,8 @@ use super::chrome::{ACCENT, SURFACE};
 use super::interaction::{FocusTarget, SemanticAction};
 use super::state::{AnalysisPhase, AppState, AppStep, ToolStatus};
 use crate::config::Configuration;
+use crate::domain::vulnerability::{FindingSource, Vulnerability};
+use crate::domain::Severity;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
@@ -47,6 +49,21 @@ fn app() -> AppState {
     AppState::new(Configuration::default())
 }
 
+fn finding() -> Vulnerability {
+    Vulnerability {
+        title: "Achado de teste".to_string(),
+        severity: Severity::Critical,
+        description: "Descrição técnica".to_string(),
+        tool: "Nuclei".to_string(),
+        recommendation: "Aplique a correção".to_string(),
+        didactic: "Explicação didática".to_string(),
+        source: FindingSource::Real,
+        target: "https://exemplo.local".to_string(),
+        evidence: "evidência".to_string(),
+        detected_at: "2026-09-04T14:00:00Z".to_string(),
+    }
+}
+
 #[test]
 fn splash_matches_80x24_snapshot() {
     let mut app = app();
@@ -85,10 +102,6 @@ fn execution_states_match_80x24_snapshots() {
     app.focus = FocusTarget::ExecutionLogs;
     assert_snapshot(&mut app, &["Execução", "Aguardando a primeira saída"]);
 
-    app.exec_paused = true;
-    assert_snapshot(&mut app, &["Execução pausada", "Retomar"]);
-
-    app.exec_paused = false;
     app.exec_logs = vec!["FALHA: ferramenta indisponível".to_string()];
     app.tools[0].status = ToolStatus::Failed;
     assert_snapshot(&mut app, &["FALHA: ferramenta indisponível"]);
@@ -120,7 +133,7 @@ fn result_empty_list_detail_and_didactic_match_80x24_snapshots() {
     app.focus = FocusTarget::ResultsList;
     assert_snapshot(&mut app, &["Nenhum achado identificado", "Nova análise"]);
 
-    app.config.demo_mode = true;
+    app.orchestrator.findings = vec![finding()];
     assert_snapshot(&mut app, &["Achados", "CRÍTICA", "Exportar"]);
 
     app.result_detail_vuln = Some(0);
