@@ -21,6 +21,7 @@ pub enum FocusTarget {
     ResultsNewScan,
     ResultsExport,
     ResultsDidactic,
+    ResultsDetail,
     ResultsBack,
     DidacticContent,
     DidacticBack,

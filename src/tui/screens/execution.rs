@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Gauge, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Gauge, Paragraph},
     Frame,
 };
 
@@ -200,9 +200,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .collect();
 
     let log_text = Text::from(visible_lines);
-    let logs = Paragraph::new(log_text)
-        .style(Style::default().bg(Color::Rgb(8, 12, 8)))
-        .wrap(Wrap { trim: false });
+    let logs = Paragraph::new(log_text).style(Style::default().bg(Color::Rgb(8, 12, 8)));
     frame.render_widget(logs, inner);
 }
 
