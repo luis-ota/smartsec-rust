@@ -264,11 +264,45 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
             inner.width as usize,
             SUCCESS,
         );
-        frame.render_widget(
-            Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
-            inner,
+        let has_scroll = lines.len() > inner.height as usize;
+        let indicator_height = u16::from(has_scroll);
+        let viewport = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(indicator_height),
         );
+        let visible = viewport.height.max(1) as usize;
+        app.detail_max_scroll = lines.len().saturating_sub(visible);
+        app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
+        let total = lines.len();
+        let visible_lines: Vec<_> = lines
+            .into_iter()
+            .skip(app.detail_scroll)
+            .take(visible)
+            .collect();
+        frame.render_widget(
+            Paragraph::new(Text::from(visible_lines)).style(Style::default().bg(SURFACE)),
+            viewport,
+        );
+        if has_scroll {
+            let first = app.detail_scroll + 1;
+            let last = (app.detail_scroll + visible).min(total);
+            frame.render_widget(
+                Paragraph::new(format!("↑↓ rolar · linhas {first}-{last} de {total}"))
+                    .alignment(ratatui::layout::Alignment::Right)
+                    .style(Style::default().fg(ACCENT).bg(SURFACE)),
+                Rect::new(
+                    inner.x,
+                    inner.y + inner.height.saturating_sub(1),
+                    inner.width,
+                    1,
+                ),
+            );
+        }
     } else {
+        app.detail_scroll = 0;
+        app.detail_max_scroll = 0;
         frame.render_widget(
             Paragraph::new("O achado selecionado não está mais disponível.")
                 .style(Style::default().fg(DANGER).bg(SURFACE)),
