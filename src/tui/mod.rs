@@ -1,16 +1,11 @@
+pub mod commands;
 pub mod event;
 pub mod interaction;
 pub mod screens;
 pub mod state;
 
 use crate::tui::state::AppState;
-use ratatui::{
-    layout::Rect,
-    style::{Color, Style, Stylize},
-    text::{Line, Span},
-    widgets::{Paragraph, Wrap},
-    Frame,
-};
+use ratatui::{layout::Rect, Frame};
 
 pub fn render(app: &mut AppState, frame: &mut Frame) {
     let area = frame.area();
@@ -28,28 +23,11 @@ pub fn render(app: &mut AppState, frame: &mut Frame) {
         }
     }
 
-    if app.command_palette_hint.is_some() {
-        render_command_palette(app, frame, area);
+    if app.show_help_overlay {
+        screens::overlays::render_help(app, frame, area);
+    } else if app.show_command_palette {
+        screens::overlays::render_command_palette(app, frame, area);
     }
-}
-
-fn render_command_palette(app: &AppState, frame: &mut Frame, area: Rect) {
-    let hint = app.command_palette_hint.as_deref().unwrap_or("C-x _");
-    let palette_height: u16 = 3;
-    let palette_area = Rect {
-        x: area.x,
-        y: area.y + area.height.saturating_sub(palette_height),
-        width: area.width,
-        height: palette_height,
-    };
-    let line = Line::from(vec![
-        Span::styled(" ▸ ", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(hint, Style::default().fg(Color::White).bold()),
-    ]);
-    let para = Paragraph::new(line)
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(para, palette_area);
 }
 
 use crate::tui::state::AppStep;

@@ -28,6 +28,8 @@ pub enum FocusTarget {
     SettingsField(SettingsField),
     SettingsSave,
     SettingsCancel,
+    HelpClose,
+    CommandList,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +62,9 @@ pub enum SemanticAction {
     CloseSettings,
     InsertText(String),
     DeleteBackward,
+    OpenHelp,
+    OpenCommandPalette,
+    ExecuteCommand(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
