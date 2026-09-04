@@ -3,7 +3,7 @@ use crate::tui::chrome::{self, ACCENT, MUTED, SURFACE, TEXT};
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::AppState;
 use ratatui::{
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::Paragraph,
@@ -29,6 +29,10 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     } else {
         shell.content
     };
+    let page = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(content);
+    let form = Layout::vertical([Constraint::Length(15)])
+        .flex(Flex::Center)
+        .split(page[0])[0];
     let rows = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(1),
@@ -37,10 +41,8 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(3),
-        Constraint::Min(1),
-        Constraint::Length(2),
     ])
-    .split(content);
+    .split(form);
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -65,7 +67,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(12),
     ])
-    .split(rows[8]);
+    .split(page[1]);
     chrome::render_button(
         app,
         frame,
