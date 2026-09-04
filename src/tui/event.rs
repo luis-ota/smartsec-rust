@@ -32,6 +32,10 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return false;
     }
 
+    if key.code == KeyCode::F(1) {
+        return dispatch_action(app, SemanticAction::OpenHelp);
+    }
+
     if app.show_help_overlay {
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return dispatch_action(app, SemanticAction::OpenCommandPalette);
@@ -518,6 +522,9 @@ fn scroll_detail(app: &mut AppState, down: bool, amount: usize) {
 }
 
 fn open_help(app: &mut AppState) {
+    if app.show_help_overlay {
+        return;
+    }
     if !app.show_command_palette {
         app.overlay_return_focus = app.focus;
     }
@@ -962,6 +969,31 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         assert_eq!(app.settings_input_base_url, "https://api.exemplo.local/v1?");
         assert!(!app.show_help_overlay);
+
+        app.settings_input_timeout = "45".to_string();
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Timeout));
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.settings_input_timeout, "45");
+        assert!(!app.show_help_overlay);
+    }
+
+    #[test]
+    fn f1_opens_help_globally_and_footer_is_clickable() {
+        let mut keyboard = app();
+        keyboard.config.target_url = "https://exemplo.local/?q=teste".to_string();
+        keyboard.focus = FocusTarget::SplashTarget;
+
+        press(&mut keyboard, KeyCode::F(1));
+
+        assert!(keyboard.show_help_overlay);
+        assert_eq!(keyboard.focus, FocusTarget::HelpClose);
+        assert_eq!(keyboard.config.target_url, "https://exemplo.local/?q=teste");
+
+        let mut mouse = app();
+        render_app(&mut mouse, 80, 24);
+        click_action(&mut mouse, &SemanticAction::OpenHelp);
+        assert!(mouse.show_help_overlay);
+        assert_eq!(mouse.focus, FocusTarget::HelpClose);
     }
 
     #[test]

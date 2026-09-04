@@ -29,7 +29,7 @@ impl CommandItem {
 pub fn command_items(app: &AppState) -> Vec<CommandItem> {
     let mut items = vec![CommandItem::new(
         "Abrir ajuda",
-        "?",
+        "f1",
         SemanticAction::OpenHelp,
     )];
     if app.show_settings {
