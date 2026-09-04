@@ -5,6 +5,9 @@ pub mod interaction;
 pub mod screens;
 pub mod state;
 
+#[cfg(test)]
+mod snapshot_tests;
+
 use crate::tui::state::AppState;
 use ratatui::Frame;
 
