@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context};
-use async_trait::async_trait;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,7 +8,7 @@ use tokio::process::Command;
 
 static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const PODMAN_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
-const ROOTLESS_NETWORK: &str = "pasta";
+const ROOTLESS_NETWORK: &str = "pasta:--map-host-loopback=169.254.1.2";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionStatus {
@@ -94,6 +93,8 @@ impl PodmanExecutor {
                 "--read-only",
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,nodev,size=128m",
+                "--tmpfs",
+                "/root/.config:rw,noexec,nosuid,nodev,size=16m",
             ])
             .args(mounts.iter().flat_map(|(host, container)| {
                 [
@@ -368,53 +369,6 @@ where
     Ok(bytes)
 }
 
-#[async_trait]
-pub trait SandboxManager: Send + Sync {
-    fn create_isolated_environment(&self, image_name: &str) -> Result<String, anyhow::Error>;
-
-    fn run_command(&self, container_id: &str, command: &str) -> Result<String, anyhow::Error>;
-
-    fn destroy_environment(&self, container_id: &str) -> Result<(), anyhow::Error>;
-}
-
-pub struct LocalSandbox;
-
-#[async_trait]
-#[allow(dead_code)]
-impl SandboxManager for LocalSandbox {
-    fn create_isolated_environment(&self, image_name: &str) -> Result<String, anyhow::Error> {
-        Ok(format!(
-            "local-{}",
-            image_name.replace(':', "-").replace('/', "_")
-        ))
-    }
-
-    fn run_command(&self, _container_id: &str, command: &str) -> Result<String, anyhow::Error> {
-        Ok(format!("[local-sandbox] $ {}", command))
-    }
-
-    fn destroy_environment(&self, _container_id: &str) -> Result<(), anyhow::Error> {
-        Ok(())
-    }
-}
-
-pub struct MockSandbox;
-
-#[async_trait]
-impl SandboxManager for MockSandbox {
-    fn create_isolated_environment(&self, image_name: &str) -> Result<String, anyhow::Error> {
-        Ok(format!("mock-{}", image_name))
-    }
-
-    fn run_command(&self, container_id: &str, command: &str) -> Result<String, anyhow::Error> {
-        Ok(format!("[mock-sandbox:{}] $ {}", container_id, command))
-    }
-
-    fn destroy_environment(&self, _container_id: &str) -> Result<(), anyhow::Error> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,9 +447,10 @@ mod tests {
         assert!(result.duration <= Duration::from_secs(1));
         let calls = fake.calls();
         assert!(calls.contains("create --name smartsec-"));
-        assert!(calls.contains("--network pasta"));
+        assert!(calls.contains("--network pasta:--map-host-loopback=169.254.1.2"));
         assert!(calls.contains("--cap-drop all"));
         assert!(calls.contains("--read-only"));
+        assert!(calls.contains("--tmpfs /root/.config:rw,noexec,nosuid,nodev,size=16m"));
         assert!(calls.contains("example/scanner:1 scan target"));
         assert!(calls.contains("rm --force --ignore container-123"));
     }

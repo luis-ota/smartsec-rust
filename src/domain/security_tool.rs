@@ -16,44 +16,9 @@ impl ToolInfo {
                 category: "RECON",
             },
             ToolInfo {
-                name: "ZAP",
-                description: "OWASP ZAP - scanner de aplicações web",
-                category: "DAST",
-            },
-            ToolInfo {
-                name: "Nikto",
-                description: "Scanner de servidores web",
-                category: "DAST",
-            },
-            ToolInfo {
-                name: "SQLMap",
-                description: "Detector de injeção SQL",
-                category: "DAST",
-            },
-            ToolInfo {
                 name: "Nuclei",
                 description: "Scanner de vulnerabilidades (CVEs)",
                 category: "DAST",
-            },
-            ToolInfo {
-                name: "BurpSuite",
-                description: "Scanner de vulnerabilidades web",
-                category: "DAST",
-            },
-            ToolInfo {
-                name: "Trivy",
-                description: "Scanner de containers e IaC",
-                category: "SCA",
-            },
-            ToolInfo {
-                name: "Snyk",
-                description: "Scanner de vulnerabilidades em dependências",
-                category: "SCA",
-            },
-            ToolInfo {
-                name: "Bandit",
-                description: "Linter de segurança para Python",
-                category: "SAST",
             },
         ]
     }

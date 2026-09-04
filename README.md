@@ -21,16 +21,19 @@ Plataforma de analise de seguranca — prototipo escrito em Rust com interface d
 
 ## Aviso
 
-Este e um **prototipo / prova de conceito**. A maioria das ferramentas de seguranca sao emuladas (mock). Nmap e Nuclei reais executam somente em containers Podman rootless; o binario de scanner nunca e chamado diretamente no host.
+Este e um **prototipo / prova de conceito**. O catalogo atual oferece Nmap e
+Nuclei reais, executados somente em containers Podman rootless; os binarios dos
+scanners nunca sao chamados diretamente no host. As demais ferramentas
+previstas no TCC ainda nao fazem parte do catalogo executavel.
 
 ## Funcionalidades
 
 - **TUI** construida com [ratatui](https://crates.io/crates/ratatui) + [crossterm](https://crates.io/crates/crossterm)
-- **Modo headless** via `--auto --url <alvo>`
+- **Modo headless** via `scan --target <alvo>`
 - **Nmap real** via Podman rootless, com portas e serviços extraídos do XML
 - **Suporte a mouse** — todos os botoes e listas sao clicaveis
 - **Nuclei real** — imagem fixada por digest, templates montados somente-leitura e plano Nmap/IA aplicado aos argumentos
-- **Analise IA** (integracao com LLM — mock por padrao, suporta OpenAI / Ollama / NVIDIA NIM)
+- **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM
 - **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes e explicacoes didaticas
 
 ## Requisitos
@@ -45,6 +48,10 @@ Este e um **prototipo / prova de conceito**. A maioria das ferramentas de segura
 O executor sempre usa `--network pasta` em containers rootless. Essa rede
 mantem o isolamento do container sem exigir privilegios de root e evita o
 backend removido `slirp4netns`; nao ha fallback silencioso para outro driver.
+O endereco reservado `169.254.1.2` dentro dos scanners aponta para o loopback
+do host. Assim, uma aplicacao autorizada publicada somente em `127.0.0.1:3000`
+pode ser analisada com `--target http://169.254.1.2:3000` sem ser exposta na
+rede local.
 
 ## Uso rapido
 
@@ -68,11 +75,7 @@ cargo run -- tool Nmap --target 192.0.2.10
 # Usar configuração TOML e substituir opções pela CLI
 cargo run -- scan --target example.com --config ./smartsec.toml --llm ollama --model llama3.1:8b
 
-# Para ativar o Nuclei real (requer templates no commit esperado):
-# Na TUI: C-x s → Real Nuclei → Enable → Save
-# Depois execute normalmente que o Nuclei vai rodar de verdade
-
-# Na TUI em modo assistido, marque ou desmarque Nmap com Espaco
+# Na TUI em modo assistido, marque ou desmarque ferramentas com Espaco
 ```
 
 Para uma execucao real, a configuracao TOML pode definir `nuclei_templates_path` e
@@ -87,9 +90,9 @@ src/
   main.rs              Ponto de entrada (CLI + TUI + headless)
   tui/                 Interface de terminal (telas, estado, eventos, mouse)
   orchestrator/        Pipeline de execucao, sandbox, parsers
-  tools/               Runners das ferramentas (nuclei, mocks)
+  tools/               Runners reais das ferramentas (Nmap e Nuclei)
   ai/                  Agente IA (prompt LLM + analise)
-  llm/                 Provedores LLM (mock, openai, ollama, nvidia-nim)
+  llm/                 Provedores LLM (openai, ollama, nvidia-nim)
   domain/              Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/              Persistencia de configuracao (~/.config/smartsec/)
   report/              Gerador de relatorio Markdown
@@ -99,14 +102,12 @@ src/
 
 | Tecla     | Acao                     |
 |-----------|--------------------------|
-| Tab       | Alternar modo (Auto/Assistido) |
+| Tab       | Mover o foco              |
 | Enter     | Confirmar / Iniciar / Rodar |
 | Espaco    | Selecionar/deselecionar ferramenta |
 | Esc       | Sair / Voltar            |
-| C-x s     | Abrir configuracoes      |
-| C-x p     | Pausar execucao          |
-| C-x c     | Cancelar execucao        |
-| C-x q     | Sair                     |
+| F1        | Abrir ajuda               |
+| Ctrl+P    | Abrir paleta de comandos  |
 | Ctrl+V    | Colar do clipboard       |
 | Mouse     | Clicar botoes, selecionar ferramentas, rolar listas |
 

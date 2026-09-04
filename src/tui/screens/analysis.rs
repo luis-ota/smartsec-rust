@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Gauge, Paragraph},
+    widgets::{Gauge, Paragraph, Wrap},
     Frame,
 };
 
@@ -67,18 +67,13 @@ fn render_output(app: &AppState, frame: &mut Frame, area: Rect) {
         ),
     ])];
     lines.push(Line::from(""));
-    for line in app
-        .analysis_text
-        .lines()
-        .take(inner.height.saturating_sub(2) as usize)
-    {
-        lines.push(Line::styled(
-            chrome::truncate_width(line, inner.width as usize),
-            Style::default().fg(MUTED),
-        ));
+    for line in app.analysis_text.lines() {
+        lines.push(Line::styled(line, Style::default().fg(MUTED)));
     }
     frame.render_widget(
-        Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().bg(SURFACE))
+            .wrap(Wrap { trim: false }),
         inner,
     );
 }

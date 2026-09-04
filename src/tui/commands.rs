@@ -66,16 +66,6 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
             CommandItem::new("Voltar ao início", "esc", SemanticAction::Back),
         ]),
         AppStep::Execution => items.extend([
-            CommandItem::new(
-                if app.exec_paused {
-                    "Retomar execução"
-                } else {
-                    "Pausar execução"
-                },
-                "",
-                SemanticAction::PauseResume,
-            )
-            .enabled(!app.exec_cancelled),
             CommandItem::new("Cancelar execução", "", SemanticAction::CancelRun)
                 .enabled(!app.exec_cancelled),
             CommandItem::new("Voltar às ferramentas", "esc", SemanticAction::Back),

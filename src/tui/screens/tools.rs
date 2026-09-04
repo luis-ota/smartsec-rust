@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::Paragraph,
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 
@@ -20,9 +20,10 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     };
     let shell = chrome::render_shell(app, frame, area, "Ferramentas", &status);
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(shell.content);
-    if rows[0].width < 100 {
-        let stacked = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)])
-            .split(rows[0]);
+    if rows[0].width < 120 {
+        let list_height = (app.tools.len() as u16).saturating_add(2).clamp(4, 8);
+        let stacked =
+            Layout::vertical([Constraint::Length(list_height), Constraint::Min(3)]).split(rows[0]);
         render_tool_list(app, frame, stacked[0]);
         render_tool_detail(app, frame, stacked[1]);
     } else {
@@ -91,7 +92,9 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
         );
     }
     frame.render_widget(
-        Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().bg(SURFACE))
+            .wrap(Wrap { trim: false }),
         inner,
     );
 }
