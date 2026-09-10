@@ -16,44 +16,9 @@ impl ToolInfo {
                 category: "RECON",
             },
             ToolInfo {
-                name: "ZAP",
-                description: "OWASP ZAP - Web app scanner",
-                category: "DAST",
-            },
-            ToolInfo {
-                name: "Nikto",
-                description: "Web server scanner",
-                category: "DAST",
-            },
-            ToolInfo {
-                name: "SQLMap",
-                description: "SQL injection detector",
-                category: "DAST",
-            },
-            ToolInfo {
                 name: "Nuclei",
-                description: "Vulnerability scanner (CVEs)",
+                description: "Scanner de vulnerabilidades (CVEs)",
                 category: "DAST",
-            },
-            ToolInfo {
-                name: "BurpSuite",
-                description: "Web vulnerability scanner",
-                category: "DAST",
-            },
-            ToolInfo {
-                name: "Trivy",
-                description: "Container/IaC scanner",
-                category: "SCA",
-            },
-            ToolInfo {
-                name: "Snyk",
-                description: "Dependency vulnerability scanner",
-                category: "SCA",
-            },
-            ToolInfo {
-                name: "Bandit",
-                description: "Python security linter",
-                category: "SAST",
             },
         ]
     }
@@ -82,6 +47,7 @@ pub struct SecurityTool {
     #[allow(dead_code)]
     pub tool_version: Option<String>,
     pub execution_error: Option<String>,
+    pub podman_trace: Vec<String>,
 }
 
 impl SecurityTool {
@@ -97,6 +63,7 @@ impl SecurityTool {
             image: None,
             tool_version: None,
             execution_error: None,
+            podman_trace: Vec::new(),
         }
     }
 

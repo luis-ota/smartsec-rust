@@ -1,270 +1,159 @@
-use crate::config::execution_type::ExecutionType;
+use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SUCCESS, SURFACE, TEXT};
+use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::{AppState, ToolStatus};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    text::{Line, Span, Text},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
-    frame.render_widget(bg, area);
-    let chunks = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(3),
-        Constraint::Length(3),
-    ])
-    .split(area);
-    render_header(app, frame, chunks[0]);
-    render_tools(app, frame, chunks[1]);
-    render_footer(app, frame, chunks[2]);
-}
-
-fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let detecting = app.tool_detecting;
-    let spinner = app.spinner_char();
-    let title = if detecting {
-        format!(
-            "{} Analyzing project at: {} ...",
-            spinner, app.config.target_url
-        )
+    let selected = app.tools.iter().filter(|tool| tool.selected).count();
+    let status = if app.tool_detecting {
+        "Detectando ferramentas compatíveis...".to_string()
+    } else if app.tools.is_empty() {
+        "Nenhuma ferramenta disponível".to_string()
     } else {
-        format!(
-            "OK Analysis complete - {} tools identified",
-            app.tools.len()
-        )
+        format!("{selected} de {} ferramentas selecionadas", app.tools.len())
     };
-    let title_color = if detecting { Color::Cyan } else { Color::Green };
-
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(" | ", Style::default().fg(Color::Cyan)),
-        Span::styled("Tool Selection", Style::default().fg(Color::White).bold()),
-        Span::styled(" ", Style::default()),
-        Span::styled(title, Style::default().fg(title_color)),
-    ]))
-    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(header, inner);
-}
-
-fn render_tools(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let chunks =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(area);
-    render_tool_list(app, frame, chunks[0]);
-    render_tool_detail(app, frame, chunks[1]);
+    let shell = chrome::render_shell(app, frame, area, "Ferramentas", &status);
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(shell.content);
+    if rows[0].width < 120 {
+        let list_height = (app.tools.len() as u16).saturating_add(2).clamp(4, 8);
+        let stacked =
+            Layout::vertical([Constraint::Length(list_height), Constraint::Min(3)]).split(rows[0]);
+        render_tool_list(app, frame, stacked[0]);
+        render_tool_detail(app, frame, stacked[1]);
+    } else {
+        let columns = Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(rows[0]);
+        render_tool_list(app, frame, columns[0]);
+        render_tool_detail(app, frame, columns[1]);
+    }
+    render_actions(app, frame, rows[1]);
 }
 
 fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    app.tools_list_rect = area;
-    let block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Line::from(vec![Span::styled(
-            " Security Tools ",
-            Style::default().fg(Color::Cyan).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)));
+    let focused = app.focus == FocusTarget::ToolList;
+    let block = chrome::panel("Ferramentas de segurança", focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    app.tool_visible_height = inner.height.max(1) as usize;
 
-    let items: Vec<ListItem> = app
-        .tools
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let is_cursor = i == app.tool_cursor && app.mode() == ExecutionType::Assisted;
-            let check = if t.selected { "[X]" } else { "[ ]" };
-            let check_color = if t.selected {
-                Color::Green
-            } else {
-                Color::DarkGray
-            };
-            let name_style = if is_cursor {
-                Style::default().fg(Color::White).bold()
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-            let line = Line::from(vec![
-                Span::styled(format!(" {} ", check), Style::default().fg(check_color)),
-                Span::styled(format!("{:<12}", t.tool.name), name_style),
-                Span::styled(
-                    format!("[{}]", t.tool.category),
-                    Style::default().fg(Color::DarkGray).italic(),
-                ),
-            ]);
-            let bg = if is_cursor {
-                Color::Rgb(30, 30, 60)
-            } else {
-                Color::Rgb(12, 12, 24)
-            };
-            ListItem::new(line).style(Style::default().bg(bg))
-        })
-        .collect();
-
-    let mut state = ListState::default();
-    if app.mode() == ExecutionType::Assisted && !app.tool_detecting {
-        state.select(Some(app.tool_cursor));
+    if app.tool_detecting {
+        frame.render_widget(
+            Paragraph::new(format!(
+                " {} Verificando catálogo e disponibilidade...",
+                app.spinner_char()
+            ))
+            .style(Style::default().fg(ACCENT).bg(SURFACE)),
+            inner,
+        );
+        return;
     }
-    let list = List::new(items)
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .highlight_style(Style::default().bg(Color::Rgb(30, 30, 60)));
-    frame.render_stateful_widget(list, inner, &mut state);
+    if app.tools.is_empty() {
+        frame.render_widget(
+            Paragraph::new(" Nenhuma ferramenta foi encontrada. Volte e revise a configuração.")
+                .style(Style::default().fg(MUTED).bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines = Vec::new();
+    let visible = inner
+        .height
+        .min(app.tools.len().saturating_sub(app.tool_scroll) as u16);
+    for row in 0..visible {
+        let index = app.tool_scroll + row as usize;
+        let line = {
+            let tool = &app.tools[index];
+            let current = index == app.tool_cursor;
+            let active = focused && current;
+            let state = if tool.selected { "[x]" } else { "[ ]" };
+            let prefix = if current { ">" } else { " " };
+            Line::from(vec![
+                Span::styled(format!("{prefix} {state} "), Style::default()),
+                Span::styled(format!("{:<12}", tool.tool.name), Style::default().bold()),
+                Span::styled(tool.tool.category, Style::default()),
+            ])
+            .style(
+                Style::default()
+                    .fg(if active { Color::Black } else { TEXT })
+                    .bg(if active { ACCENT } else { SURFACE }),
+            )
+        };
+        lines.push(line);
+        app.register_hit_region(
+            Rect::new(inner.x, inner.y + row, inner.width, 1),
+            SemanticAction::ToggleTool(index),
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().bg(SURFACE))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 fn render_tool_detail(app: &AppState, frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Line::from(vec![Span::styled(
-            " Details ",
-            Style::default().fg(Color::Cyan).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)));
+    let block = chrome::panel("Contexto", false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    if app.tool_cursor >= app.tools.len() {
+    let Some(tool) = app.tools.get(app.tool_cursor) else {
+        frame.render_widget(
+            Paragraph::new("Selecione uma ferramenta para ver os detalhes.")
+                .style(Style::default().fg(MUTED).bg(SURFACE)),
+            inner,
+        );
         return;
-    }
-    let tool = &app.tools[app.tool_cursor];
-    let selected_count = app.tools.iter().filter(|t| t.selected).count();
-    let total = app.tools.len();
-
-    let status_span = match tool.status {
-        ToolStatus::Pending => Span::styled("[ ] Pending", Style::default().fg(Color::DarkGray)),
-        ToolStatus::Running => Span::styled(
-            format!("{} Running", app.spinner_char()),
-            Style::default().fg(Color::Yellow),
-        ),
-        ToolStatus::Done => Span::styled("OK Complete", Style::default().fg(Color::Green)),
-        ToolStatus::Failed => Span::styled("FAIL Failed", Style::default().fg(Color::Red)),
     };
-
-    let detail = ratatui::text::Text::from(vec![
+    let (status, color) = match tool.status {
+        ToolStatus::Pending => ("pendente", MUTED),
+        ToolStatus::Running => ("em execução", ACCENT),
+        ToolStatus::Done => ("concluída", SUCCESS),
+        ToolStatus::Failed => ("falhou", DANGER),
+    };
+    let lines = vec![
+        Line::styled(tool.tool.name, Style::default().fg(TEXT).bold()),
+        Line::styled(tool.tool.description, Style::default().fg(MUTED)),
         Line::from(""),
         Line::from(vec![
-            Span::styled(" Name: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(tool.tool.name, Style::default().fg(Color::White).bold()),
+            Span::styled("estado  ", Style::default().fg(MUTED)),
+            Span::styled(status, Style::default().fg(color).bold()),
         ]),
-        Line::from(vec![
-            Span::styled(" Type: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(tool.tool.category, Style::default().fg(Color::Cyan)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" ", Style::default()),
-            Span::styled(tool.tool.description, Style::default().fg(Color::Gray)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Status: ", Style::default().fg(Color::DarkGray)),
-            status_span,
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Selected: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{}/{}", selected_count, total),
-                Style::default().fg(Color::Green),
-            ),
-        ]),
-    ]);
-    let para = Paragraph::new(detail)
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(para, inner);
+    ];
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
+        inner,
+    );
 }
 
-fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let bar = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    let inner = bar.inner(area);
-    frame.render_widget(bar, area);
-
-    let mode_text = match app.mode() {
-        ExecutionType::Auto => "AUTO",
-        ExecutionType::Assisted => "ASSISTED",
-    };
-
-    if app.tool_detecting {
-        let footer = Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(" | {} ", mode_text),
-                Style::default().fg(Color::Cyan).bold(),
-            ),
-            Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Detecting tools...", Style::default().fg(Color::Cyan)),
-        ]))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(footer, inner);
-    } else if app.mode() == ExecutionType::Auto {
-        let footer = Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(" | {} ", mode_text),
-                Style::default().fg(Color::Cyan).bold(),
-            ),
-            Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "Proceeding automatically...",
-                Style::default().fg(Color::Cyan),
-            ),
-        ]))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(footer, inner);
-    } else {
-        let run_btn_w = 7u16;
-        let back_btn_w = 7u16;
-        let run_btn_x = area.x + area.width.saturating_sub(run_btn_w + 2);
-        let back_btn_x = run_btn_x.saturating_sub(back_btn_w + 2);
-        app.tools_run_rect = Rect::new(run_btn_x, area.y + 1, run_btn_w, 1);
-        app.tools_back_rect = Rect::new(back_btn_x, area.y + 1, back_btn_w, 1);
-
-        let footer = Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(" | {} ", mode_text),
-                Style::default().fg(Color::Green).bold(),
-            ),
-            Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Up/Down", Style::default().fg(Color::White)),
-            Span::styled(" Nav ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Space", Style::default().fg(Color::White)),
-            Span::styled(" Toggle ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::White)),
-            Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
-        ]))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(footer, inner);
-
-        let back_btn = Paragraph::new(Line::from(vec![Span::styled(
-            " Back ",
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(80, 80, 100))
-                .bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(back_btn, app.tools_back_rect);
-
-        let run_btn = Paragraph::new(Line::from(vec![Span::styled(
-            " Run ",
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(0, 120, 0))
-                .bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(run_btn, app.tools_run_rect);
-    }
+fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let columns = Layout::horizontal([
+        Constraint::Length(10),
+        Constraint::Min(1),
+        Constraint::Length(12),
+    ])
+    .split(area);
+    chrome::render_button(
+        app,
+        frame,
+        columns[0],
+        "Voltar",
+        SemanticAction::Back,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::ToolBack),
+    );
+    chrome::render_button(
+        app,
+        frame,
+        columns[2],
+        "Executar",
+        SemanticAction::RunTools,
+        chrome::ButtonState::primary(app.focus == FocusTarget::ToolRun)
+            .enabled(!app.tool_detecting && app.tools.iter().any(|tool| tool.selected)),
+    );
 }

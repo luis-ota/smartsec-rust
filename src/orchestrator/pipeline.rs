@@ -4,40 +4,44 @@ use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
 use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
-use crate::tools::mocks::MockTool;
 use crate::tools::nmap::{NmapTool, NMAP_IMAGE, NMAP_VERSION};
 use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE, NUCLEI_TEMPLATES_COMMIT, NUCLEI_VERSION};
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
 
 pub struct Orchestrator {
     pub config: Configuration,
     pub agent: AIAgent,
-    pub sandbox: Box<dyn crate::orchestrator::sandbox::SandboxManager>,
     pub execution_history: Vec<SecurityTool>,
     pub decision_history: Vec<DecisionRecord>,
     pub findings: Vec<Vulnerability>,
     pub paused: bool,
     pub cancelled: bool,
     pub last_log: String,
+    /// Sink opcional que recebe ao vivo cada linha do trace operacional do
+    /// Podman (TUI e headless). Quando ausente, o trace segue acumulado em
+    /// cada `SecurityTool` para auditoria.
+    pub trace_sink: Option<mpsc::UnboundedSender<String>>,
+    started_at: String,
     latest_nmap_output: Option<String>,
 }
 
 impl Orchestrator {
-    pub fn new(config: Configuration) -> Self {
+    pub fn new(mut config: Configuration) -> Self {
+        config.provider_mode = format!("{:?}", config.llm.provider);
         let agent = AIAgent::from_config(&config.llm);
-        let sandbox: Box<dyn crate::orchestrator::sandbox::SandboxManager> =
-            Box::new(crate::orchestrator::sandbox::MockSandbox);
         Self {
             config,
             agent,
-            sandbox,
             execution_history: Vec::new(),
             decision_history: Vec::new(),
             findings: Vec::new(),
             paused: false,
             cancelled: false,
             last_log: String::new(),
+            trace_sink: None,
+            started_at: now_iso8601(),
             latest_nmap_output: None,
         }
     }
@@ -67,23 +71,16 @@ impl Orchestrator {
         }
     }
 
-    pub fn pause_execution(&mut self) {
-        self.paused = true;
-    }
-
-    pub fn resume_execution(&mut self) {
-        self.paused = false;
-    }
-
     pub fn cancel_execution(&mut self) {
         self.cancelled = true;
     }
 
-    pub fn reset_run_state(&mut self) {
-        self.execution_history.clear();
-        self.decision_history.clear();
-        self.findings.clear();
-        self.latest_nmap_output = None;
+    fn podman_executor(&self) -> PodmanExecutor {
+        let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+        match &self.trace_sink {
+            Some(sink) => executor.with_log_sink(sink.clone()),
+            None => executor,
+        }
     }
 
     pub fn determine_next_step(&self) -> String {
@@ -99,68 +96,22 @@ impl Orchestrator {
     }
 
     pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
-        if tool_info.is_nmap() && !self.config.demo_mode {
+        if tool_info.is_nmap() {
             return self.execute_nmap(tool_info, target).await;
         }
-        if tool_info.is_nuclei() && !self.config.demo_mode && self.config.use_real_nuclei {
+        if tool_info.is_nuclei() {
             return self.execute_nuclei_with_plan(tool_info, target).await;
         }
-        let runner: Box<dyn SecurityToolRunner> =
-            if !self.config.demo_mode && tool_info.is_nuclei() && self.config.use_real_nuclei {
-                Box::new(NucleiTool)
-            } else {
-                Box::new(MockTool {
-                    name: tool_info.name,
-                    description: tool_info.description,
-                })
-            };
-
-        let arguments = runner.configure_command(target);
+        let arguments = format!("{} {target}", tool_info.name);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);
         exec.executed_at = now_iso8601();
-        let started_at = Instant::now();
-
-        let container_id = self
-            .sandbox
-            .create_isolated_environment(tool_info.category)
-            .unwrap_or_else(|_| format!("fallback-{}", tool_info.name.to_lowercase()));
-        let run_result = self.sandbox.run_command(&container_id, &arguments);
-        let cleanup_result = self.sandbox.destroy_environment(&container_id);
-        exec.duration_ms = started_at.elapsed().as_millis();
-        match (run_result, cleanup_result) {
-            (Ok(output), Ok(_)) => {
-                exec.status = "succeeded".to_string();
-                exec.output = output;
-            }
-            (run, cleanup) => {
-                exec.status = "failed".to_string();
-                exec.execution_error = Some(format!(
-                    "falha na ferramenta: {}; limpeza: {}",
-                    run.err()
-                        .map_or_else(|| "ok".to_string(), |error| error.to_string()),
-                    cleanup
-                        .err()
-                        .map_or_else(|| "ok".to_string(), |error| error.to_string())
-                ));
-                exec.output = format!(
-                    "[ERRO] {}",
-                    exec.execution_error.as_deref().unwrap_or_default()
-                );
-            }
-        }
-
-        match runner.parse_output(target).await {
-            Ok(output) => {
-                if exec.status == "succeeded" {
-                    exec.output = output;
-                }
-            }
-            Err(e) => {
-                exec.status = "failed".to_string();
-                exec.execution_error = Some(e.to_string());
-                exec.output = format!("[ERRO] {}", e);
-            }
-        }
+        exec.status = "failed".to_string();
+        let message = format!(
+            "A ferramenta {} ainda não possui executor real e não será emulada",
+            tool_info.name
+        );
+        exec.execution_error = Some(message.clone());
+        exec.output = format!("[ERRO] {message}");
 
         self.execution_history.push(exec.clone());
         exec
@@ -173,12 +124,13 @@ impl Orchestrator {
         exec.tool_version = Some(NMAP_VERSION.to_owned());
         exec.image = Some(NMAP_IMAGE.to_owned());
         exec.executed_at = now_iso8601();
-        let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+        let executor = self.podman_executor();
         match executor
             .execute(NMAP_IMAGE, &NmapTool::container_arguments(target))
             .await
         {
             Ok(result) => {
+                exec.podman_trace = result.trace.clone();
                 exec.status = execution_status(&result.status);
                 exec.duration_ms = result.duration.as_millis();
                 exec.stderr = sanitize(&result.stderr);
@@ -241,7 +193,7 @@ impl Orchestrator {
             self.execution_history.push(exec.clone());
             return exec;
         }
-        let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+        let executor = self.podman_executor();
         exec.output = match executor
             .execute_with_mounts(
                 NUCLEI_IMAGE,
@@ -251,6 +203,7 @@ impl Orchestrator {
             .await
         {
             Ok(result) => {
+                exec.podman_trace = result.trace.clone();
                 exec.status = execution_status(&result.status);
                 exec.duration_ms = result.duration.as_millis();
                 exec.stderr = sanitize(&result.stderr);
@@ -275,21 +228,17 @@ impl Orchestrator {
         exec
     }
 
-    async fn request_nuclei_plan(&self, target: &str) -> Option<String> {
+    async fn request_nuclei_plan(&mut self, target: &str) -> Option<String> {
         let prompt = format!(
             "Analyze this Nmap XML and return only JSON with fields should_run, profiles, concurrency, timeout_seconds, justification. Allowed profiles are http-misconfiguration, http-exposed-panels, ssh-exposure, database-exposure, generic. Never invent command flags or shell commands. Target: {target}\n\nNmap log:\n{}",
             self.latest_nmap_output.as_deref().unwrap_or_default()
         );
-        self.agent
-            .provider
-            .execute_prompt(&prompt, &self.agent.model)
-            .await
-            .ok()
+        self.agent.execute_with_fallback(&prompt).await.ok()
     }
 
     /// Constrói os achados reais a partir da execução dos scanners.
     ///
-    /// **Nunca** inclui achados simulados. Para modo demo, use [`build_demo_findings`].
+    /// Nunca inclui achados simulados.
     pub fn build_findings(&mut self) {
         let target = self.config.target_url.clone();
         let mut real_findings: Vec<Vulnerability> = Vec::new();
@@ -328,15 +277,6 @@ impl Orchestrator {
             })
     }
 
-    /// Constrói achados de demonstração.
-    ///
-    /// Só deve ser chamada quando `config.demo_mode == true`.
-    /// Todos os achados têm `source: FindingSource::Demo`.
-    pub fn build_demo_findings(&mut self) {
-        let target = self.config.target_url.clone();
-        self.findings = crate::domain::demo_findings::demo_all(&target);
-    }
-
     #[allow(dead_code)]
     pub async fn run_full_pipeline(
         &mut self,
@@ -358,11 +298,7 @@ impl Orchestrator {
             let _exec = self.execute_tool(tool, &target).await;
         }
 
-        if self.config.demo_mode {
-            self.build_demo_findings();
-        } else {
-            self.build_findings();
-        }
+        self.build_findings();
 
         let analysis = self.agent.analyze_logs(&self.findings).await;
         self.last_log = analysis;
@@ -375,7 +311,7 @@ impl Orchestrator {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_secs()
+                .as_nanos()
         );
         let tools_executed = self
             .execution_history
@@ -383,8 +319,7 @@ impl Orchestrator {
             .map(
                 |execution| crate::orchestrator::scan_logger::ToolExecutionRecord {
                     tool_name: execution.tool_name.clone(),
-                    arguments: execution
-                        .arguments
+                    arguments: sanitize(&execution.arguments)
                         .split_whitespace()
                         .map(str::to_owned)
                         .collect(),
@@ -397,13 +332,19 @@ impl Orchestrator {
                     duration_ms: execution.duration_ms,
                     tool_version: execution.tool_version.clone(),
                     image: execution.image.clone(),
+                    execution_error: execution.execution_error.clone(),
+                    podman_trace: execution
+                        .podman_trace
+                        .iter()
+                        .map(|line| sanitize(line))
+                        .collect(),
                 },
             )
             .collect();
         let metadata = crate::orchestrator::scan_logger::ScanMetadata::new(
             scan_id,
             self.config.target_url.clone(),
-            now_iso8601(),
+            self.started_at.clone(),
             now_iso8601(),
             self.config.execution_type.to_string(),
             self.config.provider_mode.clone(),
@@ -512,45 +453,16 @@ fn validate_templates(path: &std::path::Path, expected: Option<&str>) -> anyhow:
 mod tests {
     use super::*;
     use crate::config::Configuration;
-    use crate::domain::vulnerability::FindingSource;
 
-    fn make_config(demo: bool) -> Configuration {
+    fn make_config() -> Configuration {
         let mut c = Configuration::default();
-        c.demo_mode = demo;
         c.target_url = "http://test.local".to_string();
         c
     }
 
     #[test]
-    fn build_findings_never_includes_demo() {
-        let mut orch = Orchestrator::new(make_config(false));
-        orch.build_findings();
-        for f in &orch.findings {
-            assert_ne!(
-                f.source,
-                FindingSource::Demo,
-                "Execução real não deve conter achados de demo"
-            );
-        }
-    }
-
-    #[test]
-    fn build_demo_findings_only_includes_demo() {
-        let mut orch = Orchestrator::new(make_config(true));
-        orch.build_demo_findings();
-        assert!(!orch.findings.is_empty(), "Modo demo deve ter achados");
-        for f in &orch.findings {
-            assert_eq!(
-                f.source,
-                FindingSource::Demo,
-                "Modo demo deve ter apenas achados Demo"
-            );
-        }
-    }
-
-    #[test]
     fn real_run_empty_history_produces_no_findings() {
-        let mut orch = Orchestrator::new(make_config(false));
+        let mut orch = Orchestrator::new(make_config());
         orch.build_findings();
         assert!(
             orch.findings.is_empty(),

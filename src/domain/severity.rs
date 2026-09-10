@@ -20,16 +20,6 @@ impl Severity {
         }
     }
 
-    pub fn color(&self) -> ratatui::style::Color {
-        match self {
-            Severity::Critical => ratatui::style::Color::Magenta,
-            Severity::High => ratatui::style::Color::Red,
-            Severity::Medium => ratatui::style::Color::Yellow,
-            Severity::Low => ratatui::style::Color::Cyan,
-            Severity::Info => ratatui::style::Color::Gray,
-        }
-    }
-
     #[allow(dead_code)]
     pub fn from_label(s: &str) -> Self {
         match s.to_uppercase().as_str() {

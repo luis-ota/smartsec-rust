@@ -119,7 +119,7 @@ Modulos atuais do prototipo:
 - `src/main.rs`: entrada CLI, TUI e headless.
 - `src/tui/`: telas, eventos e estado da interface.
 - `src/orchestrator/`: pipeline, sandbox e parsers.
-- `src/tools/`: runners reais e mocks.
+- `src/tools/`: runners reais de Nmap e Nuclei.
 - `src/ai/` e `src/llm/`: agente e provedores LLM.
 - `src/domain/`: severidade, ferramentas e vulnerabilidades.
 - `src/config/`: configuracao e persistencia.
@@ -127,13 +127,13 @@ Modulos atuais do prototipo:
 
 ## 7. Estado conhecido do prototipo
 
-O prototipo possui TUI, configuracao, suporte a mouse, relatorio Markdown e integracao parcial real com Nuclei. A maioria das ferramentas ainda e mockada. O Nmap possui codigo, mas estava desconectado do catalogo/pipeline. A sandbox atual e simulada. A TUI apresenta uma animacao de IA sem chamar o agente no fluxo principal. O modo headless monta o relatorio, mas precisa garantir a gravacao real do arquivo.
+O prototipo possui TUI, configuracao, suporte a mouse, relatorio Markdown e integracao real com Nmap e Nuclei. Ambos executam em containers Podman rootless; ferramentas sem runner real nao entram no catalogo executavel. A TUI e o modo headless usam o mesmo pipeline, preservam falhas de execucao e gravam logs estruturados para auditoria.
 
-Nenhum finding demonstrativo pode ser misturado a uma execucao real. Dados de demonstracao devem exigir modo explicito e ser marcados como `demo` ou `mock`.
+Nenhum finding demonstrativo pode ser misturado a uma execucao real. O fluxo executavel nao oferece modo demonstrativo; a origem legada `Demo` permanece apenas para leitura de historicos ja persistidos.
 
-O modo demonstrativo e ativado explicitamente com `--demo`. Cada finding deve manter campos proprietarios e proveniencia com origem, ferramenta, alvo, evidencia e timestamp; o modo real somente aceita achados produzidos pelos parsers dos scanners executados.
+Cada finding deve manter campos proprietarios e proveniencia com origem, ferramenta, alvo, evidencia e timestamp. O fluxo real somente aceita achados produzidos pelos parsers dos scanners executados.
 
-Na Sprint 1, Nmap e Nuclei reais executam exclusivamente em Podman rootless. A imagem do Nuclei e referenciada por digest, os templates sao montados em modo somente leitura e o commit esperado deve ser validado antes da execucao. O plano validado pelo orquestrador e aplicado aos argumentos do container. Cada registro estruturado preserva stdout, stderr sanitizado, status, duracao, timestamp, versao e imagem/digest quando aplicavel.
+Na Sprint 1, Nmap e Nuclei reais executam exclusivamente em Podman rootless. A rede `pasta` mapeia `169.254.1.2` dentro do scanner para o loopback do host, permitindo analisar um alvo autorizado publicado somente em `127.0.0.1` sem exposicao na rede local. A imagem do Nuclei e referenciada por digest, os templates sao montados em modo somente leitura, a configuracao temporaria fica restrita a tmpfs e o commit esperado deve ser validado antes da execucao. O Nmap usa TCP connect sem capabilities adicionais. O plano validado pelo orquestrador e aplicado aos argumentos do container. Cada registro estruturado preserva stdout, stderr sanitizado, status, duracao, timestamp, versao e imagem/digest quando aplicavel, alem do trace operacional completo do Podman (comandos executados, saida do pull da imagem, start do container e limpeza), exibido ao vivo na TUI e no modo headless.
 
 ## 8. Macro-sprints
 

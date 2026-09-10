@@ -1,4 +1,3 @@
-pub mod mock_provider;
 pub mod nvidia_nim;
 pub mod ollama_provider;
 pub mod openai_provider;
