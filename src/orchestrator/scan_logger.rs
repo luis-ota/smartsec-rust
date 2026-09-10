@@ -27,6 +27,31 @@ pub struct ToolExecutionRecord {
     pub podman_trace: Vec<String>,
 }
 
+impl ToolExecutionRecord {
+    fn sanitized(&self) -> Self {
+        let sanitize = crate::utils::redaction::sanitize_text;
+        Self {
+            tool_name: sanitize(&self.tool_name),
+            arguments: self.arguments.iter().map(|value| sanitize(value)).collect(),
+            executed_at: sanitize(&self.executed_at),
+            output_bytes: self.output_bytes,
+            output_sample: sanitize(&self.output_sample),
+            stdout: sanitize(&self.stdout),
+            stderr: sanitize(&self.stderr),
+            status: sanitize(&self.status),
+            duration_ms: self.duration_ms,
+            tool_version: self.tool_version.as_deref().map(sanitize),
+            image: self.image.as_deref().map(sanitize),
+            execution_error: self.execution_error.as_deref().map(sanitize),
+            podman_trace: self
+                .podman_trace
+                .iter()
+                .map(|line| sanitize(line))
+                .collect(),
+        }
+    }
+}
+
 /// Metadados e log estruturado completo de um scan de segurança.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ScanMetadata {
@@ -98,12 +123,15 @@ impl ScanMetadata {
 
         Self {
             scan_id,
-            target_url,
+            target_url: crate::utils::redaction::sanitize_url(&target_url),
             started_at,
             completed_at,
             execution_type,
-            llm_provider,
-            tools_executed,
+            llm_provider: crate::utils::redaction::sanitize_text(&llm_provider),
+            tools_executed: tools_executed
+                .iter()
+                .map(ToolExecutionRecord::sanitized)
+                .collect(),
             findings_count,
             critical_count,
             high_count,
@@ -112,10 +140,45 @@ impl ScanMetadata {
             info_count,
             findings: findings
                 .iter()
+                .map(Vulnerability::sanitized)
                 .map(|finding| serde_json::to_value(finding).unwrap_or(serde_json::Value::Null))
                 .collect(),
-            agent_analysis,
+            agent_analysis: crate::utils::redaction::sanitize_text(&agent_analysis),
             decisions: Vec::new(),
+        }
+    }
+
+    fn sanitized(&self) -> Self {
+        let sanitize = crate::utils::redaction::sanitize_text;
+        let mut findings = self.findings.clone();
+        for finding in &mut findings {
+            crate::utils::redaction::sanitize_json_value(finding);
+        }
+        Self {
+            scan_id: sanitize(&self.scan_id),
+            target_url: crate::utils::redaction::sanitize_url(&self.target_url),
+            started_at: sanitize(&self.started_at),
+            completed_at: sanitize(&self.completed_at),
+            execution_type: sanitize(&self.execution_type),
+            llm_provider: sanitize(&self.llm_provider),
+            tools_executed: self
+                .tools_executed
+                .iter()
+                .map(ToolExecutionRecord::sanitized)
+                .collect(),
+            findings_count: self.findings_count,
+            critical_count: self.critical_count,
+            high_count: self.high_count,
+            medium_count: self.medium_count,
+            low_count: self.low_count,
+            info_count: self.info_count,
+            findings,
+            agent_analysis: sanitize(&self.agent_analysis),
+            decisions: self
+                .decisions
+                .iter()
+                .map(DecisionRecord::sanitized)
+                .collect(),
         }
     }
 }
@@ -139,10 +202,11 @@ pub fn save_scan_log(metadata: &ScanMetadata) -> Result<PathBuf> {
 /// Salva os metadados em um diretório específico (útil para testes).
 pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Result<PathBuf> {
     fs::create_dir_all(target_dir).context("Falha ao criar diretório de scans")?;
+    let metadata = metadata.sanitized();
     let filename = format!("{}.json", metadata.scan_id);
     let path = target_dir.join(filename);
 
-    let json_data = serde_json::to_string_pretty(metadata)
+    let json_data = serde_json::to_string_pretty(&metadata)
         .context("Falha ao serializar metadados do scan para JSON")?;
 
     fs::write(&path, json_data)
@@ -283,5 +347,58 @@ mod tests {
         assert_eq!(summaries[0].scan_id, "scan_20260831_120000");
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn persisted_scan_removes_http_payloads_and_credentials() {
+        let metadata = ScanMetadata::new(
+            "scan-seguro".to_string(),
+            "https://user:secret@target.local/path?token=secret".to_string(),
+            "2026-09-06T12:00:00Z".to_string(),
+            "2026-09-06T12:01:00Z".to_string(),
+            "Auto".to_string(),
+            "Ollama".to_string(),
+            vec![ToolExecutionRecord {
+                tool_name: "Nuclei".to_string(),
+                arguments: vec![
+                    "-u".to_string(),
+                    "https://target.local/path?token=secret".to_string(),
+                ],
+                executed_at: "2026-09-06T12:00:01Z".to_string(),
+                output_bytes: 100,
+                output_sample: "request: Authorization: Bearer secret".to_string(),
+                stdout: r#"{"template-id":"headers","request":"secret","response":"secret","url":"https://target.local/path?token=secret"}"#.to_string(),
+                stderr: "Authorization: Bearer secret".to_string(),
+                status: "succeeded".to_string(),
+                duration_ms: 1,
+                tool_version: None,
+                image: None,
+                execution_error: None,
+                podman_trace: vec![
+                    "podman run https://target.local/path?token=secret".to_string(),
+                ],
+            }],
+            vec![Vulnerability {
+                title: "Cabeçalhos".to_string(),
+                severity: Severity::Info,
+                description: "Descrição segura".to_string(),
+                tool: "Nuclei".to_string(),
+                recommendation: "Revise".to_string(),
+                didactic: "Explicação".to_string(),
+                source: FindingSource::Real,
+                target: "https://target.local/path?token=secret".to_string(),
+                evidence: "request: secret".to_string(),
+                detected_at: "2026-09-06T12:00:01Z".to_string(),
+            }],
+            "Authorization: Bearer secret".to_string(),
+        );
+
+        let serialized = serde_json::to_string(&metadata).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("?token="));
+        assert!(!serialized.contains("\"request\""));
+        assert!(!serialized.contains("\"response\""));
+        assert!(serialized.contains("template-id"));
+        assert!(serialized.contains("[REDACTED]"));
     }
 }

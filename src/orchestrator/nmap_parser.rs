@@ -59,10 +59,14 @@ fn now_iso8601() -> String {
 }
 
 pub fn parse_nmap_ports(xml: &str) -> Vec<NmapPortFinding> {
-    let Ok(scan) = quick_xml::de::from_str::<NmapSignalRun>(xml) else {
-        return Vec::new();
-    };
-    scan.hosts
+    parse_nmap_ports_result(xml).unwrap_or_default()
+}
+
+fn parse_nmap_ports_result(xml: &str) -> Result<Vec<NmapPortFinding>, String> {
+    let scan = quick_xml::de::from_str::<NmapSignalRun>(xml)
+        .map_err(|error| format!("XML do Nmap inválido: {error}"))?;
+    Ok(scan
+        .hosts
         .into_iter()
         .flat_map(|host| host.ports.ports)
         .filter(|port| port.state.state == "open")
@@ -81,12 +85,23 @@ pub fn parse_nmap_ports(xml: &str) -> Vec<NmapPortFinding> {
                 .as_ref()
                 .and_then(|service| service.version.clone()),
         })
-        .collect()
+        .collect())
 }
 
 pub fn parse_nmap_findings(xml: &str, target: &str) -> Vec<Vulnerability> {
+    parse_nmap_findings_with_errors(xml, target).0
+}
+
+pub fn parse_nmap_findings_with_errors(
+    xml: &str,
+    target: &str,
+) -> (Vec<Vulnerability>, Vec<String>) {
     let mut seen_ports = std::collections::HashSet::new();
-    parse_nmap_ports(xml)
+    let ports = match parse_nmap_ports_result(xml) {
+        Ok(ports) => ports,
+        Err(error) => return (Vec::new(), vec![error]),
+    };
+    let findings = ports
         .into_iter()
         .filter(|port| seen_ports.insert(port.port.clone()))
         .filter_map(|port| {
@@ -99,7 +114,8 @@ pub fn parse_nmap_findings(xml: &str, target: &str) -> Vec<Vulnerability> {
                 target,
             )
         })
-        .collect()
+        .collect();
+    (findings, Vec::new())
 }
 
 fn extract_port_open(line: &str) -> Option<String> {
@@ -130,7 +146,7 @@ fn build_vuln_for_port(
     let banner_product = extract_banner_product(full_xml);
     let banner_version = extract_banner_version(full_xml);
 
-    let svc = service.unwrap_or(banner_product.as_deref().unwrap_or("unknown"));
+    let svc = service.unwrap_or(banner_product.as_deref().unwrap_or("desconhecido"));
     let prod = product.map(String::from).or_else(|| banner_product.clone());
     let ver = version.map(String::from).or_else(|| banner_version.clone());
 
@@ -138,11 +154,11 @@ fn build_vuln_for_port(
     let ver_str = ver.clone().unwrap_or_default();
 
     let title = if !prod_str.is_empty() && !ver_str.is_empty() {
-        format!("Port {} — {} {} exposto", port, prod_str, ver_str)
+        format!("Porta {} — {} {} exposto", port, prod_str, ver_str)
     } else if !prod_str.is_empty() {
-        format!("Port {} — {} exposto", port, prod_str)
+        format!("Porta {} — {} exposto", port, prod_str)
     } else {
-        format!("Port {} ({}) aberta", port, svc)
+        format!("Porta {} ({}) aberta", port, svc)
     };
 
     let severity = severity_for_port(port, &prod_str, &ver_str);
@@ -152,7 +168,7 @@ fn build_vuln_for_port(
     );
 
     let description = format!(
-        "A porta {} está aberta e foi identificada pelo nmap como {} ({}{}). Detectado via scan -sV -sC.",
+        "A porta {} está aberta e foi identificada pelo Nmap como {} ({}{}). Detectado pela varredura -sV -sC.",
         port,
         svc,
         prod_str,
@@ -160,7 +176,7 @@ fn build_vuln_for_port(
     );
 
     let didactic = format!(
-        "A porta {} está expondo um serviço {}{}.\n\nO nmap identificou esse serviço através de probes TCP e leitura de banner. Atacantes fazem o mesmo para mapear superfícies de ataque.\n\nRisco: portas abertas sem necessidade aumentam a superfície de ataque. Cada banner leak (versão, tecnologia) facilita a busca por CVEs específicos.\n\nMitigação:\n 1. Firewall restritivo (allowlist por IP).\n 2. Suprimir banners de versão ({}{}).\n 3. WAF ou reverse proxy em frente do serviço.\n 4. Patches regulares de segurança.\n 5. Monitorar tentativas de conexão.",
+        "A porta {} está expondo um serviço {}{}.\n\nO Nmap identificou esse serviço por sondas TCP e leitura de banner. Atacantes fazem o mesmo para mapear superfícies de ataque.\n\nRisco: portas abertas sem necessidade aumentam a superfície de ataque. Cada vazamento de banner (versão, tecnologia) facilita a busca por CVEs específicos.\n\nMitigação:\n 1. Firewall restritivo (lista de IPs permitidos).\n 2. Suprimir banners de versão ({}{}).\n 3. WAF ou proxy reverso em frente do serviço.\n 4. Atualizações regulares de segurança.\n 5. Monitorar tentativas de conexão.",
         port,
         svc,
         if !prod_str.is_empty() { format!(" ({})", prod_str) } else { String::new() },
@@ -169,7 +185,7 @@ fn build_vuln_for_port(
     );
 
     let evidence = format!(
-        "nmap port={}/tcp service={} product={} version={}",
+        "nmap porta={}/tcp serviço={} produto={} versão={}",
         port, svc, prod_str, ver_str
     );
 
@@ -316,6 +332,41 @@ fn severity_for_port(port: &str, product: &str, version: &str) -> Severity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const OPEN_PORT_XML: &str = include_str!("../../tests/fixtures/nmap_open.xml");
+    const CLOSED_PORT_XML: &str = include_str!("../../tests/fixtures/nmap_closed.xml");
+    const INVALID_XML: &str = include_str!("../../tests/fixtures/nmap_invalid.xml");
+
+    #[test]
+    fn parses_open_port_with_service_product_version_and_evidence() {
+        let (findings, errors) =
+            parse_nmap_findings_with_errors(OPEN_PORT_XML, "http://target.local:3000");
+
+        assert!(errors.is_empty());
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].title.contains("SimpleHTTPServer 0.6"));
+        assert!(findings[0].evidence.contains("porta=3000/tcp"));
+        assert_eq!(findings[0].source, FindingSource::Real);
+    }
+
+    #[test]
+    fn ignores_closed_ports_without_reporting_an_error() {
+        let (findings, errors) =
+            parse_nmap_findings_with_errors(CLOSED_PORT_XML, "http://target.local:3000");
+
+        assert!(errors.is_empty());
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn reports_invalid_xml_instead_of_treating_it_as_a_clean_scan() {
+        let (findings, errors) =
+            parse_nmap_findings_with_errors(INVALID_XML, "http://target.local:3000");
+
+        assert!(findings.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("XML do Nmap inválido"));
+    }
 
     #[test]
     fn finding_timestamp_uses_the_current_date() {

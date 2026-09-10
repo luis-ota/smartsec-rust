@@ -10,14 +10,22 @@ impl ReportGenerator {
         vulns: &[Vulnerability],
         decisions: &[DecisionRecord],
     ) -> String {
+        let vulns = vulns
+            .iter()
+            .map(Vulnerability::sanitized)
+            .collect::<Vec<_>>();
         let mut md = String::new();
         md.push_str("# SmartSec - Relatório de Análise de Segurança\n\n");
-        md.push_str(&format!("**URL Alvo:** {}\n\n", config.target_url));
+        md.push_str(&format!(
+            "**URL Alvo:** {}\n\n",
+            crate::utils::redaction::sanitize_url(&config.target_url)
+        ));
         md.push_str(&format!("**Modo:** {}\n\n", config.execution_type));
         md.push_str("**Dados:** REAL\n\n");
         if !decisions.is_empty() {
             md.push_str("## Decisões Dinâmicas\n\n");
             for decision in decisions {
+                let decision = decision.sanitized();
                 md.push_str(&format!("### {}\n\n", decision.summary()));
                 md.push_str(&format!("- Modelo: {}\n", decision.model));
                 md.push_str(&format!("- Justificativa: {}\n", decision.justification));
@@ -48,15 +56,19 @@ impl ReportGenerator {
             .filter(|v| v.severity == crate::domain::Severity::Info)
             .count();
         md.push_str(&format!(
-            "- Critical: {}\n- High: {}\n- Medium: {}\n- Low: {}\n- Info: {}\n\n",
+            "- Críticas: {}\n- Altas: {}\n- Médias: {}\n- Baixas: {}\n- Informativas: {}\n\n",
             crit, high, med, low, info
         ));
         md.push_str("## Pontos Críticos\n\n");
-        for v in vulns {
+        for v in &vulns {
             if v.severity == crate::domain::Severity::Critical
                 || v.severity == crate::domain::Severity::High
             {
-                md.push_str(&format!("### [{}] {}\n\n", v.severity.label(), v.title));
+                md.push_str(&format!(
+                    "### [{}] {}\n\n",
+                    v.severity.label_pt_br(),
+                    v.title
+                ));
                 md.push_str(&format!("{}\n\n", v.description));
                 md.push_str(&format!("**Ferramenta:** {}\n\n", v.tool));
                 append_provenance(&mut md, v);
@@ -64,16 +76,16 @@ impl ReportGenerator {
             }
         }
         md.push_str("## Todas as Vulnerabilidades\n\n");
-        for v in vulns {
+        for v in &vulns {
             md.push_str(&format!(
                 "- [{}] {} - {}\n",
-                v.severity.label(),
+                v.severity.label_pt_br(),
                 v.title,
                 v.tool
             ));
         }
         md.push_str("\n## Proveniência dos achados\n\n");
-        for vulnerability in vulns {
+        for vulnerability in &vulns {
             append_provenance(&mut md, vulnerability);
         }
         md
@@ -86,7 +98,9 @@ impl ReportGenerator {
 
     #[allow(dead_code)]
     pub fn export_to_pdf(_content: &str, _path: &str) -> Result<(), anyhow::Error> {
-        Err(anyhow::anyhow!("PDF export not yet implemented"))
+        Err(anyhow::anyhow!(
+            "a exportação para PDF ainda não foi implementada"
+        ))
     }
 }
 
@@ -124,6 +138,34 @@ mod tests {
         let report = ReportGenerator::compile_report(&Configuration::default(), &[finding], &[]);
 
         assert!(report.contains("- Total de vulnerabilidades: 1"));
-        assert!(report.contains("- Info: 1"));
+        assert!(report.contains("- Informativas: 1"));
+    }
+
+    #[test]
+    fn report_never_contains_credentials_or_raw_http_payloads() {
+        let config = Configuration {
+            target_url: "https://user:secret@target.local/path?token=secret".to_string(),
+            ..Configuration::default()
+        };
+        let finding = Vulnerability {
+            title: "Cabeçalhos".to_string(),
+            severity: Severity::High,
+            description: "request: Authorization: Bearer secret".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Remova o segredo".to_string(),
+            didactic: "response: Set-Cookie: token=secret".to_string(),
+            source: FindingSource::Real,
+            target: "https://target.local/path?token=secret".to_string(),
+            evidence: "request: GET /private?token=secret".to_string(),
+            detected_at: "2026-09-06T12:00:00Z".to_string(),
+        };
+
+        let report = ReportGenerator::compile_report(&config, &[finding], &[]);
+
+        assert!(!report.contains("secret"));
+        assert!(!report.contains("?token="));
+        assert!(!report.contains("request:"));
+        assert!(!report.contains("response:"));
+        assert!(report.contains("[REDACTED]"));
     }
 }

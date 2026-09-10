@@ -227,20 +227,20 @@ impl CommandLineInterface {
         config.validate_target().map_err(anyhow::Error::msg)?;
 
         println!("═══════════════════════════════════════════════════════════");
-        println!("  SmartSec — Headless Analysis");
+        println!("  SmartSec — Análise sem interface");
         println!("═══════════════════════════════════════════════════════════");
-        println!("  Target: {}", config.target_url);
-        println!("  Mode:   {}", config.execution_type);
+        println!("  Alvo:   {}", config.target_url);
+        println!("  Modo:   {}", config.execution_type);
         println!("  Dados:  REAL");
         println!("  LLM:    {:?} ({})", config.llm.provider, config.llm.model);
-        println!("  Scanners: Podman rootless");
+        println!("  Scanners: Podman sem privilégios de root");
         println!();
 
         let mut orchestrator = Orchestrator::new(config.clone());
         let all_tools = ToolInfo::all();
         let selected = selected_tools(&all_tools, &config.active_tools);
 
-        println!("[1/3] Running security tools...");
+        println!("[1/3] Executando ferramentas de segurança...");
         let (trace_tx, mut trace_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         orchestrator.trace_sink = Some(trace_tx);
         let trace_printer = tokio::spawn(async move {
@@ -251,7 +251,7 @@ impl CommandLineInterface {
         let total = selected.len();
         for (i, tool) in selected.iter().enumerate() {
             if orchestrator.cancelled {
-                println!("  X Cancelled.");
+                println!("  X Cancelado.");
                 return Ok(());
             }
             if orchestrator.paused {
@@ -268,7 +268,7 @@ impl CommandLineInterface {
                 println!("  FALHA ({error})");
             } else {
                 println!(
-                    "  OK ({}, {} bytes output)",
+                    "  OK ({}, {} bytes de saída)",
                     exec.executed_at,
                     exec.output.len()
                 );
@@ -291,7 +291,7 @@ impl CommandLineInterface {
         orchestrator.last_log = analysis.clone();
 
         println!(
-            "[2/3] AI analysis ({} findings):",
+            "[2/3] Análise da IA ({} achados):",
             orchestrator.findings.len()
         );
         for line in analysis.lines() {
@@ -330,16 +330,16 @@ impl CommandLineInterface {
             .filter(|v| v.severity == Severity::Info)
             .count();
 
-        println!("[3/3] Summary");
+        println!("[3/3] Resumo");
         println!("───────────────────────────────────────────────────────────");
-        println!("  Total findings: {}", orchestrator.findings.len());
+        println!("  Total de achados: {}", orchestrator.findings.len());
         println!(
-            "  CRITICAL: {}   HIGH: {}   MEDIUM: {}   LOW: {}   INFO: {}",
+            "  CRÍTICAS: {}   ALTAS: {}   MÉDIAS: {}   BAIXAS: {}   INFORMATIVAS: {}",
             crit, high, med, low, info
         );
         println!();
-        println!("  Next step: {}", orchestrator.determine_next_step());
-        println!("  Container: {}", orchestrator.container_id());
+        println!("  Próximo passo: {}", orchestrator.determine_next_step());
+        println!("  Contêiner: {}", orchestrator.container_id());
         println!();
         let output_file = config
             .output_file
@@ -457,6 +457,13 @@ fn selected_tools<'a>(tools: &'a [ToolInfo], active_tools: &[String]) -> Vec<&'a
         .collect()
 }
 
+#[tokio::main]
+async fn main() -> Result<()> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let cli = CommandLineInterface::new(arguments);
+    cli.run().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,11 +533,4 @@ mod tests {
         ])
         .is_err());
     }
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let cli = CommandLineInterface::new(arguments);
-    cli.run().await
 }

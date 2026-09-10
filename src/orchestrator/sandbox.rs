@@ -60,7 +60,8 @@ impl TraceCollector {
     }
 
     fn emit(&mut self, line: impl Into<String>) {
-        let line = format!("[{}] {}", timestamp(), line.into());
+        let line = crate::utils::redaction::sanitize_text(&line.into());
+        let line = format!("[{}] {line}", timestamp());
         if let Some(sink) = &self.sink {
             let _ = sink.send(line.clone());
         }
