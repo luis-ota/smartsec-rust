@@ -142,27 +142,18 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let columns = Layout::horizontal([
-        Constraint::Length(10),
-        Constraint::Min(1),
-        Constraint::Length(11),
-    ])
-    .split(area);
-    let back_focused = app.focus == FocusTarget::ExecutionBack;
+    let columns = Layout::horizontal([Constraint::Min(1), Constraint::Length(22)]).split(area);
     let cancel_focused = app.focus == FocusTarget::ExecutionCancel;
-    chrome::render_button(
-        app,
-        frame,
+    frame.render_widget(
+        Paragraph::new("↑↓ percorre os logs · esc também cancela")
+            .style(Style::default().fg(MUTED)),
         columns[0],
-        "Voltar",
-        SemanticAction::Back,
-        chrome::ButtonState::secondary(back_focused),
     );
     chrome::render_button(
         app,
         frame,
-        columns[2],
-        "Cancelar",
+        columns[1],
+        "Cancelar varredura",
         SemanticAction::CancelRun,
         chrome::ButtonState::secondary(cancel_focused).enabled(!app.exec_cancelled),
     );

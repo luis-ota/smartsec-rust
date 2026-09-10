@@ -1,3 +1,10 @@
+#[path = "../src/utils/redaction.rs"]
+pub mod redaction;
+
+pub mod utils {
+    pub use crate::redaction;
+}
+
 #[allow(dead_code)]
 #[path = "../src/orchestrator/sandbox.rs"]
 mod sandbox;

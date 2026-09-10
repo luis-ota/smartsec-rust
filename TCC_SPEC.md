@@ -131,9 +131,11 @@ O prototipo possui TUI, configuracao, suporte a mouse, relatorio Markdown e inte
 
 Nenhum finding demonstrativo pode ser misturado a uma execucao real. O fluxo executavel nao oferece modo demonstrativo; a origem legada `Demo` permanece apenas para leitura de historicos ja persistidos.
 
-Cada finding deve manter campos proprietarios e proveniencia com origem, ferramenta, alvo, evidencia e timestamp. O fluxo real somente aceita achados produzidos pelos parsers dos scanners executados.
+Cada finding deve manter campos proprietarios e proveniencia com origem, ferramenta, alvo, evidencia e timestamp. O fluxo real somente aceita achados produzidos pelos parsers dos scanners executados. A severidade estruturada do scanner e autoritativa: texto gerado por IA pode orientar a remediacao, mas nao pode reclassificar o achado. Todo texto operacional gerado pelo SmartSec e apresentado em portugues brasileiro.
 
-Na Sprint 1, Nmap e Nuclei reais executam exclusivamente em Podman rootless. A rede `pasta` mapeia `169.254.1.2` dentro do scanner para o loopback do host, permitindo analisar um alvo autorizado publicado somente em `127.0.0.1` sem exposicao na rede local. A imagem do Nuclei e referenciada por digest, os templates sao montados em modo somente leitura, a configuracao temporaria fica restrita a tmpfs e o commit esperado deve ser validado antes da execucao. O Nmap usa TCP connect sem capabilities adicionais. O plano validado pelo orquestrador e aplicado aos argumentos do container. Cada registro estruturado preserva stdout, stderr sanitizado, status, duracao, timestamp, versao e imagem/digest quando aplicavel, alem do trace operacional completo do Podman (comandos executados, saida do pull da imagem, start do container e limpeza), exibido ao vivo na TUI e no modo headless.
+Na Sprint 1, Nmap e Nuclei reais executam exclusivamente em Podman rootless. A rede `pasta` mapeia `169.254.1.2` dentro do scanner para o loopback do host, permitindo analisar um alvo autorizado publicado somente em `127.0.0.1` sem exposicao na rede local. A imagem do Nuclei e referenciada por digest, os templates sao montados em modo somente leitura, a configuracao temporaria fica restrita a tmpfs e o commit esperado deve ser validado antes da execucao. O Nmap usa TCP connect sem capabilities adicionais. O plano validado pelo orquestrador e aplicado aos argumentos do container. Cada registro estruturado preserva stdout e stderr sanitizados, status, duracao, timestamp, versao e imagem/digest quando aplicavel, alem do trace operacional sanitizado do Podman (comandos executados, saida do pull da imagem, inicio do container e limpeza), exibido ao vivo na TUI e no modo headless. Corpos de requisicao/resposta HTTP, comandos curl, credenciais e query strings nao podem aparecer em findings, auditorias ou relatorios; a evidencia minima preserva template, matcher, endpoint, host, URL e tags.
+
+A tela de configuracao da TUI deve permanecer legivel em `80x24`, separar conexao principal de confiabilidade, ocultar campos nao aplicaveis e manter a tela aberta quando houver erro de validacao ou persistencia. Todas as acoes disponiveis por teclado devem possuir equivalente por mouse. O fluxo Nmap -> decisao -> Nuclei -> auditoria -> relatorio possui roteiro E2E reproduzivel em `scripts/e2e_tui_local.sh`; a evidencia da homologacao esta em `docs/evidence/issue-53-tui-e2e.md`.
 
 ## 8. Macro-sprints
 
@@ -168,7 +170,7 @@ Issues: #29, #30, #31, #32, #33 e #34.
 1. Subir DVWA e Juice Shop em ambiente local isolado.
 2. Registrar a matriz de vulnerabilidades conhecidas (ground truth).
 3. Executar os cenarios com GPT-4o e Llama 3.1.
-4. Preservar logs brutos, configuracao e relatorios.
+4. Preservar logs operacionais sanitizados, configuracao e relatorios; dados brutos de pesquisa devem permanecer isolados, com acesso controlado e tratamento de segredos.
 5. Cruzar achados automatizados com o ground truth.
 
 ### Validacao DevSecOps

@@ -230,7 +230,7 @@ impl Orchestrator {
 
     async fn request_nuclei_plan(&mut self, target: &str) -> Option<String> {
         let prompt = format!(
-            "Analyze this Nmap XML and return only JSON with fields should_run, profiles, concurrency, timeout_seconds, justification. Allowed profiles are http-misconfiguration, http-exposed-panels, ssh-exposure, database-exposure, generic. Never invent command flags or shell commands. Target: {target}\n\nNmap log:\n{}",
+            "Analise o XML do Nmap e retorne somente JSON com os campos should_run, profiles, concurrency e timeout_seconds. Os únicos profiles permitidos são http-misconfiguration, http-exposed-panels, ssh-exposure, database-exposure e generic. Não invente flags, comandos nem texto adicional. Alvo: {target}\n\nLog do Nmap:\n{}",
             self.latest_nmap_output.as_deref().unwrap_or_default()
         );
         self.agent.execute_with_fallback(&prompt).await.ok()
@@ -257,9 +257,16 @@ impl Orchestrator {
                 }
             }
             if exec.tool_name == "Nmap" && !exec.output.is_empty() {
-                let parsed =
-                    crate::orchestrator::nmap_parser::parse_nmap_findings(&exec.output, &target);
+                let (parsed, errors) =
+                    crate::orchestrator::nmap_parser::parse_nmap_findings_with_errors(
+                        &exec.output,
+                        &target,
+                    );
                 real_findings.extend(parsed);
+                if exec.execution_error.is_none() && !errors.is_empty() {
+                    exec.execution_error = Some(errors.join("; "));
+                    exec.status = "failed".to_string();
+                }
             }
         }
         self.findings = real_findings;
@@ -353,7 +360,11 @@ impl Orchestrator {
             self.last_log.clone(),
         );
         let metadata = crate::orchestrator::scan_logger::ScanMetadata {
-            decisions: self.decision_history.clone(),
+            decisions: self
+                .decision_history
+                .iter()
+                .map(DecisionRecord::sanitized)
+                .collect(),
             ..metadata
         };
         crate::orchestrator::scan_logger::save_scan_log(&metadata)
@@ -402,29 +413,7 @@ fn execution_status(status: &ExecutionStatus) -> String {
 
 /// Remove credenciais e tokens antes de persistir ou encaminhar qualquer saída.
 fn sanitize(value: &str) -> String {
-    let patterns = [
-        "api_key",
-        "apikey",
-        "token",
-        "authorization",
-        "password",
-        "secret",
-    ];
-    value
-        .lines()
-        .map(|line| {
-            let lower = line.to_ascii_lowercase();
-            if patterns.iter().any(|pattern| lower.contains(pattern)) {
-                "[REDACTED]"
-            } else if let Some(query_start) = line.find('?') {
-                // Query strings commonly carry API keys even when no key name is obvious.
-                &line[..query_start + 1]
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::utils::redaction::sanitize_text(value)
 }
 
 fn validate_templates(path: &std::path::Path, expected: Option<&str>) -> anyhow::Result<()> {
@@ -455,9 +444,10 @@ mod tests {
     use crate::config::Configuration;
 
     fn make_config() -> Configuration {
-        let mut c = Configuration::default();
-        c.target_url = "http://test.local".to_string();
-        c
+        Configuration {
+            target_url: "http://test.local".to_string(),
+            ..Configuration::default()
+        }
     }
 
     #[test]
