@@ -1,568 +1,468 @@
-use crate::config::execution_type::ExecutionType;
 use crate::domain::Severity;
+use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SUCCESS, SURFACE, TEXT, WARNING};
+use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::AppState;
 use crate::utils::helpers::wrap_text;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::Paragraph,
     Frame,
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let bg = Block::default().style(Style::default().bg(Color::Rgb(8, 8, 16)));
-    frame.render_widget(bg, area);
-
+    let vulnerabilities = app.vulnerabilities();
+    let critical = vulnerabilities
+        .iter()
+        .filter(|item| item.severity == Severity::Critical)
+        .count();
+    let status = if let Some(error) = &app.run_error {
+        format!(
+            "Execução concluída com falhas · {}",
+            chrome::truncate_width(error, 60)
+        )
+    } else if app.llm_warning.is_some() {
+        "Análise local aplicada · LLM indisponível".to_string()
+    } else if app.md_exported {
+        "Relatório Markdown exportado".to_string()
+    } else if vulnerabilities.is_empty() {
+        "Análise concluída sem vulnerabilidades".to_string()
+    } else {
+        format!("{} achados · {} críticos", vulnerabilities.len(), critical)
+    };
+    let title = if app.show_didactic {
+        "Explicação didática"
+    } else if app.result_detail_vuln.is_some() {
+        "Detalhe do achado"
+    } else {
+        "Resultados"
+    };
+    let shell = chrome::render_shell(app, frame, area, title, &status);
     if app.show_didactic {
-        render_didactic(app, frame, area);
-        return;
+        render_didactic(app, frame, shell.content);
+    } else if let Some(index) = app.result_detail_vuln {
+        render_detail(app, frame, shell.content, index);
+    } else {
+        render_overview(app, frame, shell.content);
     }
-    if app.show_detail {
-        render_detail(app, frame, area);
-        return;
-    }
+}
 
-    let chunks = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(3),
-        Constraint::Length(3),
+fn render_overview(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(6),
+        Constraint::Min(1),
+        Constraint::Length(2),
     ])
     .split(area);
-    render_header(app, frame, chunks[0]);
-    render_body(app, frame, chunks[1]);
-    render_footer(app, frame, chunks[2]);
+    render_summary(app, frame, rows[0]);
+    render_list(app, frame, rows[1]);
+    render_overview_actions(app, frame, rows[2]);
 }
 
-fn render_header(app: &AppState, frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let vulns = app.vulnerabilities();
-    let crit = vulns
-        .iter()
-        .filter(|v| v.severity == Severity::Critical)
-        .count();
-    let high = vulns
-        .iter()
-        .filter(|v| v.severity == Severity::High)
-        .count();
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(" | ", Style::default().fg(Color::Green)),
-        Span::styled("Results", Style::default().fg(Color::White).bold()),
-        Span::styled(
-            format!(" {} vulns found", vulns.len()),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::styled(
-            format!(" ({} critical, {} high)", crit, high),
-            Style::default().fg(Color::Red),
-        ),
-    ]))
-    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(header, inner);
-}
-
-fn render_body(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    if let Some(idx) = app.result_detail_vuln {
-        render_vuln_detail(app, frame, area, idx);
-    } else {
-        let chunks = Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
-            .split(area);
-        render_summary(app, frame, chunks[0]);
-        render_vuln_list(app, frame, chunks[1]);
-    }
+fn audit_label(path: Option<&std::path::PathBuf>, pending: &str) -> String {
+    path.map_or_else(
+        || pending.to_string(),
+        |path| {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| format!("auditoria  {}", name.to_string_lossy()),
+            )
+        },
+    )
 }
 
 fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Line::from(vec![Span::styled(
-            " Summary ",
-            Style::default().fg(Color::Cyan).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)));
+    let block = chrome::panel("Resumo", false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    let vulns = app.vulnerabilities();
-    let crit = vulns
-        .iter()
-        .filter(|v| v.severity == Severity::Critical)
-        .count();
-    let high = vulns
-        .iter()
-        .filter(|v| v.severity == Severity::High)
-        .count();
-    let med = vulns
-        .iter()
-        .filter(|v| v.severity == Severity::Medium)
-        .count();
-    let low = vulns.iter().filter(|v| v.severity == Severity::Low).count();
-    let total = vulns.len();
-    let bar_max = 10usize;
-    let crit_w = crit * bar_max / total.max(1);
-    let high_w = high * bar_max / total.max(1);
-    let med_w = med * bar_max / total.max(1);
-    let low_w = low * bar_max / total.max(1);
-
-    let summary = Text::from(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Target: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&app.config.target_url, Style::default().fg(Color::White)),
-        ]),
-        Line::from(vec![
-            Span::styled(" Mode: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(app.mode().to_string(), Style::default().fg(Color::Cyan)),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            " Severity Breakdown",
-            Style::default().fg(Color::White).bold(),
-        )]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" CRITICAL ", Style::default().fg(Color::Magenta).bold()),
-            Span::styled("█".repeat(crit_w), Style::default().fg(Color::Magenta)),
-            Span::styled(format!(" {}", crit), Style::default().fg(Color::Magenta)),
-        ]),
-        Line::from(vec![
-            Span::styled(" HIGH ", Style::default().fg(Color::Red).bold()),
-            Span::styled("█".repeat(high_w), Style::default().fg(Color::Red)),
-            Span::styled(format!(" {}", high), Style::default().fg(Color::Red)),
-        ]),
-        Line::from(vec![
-            Span::styled(" MEDIUM ", Style::default().fg(Color::Yellow).bold()),
-            Span::styled("█".repeat(med_w), Style::default().fg(Color::Yellow)),
-            Span::styled(format!(" {}", med), Style::default().fg(Color::Yellow)),
-        ]),
-        Line::from(vec![
-            Span::styled(" LOW ", Style::default().fg(Color::Cyan).bold()),
-            Span::styled("█".repeat(low_w), Style::default().fg(Color::Cyan)),
-            Span::styled(format!(" {}", low), Style::default().fg(Color::Cyan)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Tools used: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                app.tools.iter().filter(|t| t.selected).count().to_string(),
-                Style::default().fg(Color::Green),
+    let vulnerabilities = app.vulnerabilities();
+    let counts = |severity| {
+        vulnerabilities
+            .iter()
+            .filter(|item| item.severity == severity)
+            .count()
+    };
+    let critical = counts(Severity::Critical);
+    let high = counts(Severity::High);
+    let medium = counts(Severity::Medium);
+    let low = counts(Severity::Low);
+    let info = counts(Severity::Info);
+    let lines = if let Some(error) = &app.run_error {
+        vec![
+            Line::styled(
+                chrome::truncate_width(error, inner.width as usize),
+                Style::default().fg(DANGER).bold(),
             ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "WARN: Immediate action required for ",
-                Style::default().fg(Color::Red),
+            Line::from(vec![
+                metric("críticas", critical, DANGER),
+                Span::raw("   "),
+                metric("altas", high, Color::Rgb(220, 130, 90)),
+                Span::raw("   "),
+                metric("médias", medium, WARNING),
+            ]),
+            Line::from(vec![
+                metric("baixas", low, ACCENT),
+                Span::raw("   "),
+                metric("informativas", info, MUTED),
+            ]),
+            Line::styled(
+                audit_label(app.audit_log_path.as_ref(), "Log de auditoria indisponível"),
+                Style::default().fg(MUTED),
             ),
-            Span::styled(
-                format!("{} critical", crit),
-                Style::default().fg(Color::Magenta).bold(),
+        ]
+    } else if vulnerabilities.is_empty() {
+        vec![
+            Line::styled(
+                "Nenhum achado identificado.",
+                Style::default().fg(SUCCESS).bold(),
             ),
-            Span::styled(" findings", Style::default().fg(Color::Red)),
-        ]),
-    ]);
-    let para = Paragraph::new(summary)
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(para, inner);
+            Line::styled(
+                "Exporte o relatório ou inicie uma nova análise.",
+                Style::default().fg(MUTED),
+            ),
+        ]
+    } else {
+        vec![
+            Line::from(vec![
+                metric("críticas", critical, DANGER),
+                Span::raw("   "),
+                metric("altas", high, Color::Rgb(220, 130, 90)),
+                Span::raw("   "),
+                metric("médias", medium, WARNING),
+            ]),
+            Line::from(vec![
+                metric("baixas", low, ACCENT),
+                Span::raw("   "),
+                metric("informativas", info, MUTED),
+            ]),
+            Line::from(vec![
+                Span::styled("alvo  ", Style::default().fg(MUTED)),
+                Span::styled(
+                    chrome::truncate_width(
+                        &app.config.target_url,
+                        (inner.width as usize).saturating_sub(7),
+                    ),
+                    Style::default().fg(TEXT),
+                ),
+            ]),
+            Line::styled(
+                audit_label(
+                    app.audit_log_path.as_ref(),
+                    "auditoria  aguardando persistência",
+                ),
+                Style::default().fg(MUTED),
+            ),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
+        inner,
+    );
 }
 
-fn render_vuln_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    app.results_list_rect = area;
-    let block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Line::from(vec![Span::styled(
-            " Vulnerabilities ",
-            Style::default().fg(Color::Red).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)));
+fn metric(label: &str, value: usize, color: Color) -> Span<'_> {
+    Span::styled(
+        format!("{value} {label}"),
+        Style::default().fg(color).bold(),
+    )
+}
+
+fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let focused = app.focus == FocusTarget::ResultsList;
+    let block = chrome::panel("Achados", focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    let vulns = app.vulnerabilities();
-    let visible_h = inner.height.saturating_sub(2) as usize;
-    let max_scroll = vulns.len().saturating_sub(visible_h);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let vulnerabilities = app.vulnerabilities();
+    if vulnerabilities.is_empty() {
+        app.result_cursor = 0;
+        app.result_scroll = 0;
+        frame.render_widget(
+            Paragraph::new("Nenhuma vulnerabilidade para revisar.")
+                .style(Style::default().fg(MUTED).bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+    let visible = inner.height as usize;
+    app.result_cursor = app.result_cursor.min(vulnerabilities.len() - 1);
+    let max_scroll = vulnerabilities.len().saturating_sub(visible);
     app.result_scroll = app.result_scroll.min(max_scroll);
     if app.result_cursor < app.result_scroll {
         app.result_scroll = app.result_cursor;
-    } else if app.result_cursor >= app.result_scroll + visible_h {
-        app.result_scroll = app.result_cursor - visible_h + 1;
+    } else if app.result_cursor >= app.result_scroll.saturating_add(visible) {
+        app.result_scroll = app.result_cursor.saturating_sub(visible - 1);
     }
 
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, v) in vulns
-        .iter()
-        .enumerate()
-        .skip(app.result_scroll)
-        .take(visible_h)
-    {
-        let sev_color = v.severity.color();
-        let is_cursor = i == app.result_cursor;
-        let title_style = if is_cursor {
-            Style::default().fg(Color::White).bold()
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        let bg = if is_cursor {
-            Color::Rgb(30, 30, 60)
-        } else {
-            Color::Rgb(12, 12, 24)
-        };
-        let prefix = if is_cursor { " > " } else { "   " };
+    let mut lines = Vec::new();
+    for row in 0..visible.min(vulnerabilities.len().saturating_sub(app.result_scroll)) {
+        let index = app.result_scroll + row;
+        let item = &vulnerabilities[index];
+        let current = index == app.result_cursor;
+        let active = current && focused;
         lines.push(
             Line::from(vec![
-                Span::styled(prefix.to_string(), Style::default().fg(Color::Cyan)),
+                Span::styled(if current { "> " } else { "  " }, Style::default().bold()),
                 Span::styled(
-                    format!("[{}] ", v.severity.label()),
-                    Style::default().fg(sev_color).bold(),
+                    format!("{:<8}", severity_label(item.severity)),
+                    Style::default().bold(),
                 ),
-                Span::styled(v.title.as_str(), title_style),
                 Span::styled(
-                    format!(" ({})", v.tool),
-                    Style::default().fg(Color::DarkGray),
+                    chrome::truncate_width(&item.title, inner.width.saturating_sub(12) as usize),
+                    Style::default(),
                 ),
             ])
-            .style(Style::default().bg(bg)),
+            .style(
+                Style::default()
+                    .fg(if active {
+                        Color::Black
+                    } else {
+                        severity_color(item.severity)
+                    })
+                    .bg(if active { ACCENT } else { SURFACE }),
+            ),
+        );
+        app.register_hit_region(
+            Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            SemanticAction::OpenVulnerability(index),
         );
     }
-    let para = Paragraph::new(Text::from(lines))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(para, inner);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
+        inner,
+    );
 }
 
-fn render_vuln_detail(app: &AppState, frame: &mut Frame, area: Rect, idx: usize) {
-    let vulns = app.vulnerabilities();
-    if idx >= vulns.len() {
-        return;
-    }
-    let v = &vulns[idx];
-    let sev_color = v.severity.color();
+fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let columns = Layout::horizontal([
+        Constraint::Length(13),
+        Constraint::Min(1),
+        Constraint::Length(12),
+        Constraint::Length(1),
+        Constraint::Length(12),
+    ])
+    .split(area);
+    let new_focused = app.focus == FocusTarget::ResultsNewScan;
+    let export_focused = app.focus == FocusTarget::ResultsExport;
+    let didactic_focused = app.focus == FocusTarget::ResultsDidactic;
+    chrome::render_button(
+        app,
+        frame,
+        columns[0],
+        "Nova análise",
+        SemanticAction::NewScan,
+        chrome::ButtonState::secondary(new_focused),
+    );
+    chrome::render_button(
+        app,
+        frame,
+        columns[2],
+        if app.md_exported {
+            "Exportado"
+        } else {
+            "Exportar"
+        },
+        SemanticAction::ExportMarkdown,
+        chrome::ButtonState::primary(export_focused),
+    );
+    chrome::render_button(
+        app,
+        frame,
+        columns[4],
+        "Explicação",
+        SemanticAction::ShowDidactic,
+        chrome::ButtonState::secondary(didactic_focused),
+    );
+}
 
-    let block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(sev_color))
-        .title(Line::from(vec![
-            Span::styled(
-                format!(" [{}] ", v.severity.label()),
-                Style::default().fg(sev_color).bold(),
+fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize) {
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(area);
+    let focused = app.focus == FocusTarget::ResultsDetail;
+    let block = chrome::panel("Evidência e recomendação", focused);
+    let inner = block.inner(rows[0]);
+    frame.render_widget(block, rows[0]);
+    let vulnerabilities = app.vulnerabilities();
+    if let Some(item) = vulnerabilities.get(index) {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    format!("{}  ", severity_label(item.severity)),
+                    Style::default().fg(severity_color(item.severity)).bold(),
+                ),
+                Span::styled(&item.title, Style::default().fg(TEXT).bold()),
+            ]),
+            Line::styled(
+                format!("ferramenta  {}", item.tool),
+                Style::default().fg(MUTED),
             ),
-            Span::styled(v.title.as_str(), Style::default().fg(Color::White).bold()),
-        ]))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let detail = Text::from(vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Severity: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(v.severity.label(), Style::default().fg(sev_color).bold()),
-        ]),
-        Line::from(vec![
-            Span::styled(" Tool: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(v.tool.as_str(), Style::default().fg(Color::Cyan)),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            " Description",
-            Style::default().fg(Color::White).bold(),
-        )]),
-        Line::from(vec![Span::styled(
-            format!(" {}", v.description),
-            Style::default().fg(Color::Gray),
-        )]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            " Recommendation",
-            Style::default().fg(Color::White).bold(),
-        )]),
-        Line::from(vec![Span::styled(
-            format!(" {}", v.recommendation),
-            Style::default().fg(Color::Green),
-        )]),
-    ]);
-    let para = Paragraph::new(detail)
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(para, inner);
+            Line::from(""),
+            Line::styled("Descrição", Style::default().fg(TEXT).bold()),
+        ];
+        append_wrapped(&mut lines, &item.description, inner.width as usize, MUTED);
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Recomendação",
+            Style::default().fg(TEXT).bold(),
+        ));
+        append_wrapped(
+            &mut lines,
+            &item.recommendation,
+            inner.width as usize,
+            SUCCESS,
+        );
+        let has_scroll = lines.len() > inner.height as usize;
+        let indicator_height = u16::from(has_scroll);
+        let viewport = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(indicator_height),
+        );
+        let visible = viewport.height.max(1) as usize;
+        app.detail_max_scroll = lines.len().saturating_sub(visible);
+        app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
+        let total = lines.len();
+        let visible_lines: Vec<_> = lines
+            .into_iter()
+            .skip(app.detail_scroll)
+            .take(visible)
+            .collect();
+        frame.render_widget(
+            Paragraph::new(Text::from(visible_lines)).style(Style::default().bg(SURFACE)),
+            viewport,
+        );
+        if has_scroll {
+            let first = app.detail_scroll + 1;
+            let last = (app.detail_scroll + visible).min(total);
+            frame.render_widget(
+                Paragraph::new(format!("↑↓ rolar · linhas {first}-{last} de {total}"))
+                    .alignment(ratatui::layout::Alignment::Right)
+                    .style(Style::default().fg(ACCENT).bg(SURFACE)),
+                Rect::new(
+                    inner.x,
+                    inner.y + inner.height.saturating_sub(1),
+                    inner.width,
+                    1,
+                ),
+            );
+        }
+    } else {
+        app.detail_scroll = 0;
+        app.detail_max_scroll = 0;
+        frame.render_widget(
+            Paragraph::new("O achado selecionado não está mais disponível.")
+                .style(Style::default().fg(DANGER).bg(SURFACE)),
+            inner,
+        );
+    }
+    app.register_hit_region(
+        rows[0],
+        SemanticAction::SetFocus(FocusTarget::ResultsDetail),
+    );
+    let actions = Layout::horizontal([
+        Constraint::Length(10),
+        Constraint::Min(1),
+        Constraint::Length(13),
+    ])
+    .split(rows[1]);
+    chrome::render_button(
+        app,
+        frame,
+        actions[0],
+        "Voltar",
+        SemanticAction::Back,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::ResultsBack),
+    );
+    chrome::render_button(
+        app,
+        frame,
+        actions[2],
+        "Explicação",
+        SemanticAction::ShowDidactic,
+        chrome::ButtonState::primary(app.focus == FocusTarget::ResultsDidactic),
+    );
 }
 
 fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    frame.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Line::from(vec![Span::styled(
-            " Didactic Explanation ",
-            Style::default().fg(Color::Cyan).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let vulns = app.vulnerabilities();
-    let mut lines: Vec<Line> = Vec::new();
-
-    if let Some(idx) = app.result_detail_vuln {
-        if idx < vulns.len() {
-            let v = &vulns[idx];
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" [{}] ", v.severity.label()),
-                    Style::default().fg(v.severity.color()).bold(),
-                ),
-                Span::styled(v.title.as_str(), Style::default().fg(Color::White).bold()),
-            ]));
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(area);
+    let focused = app.focus == FocusTarget::DidacticContent;
+    let block = chrome::panel("Em linguagem direta", focused);
+    let inner = block.inner(rows[0]);
+    frame.render_widget(block, rows[0]);
+    let vulnerabilities = app.vulnerabilities();
+    let mut lines = Vec::new();
+    if let Some(index) = app.result_detail_vuln {
+        if let Some(item) = vulnerabilities.get(index) {
+            lines.push(Line::styled(&item.title, Style::default().fg(TEXT).bold()));
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled(
-                " O que isso significa?",
-                Style::default().fg(Color::Cyan).bold(),
-            )]));
-            lines.push(Line::from(""));
-            for p in v.didactic.split("\n\n") {
-                for word_line in wrap_text(p, inner.width.saturating_sub(4) as usize) {
-                    lines.push(Line::from(vec![
-                        Span::styled(" ", Style::default()),
-                        Span::styled(word_line, Style::default().fg(Color::Gray)),
-                    ]));
-                }
-                lines.push(Line::from(""));
-            }
+            append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
         }
+    } else if vulnerabilities.is_empty() {
+        lines.push(Line::styled(
+            "Não há achados que precisem de explicação.",
+            Style::default().fg(SUCCESS),
+        ));
     } else {
-        lines.push(Line::from(vec![Span::styled(
-            " SmartSec — Explicação Didática",
-            Style::default().fg(Color::Cyan).bold(),
-        )]));
-        lines.push(Line::from(""));
-        for v in &vulns {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" [{}] ", v.severity.label()),
-                    Style::default().fg(v.severity.color()).bold(),
-                ),
-                Span::styled(v.title.as_str(), Style::default().fg(Color::White).bold()),
-            ]));
-            lines.push(Line::from(""));
-            for p in v.didactic.split("\n\n") {
-                for word_line in wrap_text(p, inner.width.saturating_sub(4) as usize) {
-                    lines.push(Line::from(vec![
-                        Span::styled(" ", Style::default()),
-                        Span::styled(word_line, Style::default().fg(Color::Gray)),
-                    ]));
-                }
-                lines.push(Line::from(""));
-            }
-            lines.push(Line::from(vec![Span::styled(
-                " ─────────────────────────────────",
-                Style::default().fg(Color::DarkGray),
-            )]));
+        for item in &vulnerabilities {
+            lines.push(Line::styled(&item.title, Style::default().fg(TEXT).bold()));
+            append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
             lines.push(Line::from(""));
         }
     }
-
-    lines.push(Line::from(vec![Span::styled(" ", Style::default())]));
-
-    let visible_h = inner.height.saturating_sub(3) as usize;
-    let max_scroll = lines.len().saturating_sub(visible_h);
-    app.didactic_scroll = app.didactic_scroll.min(max_scroll);
-    let visible: Vec<Line> = lines
+    let visible = inner.height.max(1) as usize;
+    app.didactic_max_scroll = lines.len().saturating_sub(visible);
+    app.didactic_scroll = app.didactic_scroll.min(app.didactic_max_scroll);
+    let visible_lines: Vec<_> = lines
         .into_iter()
         .skip(app.didactic_scroll)
-        .take(visible_h)
+        .take(visible)
         .collect();
-    let para = Paragraph::new(Text::from(visible))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(para, inner);
-
-    let btn_w = 8u16;
-    let btn_x = area.x + area.width.saturating_sub(btn_w + 3);
-    let btn_y = area.y + area.height.saturating_sub(2);
-    app.didactic_back_rect = Rect::new(btn_x, btn_y, btn_w, 1);
-    let back_btn = Paragraph::new(Line::from(vec![Span::styled(
-        " Back ",
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(0, 120, 140))
-            .bold(),
-    )]))
-    .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    frame.render_widget(back_btn, app.didactic_back_rect);
+    frame.render_widget(
+        Paragraph::new(Text::from(visible_lines)).style(Style::default().bg(SURFACE)),
+        inner,
+    );
+    app.register_hit_region(
+        rows[0],
+        SemanticAction::SetFocus(FocusTarget::DidacticContent),
+    );
+    let actions = Layout::horizontal([Constraint::Length(10), Constraint::Min(1)]).split(rows[1]);
+    chrome::render_button(
+        app,
+        frame,
+        actions[0],
+        "Voltar",
+        SemanticAction::Back,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::DidacticBack),
+    );
 }
 
-fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    frame.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::all())
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Yellow))
-        .title(Line::from(vec![Span::styled(
-            " Detailed Analysis ",
-            Style::default().fg(Color::Yellow).bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let vulns = app.vulnerabilities();
-    let mut lines: Vec<Line> = Vec::new();
-    if let Some(idx) = app.result_detail_vuln {
-        if idx < vulns.len() {
-            let v = &vulns[idx];
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" [{}] ", v.severity.label()),
-                    Style::default().fg(v.severity.color()).bold(),
-                ),
-                Span::styled(v.title.as_str(), Style::default().fg(Color::White).bold()),
-            ]));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled(
-                " Technical Details",
-                Style::default().fg(Color::Yellow).bold(),
-            )]));
-            lines.push(Line::from(vec![Span::styled(
-                format!(" {}", v.description),
-                Style::default().fg(Color::Gray),
-            )]));
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled(
-                " Recommendation",
-                Style::default().fg(Color::Green).bold(),
-            )]));
-            lines.push(Line::from(vec![Span::styled(
-                format!(" {}", v.recommendation),
-                Style::default().fg(Color::Green),
-            )]));
+fn append_wrapped<'a>(lines: &mut Vec<Line<'a>>, value: &'a str, width: usize, color: Color) {
+    for paragraph in value.split("\n\n") {
+        for line in wrap_text(paragraph, width.max(1)) {
+            lines.push(Line::styled(line, Style::default().fg(color)));
         }
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(
-            " Esc ",
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold(),
-        ),
-        Span::styled(" to go back", Style::default().fg(Color::DarkGray)),
-    ]));
-    let para = Paragraph::new(lines)
-        .style(Style::default().bg(Color::Rgb(12, 12, 24)))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(para, inner);
 }
 
-fn render_footer(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let bar = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    let inner = bar.inner(area);
-    frame.render_widget(bar, area);
-
-    let in_detail = app.result_detail_vuln.is_some();
-
-    let export_w = 12u16;
-    let didactic_w = 10u16;
-    let new_scan_w = 12u16;
-    let didactic_x = area.x + area.width.saturating_sub(didactic_w + 2);
-    let export_x = didactic_x.saturating_sub(export_w + 2);
-    let new_scan_x = export_x.saturating_sub(new_scan_w + 2);
-    let back_w = 8u16;
-    let didactic_w = 10u16;
-    let didactic_x = area.x + area.width.saturating_sub(didactic_w + 2);
-    let back_x = didactic_x.saturating_sub(back_w + 4);
-
-    if in_detail {
-        app.results_back_rect = Rect::new(back_x, area.y + 1, back_w, 1);
-        app.results_didactic_rect = Rect::new(didactic_x, area.y + 1, didactic_w, 1);
-    } else {
-        app.results_new_scan_rect = Rect::new(new_scan_x, area.y + 1, new_scan_w, 1);
-        app.results_export_rect = Rect::new(export_x, area.y + 1, export_w, 1);
-        app.results_didactic_rect = Rect::new(didactic_x, area.y + 1, didactic_w, 1);
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "CRÍTICA",
+        Severity::High => "ALTA",
+        Severity::Medium => "MÉDIA",
+        Severity::Low => "BAIXA",
+        Severity::Info => "INFO",
     }
+}
 
-    let spans = vec![
-        Span::styled(
-            format!(
-                " | {} ",
-                match app.mode() {
-                    ExecutionType::Auto => "AUTO",
-                    ExecutionType::Assisted => "ASSISTED",
-                }
-            ),
-            Style::default().fg(Color::Cyan).bold(),
-        ),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("↑↓", Style::default().fg(Color::White)),
-        Span::styled(" Nav ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter", Style::default().fg(Color::White)),
-        Span::styled(" Select ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::White)),
-        Span::styled(" Quit", Style::default().fg(Color::DarkGray)),
-    ];
-    let footer =
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(footer, inner);
-
-    let export_label = if app.md_exported {
-        " OK Exported "
-    } else {
-        " Export .md "
-    };
-    let didactic_label = " Didactic ";
-
-    if in_detail {
-        let back_btn = Paragraph::new(Line::from(vec![Span::styled(
-            " Back ",
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(0, 120, 140))
-                .bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(back_btn, app.results_back_rect);
-    } else {
-        let new_scan_btn = Paragraph::new(Line::from(vec![Span::styled(
-            " New Scan ",
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(0, 80, 140))
-                .bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(new_scan_btn, app.results_new_scan_rect);
-
-        let export_btn = Paragraph::new(Line::from(vec![Span::styled(
-            export_label,
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(0, 120, 0))
-                .bold(),
-        )]))
-        .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-        frame.render_widget(export_btn, app.results_export_rect);
+fn severity_color(severity: Severity) -> Color {
+    match severity {
+        Severity::Critical => DANGER,
+        Severity::High => Color::Rgb(220, 130, 90),
+        Severity::Medium => WARNING,
+        Severity::Low => ACCENT,
+        Severity::Info => MUTED,
     }
-
-    let didactic_btn = Paragraph::new(Line::from(vec![Span::styled(
-        didactic_label,
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(120, 40, 120))
-            .bold(),
-    )]))
-    .style(Style::default().bg(Color::Rgb(20, 20, 40)));
-    frame.render_widget(didactic_btn, app.results_didactic_rect);
 }

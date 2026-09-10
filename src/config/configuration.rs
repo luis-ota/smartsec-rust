@@ -17,10 +17,8 @@ pub struct Configuration {
     pub provider_mode: String,
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
-    pub use_real_nuclei: bool,
     pub nuclei_templates_path: Option<String>,
     pub nuclei_templates_commit: Option<String>,
-    pub demo_mode: bool,
     pub output_file: Option<String>,
     pub show_help: bool,
     pub show_version: bool,
@@ -53,7 +51,6 @@ impl Configuration {
                 "-h" | "--help" => self.show_help = true,
                 "-v" | "--version" => self.show_version = true,
                 "-a" | "--auto" => self.execution_type = ExecutionType::Auto,
-                "-d" | "--demo" => self.demo_mode = true,
                 "-u" | "--url" => self.target_url = next_argument(args, &mut index, "--url")?,
                 "-o" | "--output" => {
                     self.output_file = Some(next_argument(args, &mut index, "--output")?);
@@ -61,7 +58,6 @@ impl Configuration {
                 "-p" | "--provider" => {
                     let provider = next_argument(args, &mut index, "--provider")?;
                     self.llm.provider = match provider.to_ascii_lowercase().as_str() {
-                        "mock" => crate::config::llm_config::LlmProviderKind::Mock,
                         "ollama" => crate::config::llm_config::LlmProviderKind::Ollama,
                         "openai" => crate::config::llm_config::LlmProviderKind::OpenAI,
                         "nvidia-nim" => crate::config::llm_config::LlmProviderKind::NvidiaNim,
@@ -121,9 +117,7 @@ impl Configuration {
         let _ = crate::config::persistence::save_config_file(
             &crate::config::persistence::PersistedConfig::from(self),
         );
-        if !self.llm.api_key.is_empty()
-            && self.llm.provider != crate::config::llm_config::LlmProviderKind::Mock
-        {
+        if !self.llm.api_key.is_empty() {
             let _ = crate::config::persistence::save_api_key(&self.llm.api_key);
         }
     }
@@ -143,9 +137,15 @@ impl Default for Configuration {
 impl From<crate::config::persistence::PersistedConfig> for Configuration {
     fn from(p: crate::config::persistence::PersistedConfig) -> Self {
         let mut llm = p.llm.clone();
-        if llm.api_key.is_empty()
-            && llm.provider != crate::config::llm_config::LlmProviderKind::Mock
-        {
+        if llm.provider == crate::config::llm_config::LlmProviderKind::Ollama {
+            if llm.base_url.is_empty() {
+                llm.base_url = llm.provider.default_base_url().to_string();
+            }
+            if llm.model.is_empty() || llm.model == "local" {
+                llm.model = llm.provider.default_model().to_string();
+            }
+        }
+        if llm.api_key.is_empty() {
             if let Ok(key) = crate::config::persistence::load_api_key() {
                 llm.api_key = key;
             }
@@ -156,10 +156,8 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             provider_mode: format!("{:?}", llm.provider),
             execution_type: p.execution_type,
             llm,
-            use_real_nuclei: p.use_real_nuclei,
             nuclei_templates_path: p.nuclei_templates_path,
             nuclei_templates_commit: p.nuclei_templates_commit,
-            demo_mode: p.demo_mode,
             output_file: None,
             show_help: false,
             show_version: false,
@@ -190,7 +188,6 @@ mod tests {
             "-u".to_string(),
             "http://test.local".to_string(),
             "-a".to_string(),
-            "-d".to_string(),
             "-o".to_string(),
             "out.md".to_string(),
         ];
@@ -198,7 +195,6 @@ mod tests {
         config.parse_args(&args).unwrap();
         assert_eq!(config.target_url, "http://test.local");
         assert_eq!(config.execution_type, ExecutionType::Auto);
-        assert!(config.demo_mode);
         assert_eq!(config.output_file, Some("out.md".to_string()));
     }
 

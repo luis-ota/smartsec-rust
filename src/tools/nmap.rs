@@ -61,6 +61,7 @@ impl NmapTool {
     pub fn container_arguments(target: &str) -> Vec<String> {
         let (host, port) = split_host_port(target);
         let mut arguments = vec![
+            "-Pn".to_owned(),
             "-sT".to_owned(),
             "-sV".to_owned(),
             "-oX".to_owned(),
@@ -84,7 +85,16 @@ mod tests {
 
         assert_eq!(
             arguments,
-            ["-sT", "-sV", "-oX", "-", "-p", "8443", "example.test"]
+            [
+                "-Pn",
+                "-sT",
+                "-sV",
+                "-oX",
+                "-",
+                "-p",
+                "8443",
+                "example.test"
+            ]
         );
     }
 
@@ -94,7 +104,7 @@ mod tests {
 
         assert_eq!(
             tool.configure_command("example.test"),
-            "nmap -sT -sV -oX - example.test"
+            "nmap -Pn -sT -sV -oX - example.test"
         );
     }
 

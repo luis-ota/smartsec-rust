@@ -21,7 +21,7 @@ fn default_fallback_model() -> String {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum LlmProviderKind {
-    Mock,
+    #[serde(alias = "Mock")]
     Ollama,
     NvidiaNim,
     OpenAI,
@@ -31,7 +31,6 @@ pub enum LlmProviderKind {
 impl LlmProviderKind {
     pub fn default_base_url(&self) -> &str {
         match self {
-            LlmProviderKind::Mock => "",
             LlmProviderKind::Ollama => "http://localhost:11434/v1",
             LlmProviderKind::NvidiaNim => "https://integrate.api.nvidia.com/v1",
             LlmProviderKind::OpenAI => "https://api.openai.com/v1",
@@ -41,8 +40,7 @@ impl LlmProviderKind {
 
     pub fn default_model(&self) -> &str {
         match self {
-            LlmProviderKind::Mock => "local",
-            LlmProviderKind::Ollama => "llama3.1:8b",
+            LlmProviderKind::Ollama => "llama3.2:1b",
             LlmProviderKind::NvidiaNim => "meta/llama-3.1-405b-instruct",
             LlmProviderKind::OpenAI => "gpt-4o",
             LlmProviderKind::Custom => "",
@@ -50,18 +48,11 @@ impl LlmProviderKind {
     }
 
     pub fn all_labels() -> Vec<&'static str> {
-        vec![
-            "Integrado",
-            "Ollama",
-            "NVIDIA NIM",
-            "OpenAI",
-            "Personalizado",
-        ]
+        vec!["Ollama", "NVIDIA NIM", "OpenAI", "Personalizado"]
     }
 
     pub fn from_label(label: &str) -> Self {
         match label {
-            "Integrado" => LlmProviderKind::Mock,
             "Ollama" => LlmProviderKind::Ollama,
             "NVIDIA NIM" => LlmProviderKind::NvidiaNim,
             "OpenAI" => LlmProviderKind::OpenAI,
@@ -72,7 +63,6 @@ impl LlmProviderKind {
     #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
-            LlmProviderKind::Mock => "Integrado",
             LlmProviderKind::Ollama => "Ollama",
             LlmProviderKind::NvidiaNim => "NVIDIA NIM",
             LlmProviderKind::OpenAI => "OpenAI",
@@ -124,7 +114,6 @@ impl LlmConfig {
     pub fn is_remote(&self) -> bool {
         match self.provider {
             LlmProviderKind::OpenAI | LlmProviderKind::NvidiaNim => true,
-            LlmProviderKind::Mock => false,
             LlmProviderKind::Ollama | LlmProviderKind::Custom => {
                 !is_loopback_endpoint(&self.base_url)
             }
@@ -132,10 +121,8 @@ impl LlmConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.provider != LlmProviderKind::Mock {
-            validate_endpoint(&self.base_url, !self.is_remote())?;
-            validate_model(&self.model)?;
-        }
+        validate_endpoint(&self.base_url, !self.is_remote())?;
+        validate_model(&self.model)?;
         if self.timeout_secs == 0 || self.timeout_secs > DEFAULT_TIMEOUT_SECS {
             return Err("O tempo limite da LLM deve estar entre 1 e 45 segundos".to_string());
         }
@@ -198,7 +185,7 @@ fn is_loopback_endpoint(endpoint: &str) -> bool {
 
 impl Default for LlmConfig {
     fn default() -> Self {
-        let provider = LlmProviderKind::Mock;
+        let provider = LlmProviderKind::Ollama;
         Self {
             provider,
             base_url: provider.default_base_url().to_string(),
@@ -252,13 +239,19 @@ mod tests {
     fn exposes_provider_labels_in_portuguese() {
         let labels = LlmProviderKind::all_labels();
 
-        assert_eq!(labels[0], "Integrado");
-        assert_eq!(labels[4], "Personalizado");
-        assert_eq!(
-            LlmProviderKind::from_label("Integrado"),
-            LlmProviderKind::Mock
-        );
+        assert_eq!(labels[0], "Ollama");
+        assert_eq!(labels[3], "Personalizado");
+        assert!(!labels.contains(&"Integrado"));
         assert_eq!(LlmProviderKind::Custom.label(), "Personalizado");
+    }
+
+    #[test]
+    fn deserializes_legacy_mock_provider_as_ollama() {
+        let provider: LlmProviderKind = toml::from_str("provider = \"Mock\"")
+            .and_then(|value: toml::Value| value["provider"].clone().try_into())
+            .unwrap();
+
+        assert_eq!(provider, LlmProviderKind::Ollama);
     }
 
     #[test]
