@@ -74,6 +74,9 @@ enum RunEvent {
         index: usize,
         execution: Box<SecurityTool>,
     },
+    AnalysisProgress {
+        elapsed_secs: u64,
+    },
     Completed {
         orchestrator: Box<Orchestrator>,
         audit_log: Result<PathBuf, String>,
@@ -104,6 +107,7 @@ pub struct AppState {
     pub analysis_tick: u64,
     pub analysis_text: String,
     pub analysis_full_text: String,
+    pub analysis_wait_secs: u64,
     pub result_cursor: usize,
     pub result_scroll: usize,
     pub result_detail_vuln: Option<usize>,
@@ -211,6 +215,7 @@ impl AppState {
             analysis_tick: 0,
             analysis_text: String::new(),
             analysis_full_text: String::new(),
+            analysis_wait_secs: 0,
             result_cursor: 0,
             result_scroll: 0,
             result_detail_vuln: None,
@@ -407,6 +412,13 @@ impl AppState {
                     }
                     self.orchestrator.execution_history.push(*execution);
                 }
+                RunEvent::AnalysisProgress { elapsed_secs } => {
+                    self.analysis_wait_secs = elapsed_secs;
+                    if elapsed_secs % 10 == 0 {
+                        self.exec_logs
+                            .push(format!("[ia] análise em andamento… ({elapsed_secs}s)"));
+                    }
+                }
                 RunEvent::Completed {
                     orchestrator,
                     audit_log,
@@ -557,6 +569,7 @@ impl AppState {
         self.analysis_tick = 0;
         self.analysis_text.clear();
         self.analysis_full_text.clear();
+        self.analysis_wait_secs = 0;
 
         let selected: Vec<_> = self
             .tools
@@ -605,10 +618,28 @@ impl AppState {
                 }
             }
             orchestrator.build_findings();
+            let heartbeat = tokio::spawn({
+                let sender = sender.clone();
+                async move {
+                    let _ = sender.send(RunEvent::AnalysisProgress { elapsed_secs: 0 });
+                    let mut elapsed_secs = 0u64;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        elapsed_secs += 2;
+                        if sender
+                            .send(RunEvent::AnalysisProgress { elapsed_secs })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            });
             let analysis = orchestrator
                 .agent
                 .analyze_logs(&orchestrator.findings)
                 .await;
+            heartbeat.abort();
             orchestrator.last_log = analysis;
             let audit_log = orchestrator
                 .persist_scan_log()
@@ -866,6 +897,41 @@ mod tests {
         assert!(!compact.contains("request"));
         assert!(!compact.contains("response"));
         assert!(!compact.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn analysis_progress_feeds_the_wait_indicator() {
+        let mut app = AppState::new(Configuration::default());
+        app.step = AppStep::Execution;
+        let (sender, receiver) = mpsc::unbounded_channel();
+        app.run_receiver = Some(receiver);
+
+        sender
+            .send(RunEvent::AnalysisProgress { elapsed_secs: 0 })
+            .unwrap();
+        app.process_run_events().await;
+        assert_eq!(app.analysis_wait_secs, 0);
+        assert!(app
+            .exec_logs
+            .last()
+            .is_some_and(|line| line == "[ia] análise em andamento… (0s)"));
+
+        sender
+            .send(RunEvent::AnalysisProgress { elapsed_secs: 2 })
+            .unwrap();
+        app.process_run_events().await;
+        assert_eq!(app.analysis_wait_secs, 2);
+        assert_eq!(app.exec_logs.len(), 1, "sem spam a cada heartbeat");
+
+        sender
+            .send(RunEvent::AnalysisProgress { elapsed_secs: 10 })
+            .unwrap();
+        app.process_run_events().await;
+        assert_eq!(app.analysis_wait_secs, 10);
+        assert!(app
+            .exec_logs
+            .last()
+            .is_some_and(|line| line == "[ia] análise em andamento… (10s)"));
     }
 
     #[tokio::test]
