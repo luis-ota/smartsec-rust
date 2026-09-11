@@ -1,0 +1,30 @@
+# SmartSec — exemplo de configuração TOML
+#
+# Uso: smartsec scan --target <ALVO> --config ./smartsec.example.toml
+#
+# Regras de precedência:
+# - `--target` é sempre obrigatório na CLI (o `target_url` deste arquivo é
+#   substituído pelo valor da CLI no modo headless).
+# - As demais flags da CLI (`--tools`, `--llm`, `--model`) sobrescrevem o arquivo.
+# - `scan` headless sempre opera como Automático, independente de `execution_type`.
+
+target_url = "http://169.254.1.2:3000"
+active_tools = ["nmap", "nuclei"]
+# Valores: "Auto" | "Assisted". Ausente = "Assisted".
+execution_type = "Assisted"
+
+[llm]
+# Valores: "Ollama" | "NvidiaNim" | "OpenAI" | "Custom".
+# Também aceita as grafias da CLI: "ollama", "openai", "nvidia-nim", "custom".
+provider = "Ollama"
+# Opcionais: quando ausentes, assumem o padrão do provedor.
+base_url = "http://localhost:11434/v1"
+model = "llama3.2:1b"
+# timeout_secs = 45
+# max_retries = 2
+# remote_consent = false
+# fallback_enabled = false
+
+# Opcionais: caminho e commit esperado dos templates do Nuclei.
+# nuclei_templates_path = "/home/usuario/nuclei-templates"
+# nuclei_templates_commit = "b98e6097cb84e73e7a480436062d685a8f898824"

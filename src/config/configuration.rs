@@ -138,13 +138,14 @@ impl Default for Configuration {
 impl From<crate::config::persistence::PersistedConfig> for Configuration {
     fn from(p: crate::config::persistence::PersistedConfig) -> Self {
         let mut llm = p.llm.clone();
-        if llm.provider == crate::config::llm_config::LlmProviderKind::Ollama {
-            if llm.base_url.is_empty() {
-                llm.base_url = llm.provider.default_base_url().to_string();
-            }
-            if llm.model.is_empty() || llm.model == "local" {
-                llm.model = llm.provider.default_model().to_string();
-            }
+        if llm.base_url.is_empty() {
+            llm.base_url = llm.provider.default_base_url().to_string();
+        }
+        if llm.model.is_empty()
+            || (llm.provider == crate::config::llm_config::LlmProviderKind::Ollama
+                && llm.model == "local")
+        {
+            llm.model = llm.provider.default_model().to_string();
         }
         if llm.api_key.is_empty() {
             if let Ok(key) = crate::config::persistence::load_api_key() {
@@ -221,5 +222,36 @@ mod tests {
             config.llm.provider,
             crate::config::llm_config::LlmProviderKind::Ollama
         );
+    }
+
+    #[test]
+    fn minimal_toml_uses_provider_defaults() {
+        let persisted: crate::config::persistence::PersistedConfig =
+            toml::from_str("target_url = \"http://test.local\"\n[llm]\nprovider = \"ollama\"\n")
+                .unwrap();
+        assert_eq!(persisted.execution_type, ExecutionType::Assisted);
+        let config = Configuration::from(persisted);
+        assert_eq!(config.target_url, "http://test.local");
+        assert_eq!(
+            config.llm.provider,
+            crate::config::llm_config::LlmProviderKind::Ollama
+        );
+        assert_eq!(config.llm.base_url, "http://localhost:11434/v1");
+        assert_eq!(config.llm.model, "llama3.2:1b");
+        assert!(config.llm.validate().is_ok());
+    }
+
+    #[test]
+    fn explicit_llm_values_are_preserved() {
+        let persisted: crate::config::persistence::PersistedConfig = toml::from_str(
+            "target_url = \"http://test.local\"\nexecution_type = \"Auto\"\n\
+             [llm]\nprovider = \"OpenAI\"\nbase_url = \"https://api.openai.com/v1\"\n\
+             model = \"gpt-4o\"\n",
+        )
+        .unwrap();
+        let config = Configuration::from(persisted);
+        assert_eq!(config.execution_type, ExecutionType::Auto);
+        assert_eq!(config.llm.base_url, "https://api.openai.com/v1");
+        assert_eq!(config.llm.model, "gpt-4o");
     }
 }
