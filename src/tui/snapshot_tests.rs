@@ -149,6 +149,32 @@ fn result_empty_list_detail_and_didactic_match_80x24_snapshots() {
 }
 
 #[test]
+fn export_path_and_report_viewer_match_80x24_snapshots() {
+    let mut app = app();
+    app.step = AppStep::Results;
+    app.focus = FocusTarget::ResultsExport;
+    app.md_exported = true;
+    app.exported_report_path = Some(std::path::PathBuf::from("/tmp/smartsec-report.md"));
+    assert_snapshot(
+        &mut app,
+        &["Ver relatório", "salvo em", "smartsec-report.md"],
+    );
+
+    app.report_content = "# Relatório\nachado crítico corrigido".to_string();
+    app.show_report_viewer = true;
+    app.focus = FocusTarget::ReportClose;
+    assert_snapshot(
+        &mut app,
+        &[
+            "Relatório exportado",
+            "smartsec-report.md",
+            "achado crítico corrigido",
+            "voltar",
+        ],
+    );
+}
+
+#[test]
 fn settings_help_and_palette_match_80x24_snapshots() {
     let mut app = app();
     app.show_settings = true;

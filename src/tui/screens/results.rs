@@ -243,7 +243,7 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let columns = Layout::horizontal([
         Constraint::Length(13),
         Constraint::Min(1),
-        Constraint::Length(12),
+        Constraint::Length(17),
         Constraint::Length(1),
         Constraint::Length(12),
     ])
@@ -259,16 +259,31 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         SemanticAction::NewScan,
         chrome::ButtonState::secondary(new_focused),
     );
+    if let Some(path) = app
+        .exported_report_path
+        .as_ref()
+        .filter(|_| app.md_exported)
+    {
+        frame.render_widget(
+            Paragraph::new(chrome::truncate_width(
+                &format!("salvo em {}", path.display()),
+                columns[1].width as usize,
+            ))
+            .style(Style::default().fg(MUTED)),
+            columns[1],
+        );
+    }
+    let (export_label, export_action) = if app.md_exported {
+        ("Ver relatório", SemanticAction::OpenReportViewer)
+    } else {
+        ("Exportar", SemanticAction::ExportMarkdown)
+    };
     chrome::render_button(
         app,
         frame,
         columns[2],
-        if app.md_exported {
-            "Exportado"
-        } else {
-            "Exportar"
-        },
-        SemanticAction::ExportMarkdown,
+        export_label,
+        export_action,
         chrome::ButtonState::primary(export_focused),
     );
     chrome::render_button(
