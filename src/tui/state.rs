@@ -110,6 +110,11 @@ pub struct AppState {
     pub detail_scroll: usize,
     pub detail_max_scroll: usize,
     pub md_exported: bool,
+    pub exported_report_path: Option<PathBuf>,
+    pub show_report_viewer: bool,
+    pub report_content: String,
+    pub report_scroll: usize,
+    pub report_max_scroll: usize,
     pub show_didactic: bool,
     pub didactic_scroll: usize,
     pub didactic_max_scroll: usize,
@@ -211,6 +216,11 @@ impl AppState {
             detail_scroll: 0,
             detail_max_scroll: 0,
             md_exported: false,
+            exported_report_path: None,
+            show_report_viewer: false,
+            report_content: String::new(),
+            report_scroll: 0,
+            report_max_scroll: 0,
             show_didactic: false,
             didactic_scroll: 0,
             didactic_max_scroll: 0,
@@ -322,7 +332,10 @@ impl AppState {
     }
 
     fn has_blocking_layer(&self) -> bool {
-        self.show_settings || self.show_help_overlay || self.show_command_palette
+        self.show_settings
+            || self.show_help_overlay
+            || self.show_command_palette
+            || self.show_report_viewer
     }
 
     async fn process_run_events(&mut self) {
