@@ -21,10 +21,13 @@ fn default_fallback_model() -> String {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum LlmProviderKind {
-    #[serde(alias = "Mock")]
+    #[serde(alias = "Mock", alias = "ollama")]
     Ollama,
+    #[serde(alias = "nvidia-nim", alias = "nvidia_nim")]
     NvidiaNim,
+    #[serde(alias = "openai")]
     OpenAI,
+    #[serde(alias = "custom", alias = "personalizado")]
     Custom,
 }
 
@@ -74,7 +77,9 @@ impl LlmProviderKind {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub provider: LlmProviderKind,
+    #[serde(default)]
     pub base_url: String,
+    #[serde(default)]
     pub model: String,
     #[serde(skip)]
     pub api_key: String,
@@ -252,6 +257,47 @@ mod tests {
             .unwrap();
 
         assert_eq!(provider, LlmProviderKind::Ollama);
+    }
+
+    #[test]
+    fn deserializes_cli_spellings_as_provider_aliases() {
+        let cases = [
+            ("ollama", LlmProviderKind::Ollama),
+            ("openai", LlmProviderKind::OpenAI),
+            ("nvidia-nim", LlmProviderKind::NvidiaNim),
+            ("nvidia_nim", LlmProviderKind::NvidiaNim),
+            ("custom", LlmProviderKind::Custom),
+            ("personalizado", LlmProviderKind::Custom),
+        ];
+        for (spelling, expected) in cases {
+            let document = format!("provider = \"{spelling}\"");
+            let provider: LlmProviderKind = toml::from_str(&document)
+                .and_then(|value: toml::Value| value["provider"].clone().try_into())
+                .unwrap();
+            assert_eq!(provider, expected, "grafia {spelling}");
+        }
+    }
+
+    #[test]
+    fn serializes_canonical_variant_names() {
+        let cases = [
+            (LlmProviderKind::Ollama, "Ollama"),
+            (LlmProviderKind::NvidiaNim, "NvidiaNim"),
+            (LlmProviderKind::OpenAI, "OpenAI"),
+            (LlmProviderKind::Custom, "Custom"),
+        ];
+        for (provider, expected) in cases {
+            let value = toml::Value::try_from(provider).unwrap();
+            assert_eq!(value.as_str(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn parses_llm_section_without_endpoint_fields() {
+        let config: LlmConfig = toml::from_str("provider = \"Ollama\"").unwrap();
+        assert_eq!(config.provider, LlmProviderKind::Ollama);
+        assert!(config.base_url.is_empty());
+        assert!(config.model.is_empty());
     }
 
     #[test]

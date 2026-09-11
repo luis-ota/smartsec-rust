@@ -9,6 +9,7 @@ pub struct PersistedConfig {
     pub target_url: String,
     #[serde(default)]
     pub active_tools: Vec<String>,
+    #[serde(default)]
     pub execution_type: ExecutionType,
     pub llm: LlmConfig,
     #[serde(default)]
