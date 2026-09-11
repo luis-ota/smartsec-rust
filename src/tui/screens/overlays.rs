@@ -143,6 +143,64 @@ pub fn render_command_palette(app: &mut AppState, frame: &mut Frame, area: Rect)
     );
 }
 
+pub fn render_report_viewer(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    use ratatui::widgets::Wrap;
+    let path_label = app.exported_report_path.as_ref().map_or_else(
+        || "arquivo indisponível".to_string(),
+        |path| format!("arquivo  {}", path.display()),
+    );
+    let content_lines: Vec<&str> = app.report_content.lines().collect();
+    let popup = centered_fixed(area, 76, (content_lines.len() + 7).clamp(8, 22) as u16);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Relatório exportado ")
+        .title_style(Style::default().fg(Color::White).bold())
+        .style(Style::default().bg(SURFACE));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(crate::tui::chrome::truncate_width(
+            &path_label,
+            rows[0].width as usize,
+        ))
+        .style(Style::default().fg(Color::DarkGray).bg(SURFACE)),
+        rows[0],
+    );
+
+    let visible = rows[1].height.max(1) as usize;
+    app.report_max_scroll = content_lines.len().saturating_sub(visible);
+    app.report_scroll = app.report_scroll.min(app.report_max_scroll);
+    let body: Vec<Line> = content_lines
+        .into_iter()
+        .skip(app.report_scroll)
+        .take(visible)
+        .map(|line| Line::styled(line, Style::default().fg(Color::Gray)))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Text::from(body))
+            .style(Style::default().bg(SURFACE))
+            .wrap(Wrap { trim: false }),
+        rows[1],
+    );
+
+    app.register_hit_region(rows[2], SemanticAction::Back);
+    frame.render_widget(
+        Paragraph::new("↑↓ rolar · enter ou esc  voltar")
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(ACCENT).bg(SURFACE)),
+        rows[2],
+    );
+}
+
 fn shortcut<'a>(key: &'a str, description: &'a str) -> Line<'a> {
     Line::from(vec![
         Span::styled(format!("{key:<18}"), Style::default().fg(ACCENT).bold()),

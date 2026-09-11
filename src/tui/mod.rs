@@ -31,6 +31,8 @@ pub fn render(app: &mut AppState, frame: &mut Frame) {
         screens::overlays::render_help(app, frame, area);
     } else if app.show_command_palette {
         screens::overlays::render_command_palette(app, frame, area);
+    } else if app.show_report_viewer {
+        screens::overlays::render_report_viewer(app, frame, area);
     }
 }
 
