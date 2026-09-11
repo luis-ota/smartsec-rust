@@ -110,7 +110,7 @@ fn execution_states_match_80x24_snapshots() {
         tool.status = ToolStatus::Done;
         tool.progress = 100;
     }
-    assert_snapshot(&mut app, &["Varredura concluída", "100%"]);
+    assert_snapshot(&mut app, &["Preparando análise da IA", "100%"]);
 }
 
 #[test]
