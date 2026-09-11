@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" version="7.95">
+  <host>
+    <status state="up" />
+    <ports>
+      <port protocol="tcp" portid="3000">
+        <state state="closed" />
+        <service name="http" />
+      </port>
+    </ports>
+  </host>
+</nmaprun>

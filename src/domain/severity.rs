@@ -10,13 +10,13 @@ pub enum Severity {
 }
 
 impl Severity {
-    pub fn label(&self) -> &'static str {
+    pub fn label_pt_br(&self) -> &'static str {
         match self {
-            Severity::Critical => "CRITICAL",
-            Severity::High => "HIGH",
-            Severity::Medium => "MEDIUM",
-            Severity::Low => "LOW",
-            Severity::Info => "INFO",
+            Severity::Critical => "CRÍTICA",
+            Severity::High => "ALTA",
+            Severity::Medium => "MÉDIA",
+            Severity::Low => "BAIXA",
+            Severity::Info => "INFORMATIVA",
         }
     }
 

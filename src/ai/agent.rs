@@ -70,21 +70,41 @@ impl AIAgent {
     }
 
     pub async fn analyze_logs(&mut self, vulns: &[Vulnerability]) -> String {
+        let verified_analysis = Self::local_analysis(vulns);
         let prompt = format!(
-            "You are a senior security analyst. Analyze these vulnerabilities and provide a concise summary with priorities:\n{}",
+            "Você é um analista de segurança. Os níveis entre colchetes foram produzidos pelos scanners e são imutáveis. Não cite, traduza nem reclassifique severidades. Responda somente em português brasileiro com duas a quatro orientações objetivas de validação ou remediação, sem repetir a lista de achados:\n{}",
             vulns
                 .iter()
-                .map(|v| format!("- [{}] {} ({})", v.severity.label(), v.title, v.tool))
+                .map(|v| format!(
+                    "- [{}] {} ({})",
+                    v.severity.label_pt_br(),
+                    crate::utils::redaction::sanitize_text(&v.title),
+                    crate::utils::redaction::sanitize_text(&v.tool)
+                ))
                 .collect::<Vec<_>>()
                 .join("\n")
         );
 
         let result = match self.execute_with_fallback(&prompt).await {
-            Ok(response) => Self::parse_llm_response(&response),
+            Ok(response) => {
+                let response = Self::parse_llm_response(&response);
+                match Self::validated_guidance(&response) {
+                    Some(guidance) => format!(
+                        "{verified_analysis}\n\nOrientações complementares da IA (sem alterar as classificações):\n{guidance}"
+                    ),
+                    None => {
+                        self.execution_history.push(
+                            "A resposta da LLM foi descartada por idioma ou reclassificação fora do contrato; análise local aplicada"
+                                .to_string(),
+                        );
+                        verified_analysis
+                    }
+                }
+            }
             Err(error) => {
                 self.execution_history
                     .push(format!("Análise por LLM indisponível: {error}"));
-                Self::local_analysis(vulns)
+                verified_analysis
             }
         };
         self.last_analysis = result.clone();
@@ -99,14 +119,20 @@ impl AIAgent {
     #[allow(dead_code)]
     pub async fn generate_didactic(&self, vuln: &Vulnerability) -> String {
         let prompt = format!(
-            "Explain the following security vulnerability in an educational way for a junior developer:\n\nTitle: {}\nSeverity: {}\nTool: {}\nDescription: {}\n\nProvide: 1) what it is, 2) attack flow example, 3) defense strategies.",
-            vuln.title, vuln.severity.label(), vuln.tool, vuln.description
+            "Explique a vulnerabilidade a seguir em português brasileiro para uma pessoa desenvolvedora iniciante. Preserve a severidade informada e apresente: 1) o que é, 2) um exemplo de fluxo de ataque e 3) estratégias de defesa.\n\nTítulo: {}\nSeveridade: {}\nFerramenta: {}\nDescrição: {}",
+            vuln.title,
+            vuln.severity.label_pt_br(),
+            vuln.tool,
+            vuln.description
         );
         if self.configuration_error.is_some() || !self.remote_allowed {
             return vuln.didactic.to_string();
         }
         match self.provider.execute_prompt(&prompt, &self.model).await {
-            Ok(r) => Self::parse_llm_response(&r),
+            Ok(response) => {
+                let response = Self::parse_llm_response(&response);
+                Self::validated_portuguese(&response).unwrap_or_else(|| vuln.didactic.to_string())
+            }
             Err(_) => vuln.didactic.to_string(),
         }
     }
@@ -130,6 +156,64 @@ impl AIAgent {
             }
         }
         raw.to_string()
+    }
+
+    fn validated_guidance(raw: &str) -> Option<String> {
+        let lower = raw.to_lowercase();
+        let severity_terms = [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "severity",
+            "crític",
+            "critico",
+            "crítico",
+            "gravidade",
+            "severidade",
+        ];
+        if severity_terms.iter().any(|term| lower.contains(term)) {
+            return None;
+        }
+        Self::validated_portuguese(raw)
+    }
+
+    fn validated_portuguese(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let lower = format!(" {} ", trimmed.to_lowercase());
+        let english_markers = [
+            " vulnerability ",
+            " vulnerabilities ",
+            " recommendation ",
+            " recommendations ",
+            " based on ",
+            " security header",
+            " the following ",
+        ];
+        if english_markers.iter().any(|term| lower.contains(term)) {
+            return None;
+        }
+        let portuguese_markers = [
+            " para ",
+            " uma ",
+            " os ",
+            " as ",
+            " de ",
+            " do ",
+            " da ",
+            " valide",
+            " revise",
+            " aplique",
+            " correção",
+            " segurança",
+        ];
+        if !portuguese_markers.iter().any(|term| lower.contains(term)) {
+            return None;
+        }
+        Some(crate::utils::redaction::sanitize_text(trimmed))
     }
 
     pub(crate) async fn execute_with_fallback(
@@ -218,6 +302,8 @@ mod tests {
 
     struct SuccessfulProvider;
 
+    struct RespondingProvider(&'static str);
+
     fn finding(severity: Severity) -> Vulnerability {
         Vulnerability {
             title: "Achado de teste".to_string(),
@@ -244,6 +330,17 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl LLMProvider for RespondingProvider {
+        async fn execute_prompt(
+            &self,
+            _prompt: &str,
+            _model: &str,
+        ) -> Result<String, anyhow::Error> {
+            Ok(self.0.to_string())
+        }
+    }
+
     #[test]
     fn local_analysis_counts_info_without_recommending_critical_fix() {
         let analysis = AIAgent::local_analysis(&[finding(Severity::Info)]);
@@ -251,6 +348,54 @@ mod tests {
         assert!(analysis.contains("1 informativos"));
         assert!(analysis.contains("Os achados são informativos"));
         assert!(!analysis.contains("Corrija imediatamente"));
+    }
+
+    #[tokio::test]
+    async fn keeps_scanner_severities_authoritative_and_discards_reclassification() {
+        let mut agent = AIAgent {
+            provider: Box::new(RespondingProvider(
+                "Critical vulnerability. This should have high severity.",
+            )),
+            fallback_provider: None,
+            fallback_model: String::new(),
+            remote_allowed: true,
+            configuration_error: None,
+            model: "teste".to_string(),
+            last_analysis: String::new(),
+            execution_history: Vec::new(),
+        };
+
+        let analysis = agent.analyze_logs(&[finding(Severity::Info)]).await;
+
+        assert!(analysis.contains("1 informativos"));
+        assert!(!analysis.contains("Critical"));
+        assert!(!analysis.contains("high severity"));
+        assert!(agent
+            .execution_history
+            .iter()
+            .any(|entry| entry.contains("fora do contrato")));
+    }
+
+    #[tokio::test]
+    async fn accepts_portuguese_guidance_without_changing_verified_summary() {
+        let mut agent = AIAgent {
+            provider: Box::new(RespondingProvider(
+                "- Revise a exposição do serviço.\n- Aplique hardening e valide novamente.",
+            )),
+            fallback_provider: None,
+            fallback_model: String::new(),
+            remote_allowed: true,
+            configuration_error: None,
+            model: "teste".to_string(),
+            last_analysis: String::new(),
+            execution_history: Vec::new(),
+        };
+
+        let analysis = agent.analyze_logs(&[finding(Severity::Info)]).await;
+
+        assert!(analysis.contains("1 informativos"));
+        assert!(analysis.contains("Orientações complementares"));
+        assert!(analysis.contains("Aplique hardening"));
     }
 
     #[tokio::test]

@@ -40,6 +40,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
         shortcut("tab / shift+tab", "mover o foco"),
         shortcut("setas", "navegar ou rolar"),
         shortcut("enter / espaço", "acionar o item em foco"),
+        shortcut("ctrl+u", "limpar o campo de texto em foco"),
         shortcut("esc", "fechar ou voltar"),
         shortcut("f1", "abrir ajuda em qualquer contexto"),
         shortcut("ctrl+p", "abrir a paleta de comandos"),

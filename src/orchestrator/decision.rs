@@ -63,7 +63,6 @@ struct AiPlanResponse {
     profiles: Option<Vec<String>>,
     concurrency: Option<u16>,
     timeout_seconds: Option<u16>,
-    justification: Option<String>,
 }
 
 pub fn decide_nuclei_plan(
@@ -82,9 +81,7 @@ pub fn decide_nuclei_plan(
                     DecisionSource::Ai,
                     model,
                     plan,
-                    parsed
-                        .justification
-                        .unwrap_or_else(|| "Plano aceito pela política segura.".to_string()),
+                    "Plano proposto pela IA e aceito pela política segura.".to_string(),
                     &signal,
                 );
             }
@@ -135,11 +132,11 @@ impl NmapSignal {
     fn evidence_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         for port in &self.ports {
-            let service = port.service.as_deref().unwrap_or("unknown");
+            let service = port.service.as_deref().unwrap_or("desconhecido");
             let product = port.product.as_deref().unwrap_or("");
             let version = port.version.as_deref().unwrap_or("");
             lines.push(format!(
-                "port {} {} {} {}",
+                "porta {} {} {} {}",
                 port.port, service, product, version
             ));
         }
@@ -218,35 +215,35 @@ fn validate_ai_plan(
     let requested_profiles = parsed
         .profiles
         .as_ref()
-        .ok_or_else(|| "AI plan missing profiles".to_string())?;
+        .ok_or_else(|| "plano da IA sem perfis".to_string())?;
 
     let allowed_profiles = allowed_profiles_for_signal(signal, target);
     if requested_profiles.is_empty() {
-        return Err("AI plan requested no profiles".to_string());
+        return Err("o plano da IA não solicitou nenhum perfil".to_string());
     }
 
     let mut validated_profiles = BTreeSet::new();
     for profile in requested_profiles {
         let mapped = map_profile(profile)
-            .ok_or_else(|| format!("Unsupported nuclei profile: {}", profile))?;
+            .ok_or_else(|| format!("perfil do Nuclei não suportado: {profile}"))?;
         if !allowed_profiles.contains(&mapped) {
-            return Err(format!("Profile not allowed by policy: {}", profile));
+            return Err(format!("perfil não permitido pela política: {profile}"));
         }
         validated_profiles.insert(mapped);
     }
 
     let should_run = parsed.should_run.unwrap_or(true);
     if !should_run && !signal.ports.is_empty() {
-        return Err("AI plan attempted to skip nuclei despite open ports".to_string());
+        return Err("o plano da IA tentou ignorar o Nuclei apesar das portas abertas".to_string());
     }
 
     let concurrency = parsed.concurrency.unwrap_or(20);
     let timeout_seconds = parsed.timeout_seconds.unwrap_or(3);
     if !(1..=50).contains(&concurrency) {
-        return Err("Concurrency outside safe policy".to_string());
+        return Err("concorrência fora da política segura".to_string());
     }
     if !(1..=10).contains(&timeout_seconds) {
-        return Err("Timeout outside safe policy".to_string());
+        return Err("tempo limite fora da política segura".to_string());
     }
 
     Ok(NucleiPlan {
@@ -398,6 +395,30 @@ impl NucleiPlan {
 }
 
 impl DecisionRecord {
+    pub fn sanitized(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            model: crate::utils::redaction::sanitize_text(&self.model),
+            justification: crate::utils::redaction::sanitize_text(&self.justification),
+            parameters: self
+                .parameters
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        crate::utils::redaction::sanitize_text(key),
+                        crate::utils::redaction::sanitize_text(value),
+                    )
+                })
+                .collect(),
+            evidence: self
+                .evidence
+                .iter()
+                .map(|line| crate::utils::redaction::sanitize_text(line))
+                .collect(),
+            plan: self.plan.clone(),
+        }
+    }
+
     pub fn summary(&self) -> String {
         let templates = self
             .plan
@@ -406,10 +427,10 @@ impl DecisionRecord {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "{} plan={} templates={} concurrency={} timeout={}s",
+            "{} plano={} templates={} concorrência={} tempo-limite={}s",
             match self.source {
-                DecisionSource::Ai => "ai",
-                DecisionSource::Fallback => "fallback",
+                DecisionSource::Ai => "IA",
+                DecisionSource::Fallback => "política local",
             },
             self.plan
                 .profiles
