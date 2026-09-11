@@ -1,5 +1,6 @@
 use crate::domain::severity::Severity;
 use crate::domain::vulnerability::{FindingSource, Vulnerability};
+use crate::utils::redaction::sanitize_evidence_component;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -20,8 +21,6 @@ struct NucleiResult {
 
 #[derive(Deserialize, Debug)]
 struct NucleiInfo {
-    name: Option<String>,
-    description: Option<String>,
     severity: Option<String>,
     #[allow(dead_code)]
     tags: Option<Vec<String>>,
@@ -94,42 +93,43 @@ pub fn parse_nuclei_findings_with_errors(
             _ => Severity::Info,
         };
 
-        let name = info.name.unwrap_or_else(|| template_id.clone());
-        let description_text = info.description.unwrap_or_default();
         let matched_at = result.matched_at.as_deref().unwrap_or(&endpoint);
 
-        let title = format!("{} - {}", name, matcher);
-
-        let description = if description_text.chars().count() > 300 {
-            description_text.chars().take(300).collect()
+        let title = localized_nuclei_title(&template_id, &matcher);
+        let matcher_label = if matcher.is_empty() {
+            "verificação principal"
         } else {
-            description_text.clone()
+            &matcher
         };
+        let description = format!(
+            "O template {template_id} do Nuclei correspondeu à regra {matcher_label} no endpoint {matched_at}."
+        );
 
         let recommendation = format!(
-            "Review and implement the missing security measure: {}. Apply recommended fixes for {}.",
-            name, matched_at
+            "Revise a configuração associada ao template {template_id}, aplique a correção pertinente e valide novamente o endpoint {matched_at}."
         );
 
         let didactic = format!(
-            "Nuclei identified: {}\n\nSeverity: {}\nMatched at: {}\nDescription: {}\n\nThis finding was detected by the Nuclei scanner using template-based vulnerability detection. Nuclei runs community-curated templates that check for known CVEs, misconfigurations, and security weaknesses.\n\nRecommendation: Apply the recommended fix and verify with a rescan.",
-            name,
-            info.severity.as_deref().unwrap_or("info"),
-            matched_at,
-            description_text
+            "O Nuclei identificou uma correspondência do template {template_id}.\n\nSeveridade registrada pelo scanner: {}\nVerificador: {matcher_label}\nEndpoint: {matched_at}\n\nO achado foi produzido por um template versionado do Nuclei. Confirme a evidência no ambiente autorizado, aplique a correção pertinente e execute uma nova varredura.",
+            severity.label_pt_br(),
         );
 
-        let evidence = format!(
-            "nuclei matched-at: {} | matcher: {}",
-            matched_at,
-            if matcher.is_empty() { "n/a" } else { &matcher }
-        );
         let tags = if !result.tags.is_empty() {
             result.tags
         } else {
             info.tags.unwrap_or_default()
         };
-        let raw_evidence = trimmed.to_string();
+        let safe_template = sanitize_evidence_component(&template_id);
+        let safe_matcher =
+            sanitize_evidence_component(if matcher.is_empty() { "n/a" } else { &matcher });
+        let safe_endpoint = sanitize_evidence_component(matched_at);
+        let safe_host = sanitize_evidence_component(result.host.as_deref().unwrap_or("n/a"));
+        let safe_url = sanitize_evidence_component(result.url.as_deref().unwrap_or("n/a"));
+        let safe_tags = tags
+            .iter()
+            .map(|tag| sanitize_evidence_component(tag))
+            .collect::<Vec<_>>()
+            .join(",");
 
         vulns.push(Vulnerability {
             title,
@@ -141,16 +141,30 @@ pub fn parse_nuclei_findings_with_errors(
             source: FindingSource::Real,
             target: target.to_string(),
             evidence: format!(
-                "{evidence} | host: {} | url: {} | tags: {} | raw: {raw_evidence}",
-                result.host.as_deref().unwrap_or("n/a"),
-                result.url.as_deref().unwrap_or("n/a"),
-                tags.join(",")
+                "template: {safe_template} | matcher: {safe_matcher} | endpoint: {safe_endpoint} | host: {safe_host} | url: {safe_url} | tags: {safe_tags}"
             ),
             detected_at: detected_at.clone(),
         });
     }
 
     (vulns, errors)
+}
+
+pub(crate) fn localized_nuclei_title(template_id: &str, matcher: &str) -> String {
+    if template_id == "http-missing-security-headers" {
+        return format!(
+            "Cabeçalho de segurança ausente — {}",
+            if matcher.is_empty() {
+                "não especificado"
+            } else {
+                matcher
+            }
+        );
+    }
+    if template_id.to_ascii_lowercase().starts_with("cve-") {
+        return format!("Possível vulnerabilidade detectada — {template_id}");
+    }
+    format!("Achado identificado pelo Nuclei — {template_id}")
 }
 
 #[cfg(test)]
@@ -220,10 +234,49 @@ mod tests {
         assert!(errors.is_empty());
         assert_eq!(findings.len(), 3);
         assert_eq!(findings[0].severity, Severity::Info);
-        assert!(findings[0].evidence.contains("Falha"));
+        assert!(findings[0].evidence.contains("template: t"));
+        assert!(findings[0].evidence.contains("matcher: m"));
         assert!(findings[0].evidence.contains("web"));
         assert!(findings[1].evidence.contains("/b"));
-        assert!(findings[0].description.contains('🚨') || findings[0].title.contains('🚨'));
+        assert_eq!(findings[0].title, "Achado identificado pelo Nuclei — t");
+        assert!(findings[0]
+            .description
+            .starts_with("O template t do Nuclei"));
+    }
+
+    #[test]
+    fn evidence_excludes_raw_http_payloads_and_sensitive_query_values() {
+        let input = r#"{"template-id":"headers","info":{"name":"Cabeçalhos ausentes","severity":"info","tags":["headers"]},"host":"target.local","url":"https://target.local/path?token=segredo","matched-at":"https://target.local/path?token=segredo","matcher-name":"csp","request":"Authorization: Bearer segredo","response":"Set-Cookie: session=segredo"}"#;
+
+        let findings = parse_nuclei_findings(input, "https://target.local");
+
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].evidence.contains("template: headers"));
+        assert!(findings[0].evidence.contains("matcher: csp"));
+        assert!(!findings[0].evidence.contains("request"));
+        assert!(!findings[0].evidence.contains("response"));
+        assert!(!findings[0].evidence.contains("segredo"));
+        assert!(!findings[0].evidence.contains("?token="));
+        assert!(findings[0].recommendation.starts_with("Revise"));
+        assert!(findings[0].didactic.starts_with("O Nuclei identificou"));
+    }
+
+    #[test]
+    fn localizes_known_template_and_keeps_scanner_severity() {
+        let input = r#"{"template-id":"http-missing-security-headers","info":{"name":"HTTP Missing Security Headers","description":"Missing headers","severity":"info"},"matched-at":"https://target.local","matcher-name":"content-security-policy"}"#;
+
+        let findings = parse_nuclei_findings(input, "https://target.local");
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Info);
+        assert_eq!(
+            findings[0].title,
+            "Cabeçalho de segurança ausente — content-security-policy"
+        );
+        assert!(!findings[0].description.contains("Missing"));
+        assert!(findings[0]
+            .didactic
+            .contains("Severidade registrada pelo scanner: INFORMATIVA"));
     }
 
     #[test]

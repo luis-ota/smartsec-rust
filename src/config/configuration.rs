@@ -113,13 +113,14 @@ impl Configuration {
         Ok(())
     }
 
-    pub fn save(&self) {
-        let _ = crate::config::persistence::save_config_file(
+    pub fn save(&self) -> Result<(), String> {
+        crate::config::persistence::save_config_file(
             &crate::config::persistence::PersistedConfig::from(self),
-        );
-        if !self.llm.api_key.is_empty() {
-            let _ = crate::config::persistence::save_api_key(&self.llm.api_key);
-        }
+        )
+        .map_err(|error| format!("não foi possível salvar a configuração: {error}"))?;
+        crate::config::persistence::save_api_key(&self.llm.api_key)
+            .map_err(|error| format!("não foi possível atualizar a chave no keyring: {error}"))?;
+        Ok(())
     }
 
     pub fn config_dir() -> PathBuf {
@@ -130,7 +131,7 @@ impl Configuration {
 
 impl Default for Configuration {
     fn default() -> Self {
-        crate::config::persistence::load_config_file().into()
+        crate::config::persistence::PersistedConfig::default().into()
     }
 }
 

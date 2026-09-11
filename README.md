@@ -35,6 +35,7 @@ previstas no TCC ainda nao fazem parte do catalogo executavel.
 - **Nuclei real** — imagem fixada por digest, templates montados somente-leitura e plano Nmap/IA aplicado aos argumentos
 - **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM
 - **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes e explicacoes didaticas
+- **Evidencia segura** — preserva template, matcher, endpoint, host, URL e tags, sem corpos HTTP, credenciais ou query strings
 
 ## Requisitos
 
@@ -78,6 +79,32 @@ cargo run -- scan --target example.com --config ./smartsec.toml --llm ollama --m
 # Na TUI em modo assistido, marque ou desmarque ferramentas com Espaco
 ```
 
+### Configuracao da IA na TUI
+
+A tela `Configurar IA` separa conexao principal de confiabilidade e mostra
+somente os campos aplicaveis. Provedores remotos exibem chave e consentimento;
+o Ollama local os oculta. `Tab` percorre os campos e acoes, `←`/`→` alteram
+selecoes, `Espaco` alterna opcoes e `Ctrl+U` limpa o campo atual. Valores
+invalidos mantem a tela aberta com uma mensagem acionavel. Chaves ficam no
+keyring do sistema e nunca sao gravadas no TOML.
+
+### E2E real da TUI
+
+O roteiro abaixo abre a TUI em um terminal `80x24`, serve um alvo autorizado
+somente em `127.0.0.1`, executa Nmap e Nuclei via Podman rootless, salva a
+auditoria, exporta o Markdown, procura dados sensiveis e confirma a remocao dos
+containers:
+
+```bash
+./scripts/e2e_tui_local.sh
+```
+
+Ele exige `bash`, `cargo`, `curl`, `jq`, `podman`, `python3`, `rg`, `tmux`,
+Ollama local com `llama3.2:1b` e o checkout versionado em
+`~/nuclei-templates`. Os artefatos temporarios ficam no caminho informado ao
+fim da execucao. A evidencia homologada desta mudanca esta em
+[`docs/evidence/issue-53-tui-e2e.md`](docs/evidence/issue-53-tui-e2e.md).
+
 Para uma execucao real, a configuracao TOML pode definir `nuclei_templates_path` e
 `nuclei_templates_commit`. O SmartSec rejeita o scan se o diretorio nao for um
 checkout Git no commit esperado. A imagem usada e
@@ -109,6 +136,7 @@ src/
 | F1        | Abrir ajuda               |
 | Ctrl+P    | Abrir paleta de comandos  |
 | Ctrl+V    | Colar do clipboard       |
+| Ctrl+U    | Limpar o campo atual na configuracao |
 | Mouse     | Clicar botoes, selecionar ferramentas, rolar listas |
 
 ## Licenca

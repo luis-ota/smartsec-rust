@@ -32,6 +32,13 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return false;
     }
 
+    if matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && app.show_settings
+    {
+        return dispatch_action(app, SemanticAction::ClearText);
+    }
+
     if key.code == KeyCode::F(1) {
         return dispatch_action(app, SemanticAction::OpenHelp);
     }
@@ -181,10 +188,10 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         }
         SemanticAction::NewScan => new_scan(app),
         SemanticAction::SelectSettingsField(field) => select_settings_field(app, field),
-        SemanticAction::SaveSettings => {
-            app.apply_settings();
-            app.focus = app.settings_return_focus;
-        }
+        SemanticAction::SaveSettings => match app.apply_settings() {
+            Ok(()) => app.focus = app.settings_return_focus,
+            Err(error) => app.settings_error = Some(error),
+        },
         SemanticAction::CloseSettings => {
             app.reset_settings_draft();
             app.show_settings = false;
@@ -192,6 +199,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         }
         SemanticAction::InsertText(text) => insert_text(app, &text),
         SemanticAction::DeleteBackward => delete_backward(app),
+        SemanticAction::ClearText => clear_text(app),
         SemanticAction::OpenHelp => open_help(app),
         SemanticAction::OpenCommandPalette => open_command_palette(app),
         SemanticAction::ExecuteCommand(index) => return execute_command(app, index),
@@ -214,9 +222,9 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
         return vec![FocusTarget::CommandList];
     }
     if app.show_settings {
-        let mut order: Vec<_> = SettingsField::ALL
-            .iter()
-            .copied()
+        let mut order: Vec<_> = app
+            .visible_settings_fields()
+            .into_iter()
             .map(FocusTarget::SettingsField)
             .collect();
         order.extend([FocusTarget::SettingsSave, FocusTarget::SettingsCancel]);
@@ -238,11 +246,7 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
             FocusTarget::ToolBack,
             FocusTarget::ToolRun,
         ],
-        AppStep::Execution => vec![
-            FocusTarget::ExecutionLogs,
-            FocusTarget::ExecutionBack,
-            FocusTarget::ExecutionCancel,
-        ],
+        AppStep::Execution => vec![FocusTarget::ExecutionLogs, FocusTarget::ExecutionCancel],
         AppStep::Analysis => vec![FocusTarget::AnalysisCancel],
         AppStep::Results if app.result_detail_vuln.is_some() => {
             vec![
@@ -289,7 +293,18 @@ fn move_vertical(app: &mut AppState, down: bool) {
 }
 
 fn move_horizontal(app: &mut AppState, right: bool) {
-    move_focus(app, right);
+    match app.focus {
+        FocusTarget::SettingsField(SettingsField::Provider) => move_provider(app, right),
+        FocusTarget::SettingsField(SettingsField::RemoteConsent) => {
+            app.settings_remote_consent = right;
+            app.settings_error = None;
+        }
+        FocusTarget::SettingsField(SettingsField::FallbackEnabled) => {
+            app.settings_fallback_enabled = right;
+            app.settings_error = None;
+        }
+        _ => move_focus(app, right),
+    }
 }
 
 fn activate_focus(app: &mut AppState) {
@@ -300,7 +315,6 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::SplashSettings => SemanticAction::OpenSettings,
         FocusTarget::ToolList => SemanticAction::ToggleTool(app.tool_cursor),
         FocusTarget::ToolBack
-        | FocusTarget::ExecutionBack
         | FocusTarget::AnalysisCancel
         | FocusTarget::ResultsBack
         | FocusTarget::DidacticBack => SemanticAction::Back,
@@ -606,6 +620,7 @@ fn select_settings_field(app: &mut AppState, field: SettingsField) {
 }
 
 fn activate_settings_field(app: &mut AppState, field: SettingsField) {
+    app.settings_error = None;
     match field {
         SettingsField::Provider => {
             app.settings_provider_idx =
@@ -635,6 +650,7 @@ fn sync_provider_defaults(app: &mut AppState) {
     let provider = LlmProviderKind::from_label(labels[app.settings_provider_idx]);
     app.settings_input_base_url = provider.default_base_url().to_string();
     app.settings_input_model = provider.default_model().to_string();
+    app.settings_error = None;
 }
 
 fn insert_text(app: &mut AppState, text: &str) {
@@ -650,6 +666,10 @@ fn insert_text(app: &mut AppState, text: &str) {
             app.settings_input_base_url.push_str(text)
         }
         FocusTarget::SettingsField(SettingsField::ApiKey) => {
+            if !app.settings_api_key_touched {
+                app.settings_input_api_key.clear();
+                app.settings_api_key_touched = true;
+            }
             app.settings_input_api_key.push_str(text)
         }
         FocusTarget::SettingsField(SettingsField::Model) => app.settings_input_model.push_str(text),
@@ -671,6 +691,9 @@ fn insert_text(app: &mut AppState, text: &str) {
         }
         _ => {}
     }
+    if app.show_settings {
+        app.settings_error = None;
+    }
 }
 
 fn delete_backward(app: &mut AppState) {
@@ -683,6 +706,10 @@ fn delete_backward(app: &mut AppState) {
             app.settings_input_base_url.pop();
         }
         FocusTarget::SettingsField(SettingsField::ApiKey) => {
+            if !app.settings_api_key_touched {
+                app.settings_input_api_key.clear();
+                app.settings_api_key_touched = true;
+            }
             app.settings_input_api_key.pop();
         }
         FocusTarget::SettingsField(SettingsField::Model) => {
@@ -702,6 +729,30 @@ fn delete_backward(app: &mut AppState) {
         }
         _ => {}
     }
+    if app.show_settings {
+        app.settings_error = None;
+    }
+}
+
+fn clear_text(app: &mut AppState) {
+    match app.focus {
+        FocusTarget::SettingsField(SettingsField::BaseUrl) => app.settings_input_base_url.clear(),
+        FocusTarget::SettingsField(SettingsField::ApiKey) => {
+            app.settings_input_api_key.clear();
+            app.settings_api_key_touched = true;
+        }
+        FocusTarget::SettingsField(SettingsField::Model) => app.settings_input_model.clear(),
+        FocusTarget::SettingsField(SettingsField::Timeout) => app.settings_input_timeout.clear(),
+        FocusTarget::SettingsField(SettingsField::Retries) => app.settings_input_retries.clear(),
+        FocusTarget::SettingsField(SettingsField::FallbackBaseUrl) => {
+            app.settings_input_fallback_base_url.clear()
+        }
+        FocusTarget::SettingsField(SettingsField::FallbackModel) => {
+            app.settings_input_fallback_model.clear()
+        }
+        _ => return,
+    }
+    app.settings_error = None;
 }
 
 #[cfg(test)]
@@ -812,10 +863,14 @@ mod tests {
     fn settings_toggle_has_keyboard_and_mouse_parity() {
         let mut keyboard = app();
         keyboard.show_settings = true;
+        keyboard.settings_provider_idx = 2;
+        keyboard.settings_input_base_url = "https://api.openai.com/v1".to_string();
         keyboard.settings_field = SettingsField::RemoteConsent;
         keyboard.focus = FocusTarget::SettingsField(SettingsField::RemoteConsent);
         let mut mouse = app();
         mouse.show_settings = true;
+        mouse.settings_provider_idx = 2;
+        mouse.settings_input_base_url = "https://api.openai.com/v1".to_string();
         render_app(&mut mouse, 80, 24);
 
         press(&mut keyboard, KeyCode::Enter);
@@ -1233,5 +1288,42 @@ mod tests {
         app.settings_input_model = "outro-rascunho".to_string();
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.settings_input_model, "modelo-persistido");
+    }
+
+    #[test]
+    fn invalid_settings_stay_open_with_an_actionable_error() {
+        let mut app = app();
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+        app.settings_input_timeout = "99".to_string();
+
+        dispatch_action(&mut app, SemanticAction::SaveSettings);
+
+        assert!(app.show_settings);
+        assert!(app
+            .settings_error
+            .as_deref()
+            .is_some_and(|error| error.contains("entre 1 e 45")));
+        assert_eq!(app.config.llm.timeout_secs, 45);
+    }
+
+    #[test]
+    fn ctrl_u_clears_the_active_field_and_first_api_key_input_replaces_the_secret() {
+        let mut app = app();
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::BaseUrl));
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        );
+        assert!(app.settings_input_base_url.is_empty());
+
+        app.settings_provider_idx = 2;
+        app.settings_input_base_url = "https://api.openai.com/v1".to_string();
+        app.settings_input_api_key = "chave-antiga".to_string();
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::ApiKey));
+        press(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(app.settings_input_api_key, "n");
+        assert!(app.settings_api_key_touched);
     }
 }

@@ -60,21 +60,6 @@ pub enum SettingsField {
     FallbackModel,
 }
 
-impl SettingsField {
-    pub const ALL: [Self; 10] = [
-        Self::Provider,
-        Self::BaseUrl,
-        Self::ApiKey,
-        Self::Model,
-        Self::Timeout,
-        Self::Retries,
-        Self::RemoteConsent,
-        Self::FallbackEnabled,
-        Self::FallbackBaseUrl,
-        Self::FallbackModel,
-    ];
-}
-
 pub struct ToolItem {
     pub tool: ToolInfo,
     pub selected: bool,
@@ -140,6 +125,8 @@ pub struct AppState {
     pub settings_fallback_enabled: bool,
     pub settings_input_fallback_base_url: String,
     pub settings_input_fallback_model: String,
+    pub settings_api_key_touched: bool,
+    pub settings_error: Option<String>,
     pub llm_warning: Option<String>,
     pub audit_log_path: Option<PathBuf>,
     pub run_error: Option<String>,
@@ -239,6 +226,8 @@ impl AppState {
             settings_fallback_enabled: fallback_enabled,
             settings_input_fallback_base_url: fallback_base_url,
             settings_input_fallback_model: fallback_model,
+            settings_api_key_touched: false,
+            settings_error: None,
             llm_warning: None,
             audit_log_path: None,
             run_error: None,
@@ -363,6 +352,7 @@ impl AppState {
                         .find(|tool| tool.status == ToolStatus::Running)
                         .map(|tool| format!("[{}] ", tool.tool.name))
                         .unwrap_or_default();
+                    let line = compact_operational_log(&line);
                     for part in line.split('\n') {
                         if part.trim().is_empty() {
                             continue;
@@ -408,9 +398,9 @@ impl AppState {
                     self.orchestrator = *orchestrator;
                     let llm_detail = self.orchestrator.agent.execution_history.last().cloned();
                     if let Some(detail) = llm_detail {
+                        let detail = crate::utils::redaction::sanitize_text(&detail);
                         self.exec_logs.push(format!("[ia] {detail}"));
-                        self.llm_warning =
-                            Some("LLM indisponível — análise local aplicada".to_string());
+                        self.llm_warning = Some(detail);
                     } else {
                         self.llm_warning = None;
                     }
@@ -653,30 +643,73 @@ impl AppState {
         )
     }
 
-    pub fn apply_settings(&mut self) {
+    pub fn visible_settings_fields(&self) -> Vec<SettingsField> {
+        let mut fields = vec![
+            SettingsField::Provider,
+            SettingsField::BaseUrl,
+            SettingsField::Model,
+        ];
+        if self.settings_connection_is_remote() {
+            fields.extend([SettingsField::ApiKey, SettingsField::RemoteConsent]);
+        }
+        fields.extend([
+            SettingsField::Timeout,
+            SettingsField::Retries,
+            SettingsField::FallbackEnabled,
+        ]);
+        if self.settings_fallback_enabled {
+            fields.extend([SettingsField::FallbackBaseUrl, SettingsField::FallbackModel]);
+        }
+        fields
+    }
+
+    pub fn settings_connection_is_remote(&self) -> bool {
         let provider =
             LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
-        self.config.llm.provider = provider;
-        if self.settings_input_base_url.is_empty() {
-            self.config.llm.base_url = provider.default_base_url().to_string();
+        let mut llm = self.config.llm.clone();
+        llm.provider = provider;
+        llm.base_url = self.settings_input_base_url.trim().to_string();
+        llm.is_remote()
+    }
+
+    pub fn apply_settings(&mut self) -> Result<(), String> {
+        let provider =
+            LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
+        let timeout = self
+            .settings_input_timeout
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| "Informe um tempo limite inteiro entre 1 e 45 segundos".to_string())?;
+        let retries = self
+            .settings_input_retries
+            .trim()
+            .parse::<u8>()
+            .map_err(|_| "Informe uma quantidade de tentativas entre 0 e 3".to_string())?;
+        let mut candidate = self.config.clone();
+        candidate.llm.provider = provider;
+        candidate.llm.base_url = if self.settings_input_base_url.trim().is_empty() {
+            provider.default_base_url().to_string()
         } else {
-            self.config.llm.base_url = self.settings_input_base_url.clone();
-        }
-        self.config.llm.api_key = self.settings_input_api_key.clone();
-        self.config.llm.timeout_secs = self.settings_input_timeout.parse().unwrap_or(45);
-        self.config.llm.max_retries = self.settings_input_retries.parse().unwrap_or(2);
-        self.config.llm.remote_consent = self.settings_remote_consent;
-        self.config.llm.fallback_enabled = self.settings_fallback_enabled;
-        self.config.llm.fallback_base_url = self.settings_input_fallback_base_url.clone();
-        self.config.llm.fallback_model = self.settings_input_fallback_model.clone();
-        if self.settings_input_model.is_empty() {
-            self.config.llm.model = provider.default_model().to_string();
+            self.settings_input_base_url.trim().to_string()
+        };
+        candidate.llm.api_key = self.settings_input_api_key.clone();
+        candidate.llm.model = if self.settings_input_model.trim().is_empty() {
+            provider.default_model().to_string()
         } else {
-            self.config.llm.model = self.settings_input_model.clone();
-        }
-        self.config.save();
+            self.settings_input_model.trim().to_string()
+        };
+        candidate.llm.timeout_secs = timeout;
+        candidate.llm.max_retries = retries;
+        candidate.llm.remote_consent = self.settings_remote_consent;
+        candidate.llm.fallback_enabled = self.settings_fallback_enabled;
+        candidate.llm.fallback_base_url = self.settings_input_fallback_base_url.trim().to_string();
+        candidate.llm.fallback_model = self.settings_input_fallback_model.trim().to_string();
+        candidate.llm.validate()?;
+        candidate.save()?;
+        self.config = candidate;
         self.reset_settings_draft();
         self.show_settings = false;
+        Ok(())
     }
 
     pub fn reset_settings_draft(&mut self) {
@@ -695,7 +728,15 @@ impl AppState {
         self.settings_fallback_enabled = self.config.llm.fallback_enabled;
         self.settings_input_fallback_base_url = self.config.llm.fallback_base_url.clone();
         self.settings_input_fallback_model = self.config.llm.fallback_model.clone();
+        self.settings_api_key_touched = false;
+        self.settings_error = None;
         self.settings_scroll = 0;
+        if !self
+            .visible_settings_fields()
+            .contains(&self.settings_field)
+        {
+            self.settings_field = SettingsField::Provider;
+        }
     }
 
     pub fn cancel_run(&mut self) {
@@ -759,11 +800,57 @@ impl AppState {
     }
 }
 
+fn compact_operational_log(line: &str) -> String {
+    let Some(json_start) = line.find('{') else {
+        return line.chars().take(600).collect();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&line[json_start..]) else {
+        return line.chars().take(600).collect();
+    };
+    let Some(template_id) = json.get("template-id").and_then(|value| value.as_str()) else {
+        return line.chars().take(600).collect();
+    };
+    let matcher = json
+        .get("matcher-name")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let title = crate::orchestrator::nuclei_parser::localized_nuclei_title(template_id, matcher);
+    let severity = crate::domain::Severity::from_label(
+        json.pointer("/info/severity")
+            .and_then(|value| value.as_str())
+            .unwrap_or("info"),
+    )
+    .label_pt_br();
+    let endpoint = json
+        .get("matched-at")
+        .or_else(|| json.get("url"))
+        .and_then(|value| value.as_str())
+        .map(crate::utils::redaction::sanitize_url)
+        .unwrap_or_else(|| "endpoint não informado".to_string());
+    let timestamp = &line[..json_start];
+    format!("{timestamp}achado · {severity} · {title} · {endpoint}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::vulnerability::FindingSource;
     use crate::domain::Severity;
+
+    #[test]
+    fn compacts_nuclei_jsonl_for_the_live_log() {
+        let line = r#"[12:00:00] {"template-id":"headers","info":{"name":"Cabeçalhos ausentes","severity":"info"},"matched-at":"http://target.local/path?token=secret","request":"segredo","response":"segredo"}"#;
+
+        let compact = compact_operational_log(line);
+
+        assert!(
+            compact.contains("achado · INFORMATIVA · Achado identificado pelo Nuclei — headers")
+        );
+        assert!(compact.contains("http://target.local/path"));
+        assert!(!compact.contains("request"));
+        assert!(!compact.contains("response"));
+        assert!(!compact.contains("secret"));
+    }
 
     #[tokio::test]
     async fn run_events_update_progress_findings_and_audit_path() {

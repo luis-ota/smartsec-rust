@@ -22,8 +22,11 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
             "Execução concluída com falhas · {}",
             chrome::truncate_width(error, 60)
         )
-    } else if app.llm_warning.is_some() {
-        "Análise local aplicada · LLM indisponível".to_string()
+    } else if let Some(warning) = &app.llm_warning {
+        format!(
+            "Análise local aplicada · {}",
+            chrome::truncate_width(warning, 48)
+        )
     } else if app.md_exported {
         "Relatório Markdown exportado".to_string()
     } else if vulnerabilities.is_empty() {
@@ -453,7 +456,7 @@ fn severity_label(severity: Severity) -> &'static str {
         Severity::High => "ALTA",
         Severity::Medium => "MÉDIA",
         Severity::Low => "BAIXA",
-        Severity::Info => "INFO",
+        Severity::Info => "INFORM.",
     }
 }
 

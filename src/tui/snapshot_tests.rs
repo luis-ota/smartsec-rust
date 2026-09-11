@@ -156,10 +156,11 @@ fn settings_help_and_palette_match_80x24_snapshots() {
     assert_snapshot(
         &mut app,
         &[
-            "Configurações",
+            "Configurações de IA",
             "Provedor",
-            "Consentimento remoto",
-            "Salvar",
+            "Conexão principal",
+            "Confiabilidade",
+            "Salvar alterações",
         ],
     );
 
