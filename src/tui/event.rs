@@ -43,6 +43,12 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return dispatch_action(app, SemanticAction::OpenHelp);
     }
 
+    if app.show_report_viewer {
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return dispatch_action(app, SemanticAction::OpenCommandPalette);
+        }
+        return key_action(app, key).is_some_and(|action| dispatch_action(app, action));
+    }
     if app.show_help_overlay {
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return dispatch_action(app, SemanticAction::OpenCommandPalette);
@@ -68,6 +74,12 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
 }
 
 fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
+    if app.show_report_viewer {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Enter => Some(SemanticAction::Back),
+            _ => None,
+        };
+    }
     if app.show_help_overlay {
         return match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') => Some(SemanticAction::Back),
@@ -201,6 +213,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::DeleteBackward => delete_backward(app),
         SemanticAction::ClearText => clear_text(app),
         SemanticAction::OpenHelp => open_help(app),
+        SemanticAction::OpenReportViewer => open_report_viewer(app),
         SemanticAction::OpenCommandPalette => open_command_palette(app),
         SemanticAction::ExecuteCommand(index) => return execute_command(app, index),
     }
@@ -215,6 +228,9 @@ fn set_focus(app: &mut AppState, focus: FocusTarget) {
 }
 
 fn focus_order(app: &AppState) -> Vec<FocusTarget> {
+    if app.show_report_viewer {
+        return vec![FocusTarget::ReportClose];
+    }
     if app.show_help_overlay {
         return vec![FocusTarget::HelpClose];
     }
@@ -285,7 +301,9 @@ fn move_vertical(app: &mut AppState, down: bool) {
             move_result_cursor(app, down)
         }
         FocusTarget::ResultsDetail => scroll_detail(app, down, 1),
-        FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => scroll(app, down, 1),
+        FocusTarget::ExecutionLogs | FocusTarget::DidacticContent | FocusTarget::ReportClose => {
+            scroll(app, down, 1)
+        }
         FocusTarget::SettingsField(SettingsField::Provider) => move_provider(app, down),
         FocusTarget::CommandList => move_command_cursor(app, down),
         _ => move_focus(app, down),
@@ -334,12 +352,18 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::SettingsSave => SemanticAction::SaveSettings,
         FocusTarget::SettingsCancel => SemanticAction::CloseSettings,
         FocusTarget::HelpClose => SemanticAction::Back,
+        FocusTarget::ReportClose => SemanticAction::Back,
         FocusTarget::CommandList => SemanticAction::ExecuteCommand(app.command_cursor),
     };
     dispatch_action(app, action);
 }
 
 fn go_back(app: &mut AppState) -> bool {
+    if app.show_report_viewer {
+        app.show_report_viewer = false;
+        app.focus = app.overlay_return_focus;
+        return false;
+    }
     if app.show_help_overlay {
         app.show_help_overlay = false;
         app.focus = app.overlay_return_focus;
@@ -473,6 +497,16 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
 }
 
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
+    if app.show_report_viewer {
+        app.report_scroll = if down {
+            app.report_scroll
+                .saturating_add(amount)
+                .min(app.report_max_scroll)
+        } else {
+            app.report_scroll.saturating_sub(amount)
+        };
+        return;
+    }
     if app.show_help_overlay {
         return;
     }
@@ -543,8 +577,27 @@ fn open_help(app: &mut AppState) {
         app.overlay_return_focus = app.focus;
     }
     app.show_command_palette = false;
+    app.show_report_viewer = false;
     app.show_help_overlay = true;
     app.focus = FocusTarget::HelpClose;
+}
+
+fn open_report_viewer(app: &mut AppState) {
+    if app.step != AppStep::Results || app.exported_report_path.is_none() {
+        return;
+    }
+    app.overlay_return_focus = app.focus;
+    app.show_help_overlay = false;
+    app.show_command_palette = false;
+    app.report_content = app
+        .exported_report_path
+        .as_ref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_else(|| "Não foi possível ler o relatório exportado.".to_string());
+    app.report_scroll = 0;
+    app.report_max_scroll = 0;
+    app.show_report_viewer = true;
+    app.focus = FocusTarget::ReportClose;
 }
 
 fn open_command_palette(app: &mut AppState) {
@@ -552,6 +605,7 @@ fn open_command_palette(app: &mut AppState) {
         app.overlay_return_focus = app.focus;
     }
     app.show_help_overlay = false;
+    app.show_report_viewer = false;
     app.show_command_palette = true;
     app.command_cursor = 0;
     app.focus = FocusTarget::CommandList;
@@ -593,9 +647,17 @@ fn cancel_execution(app: &mut AppState) {
 fn export_markdown(app: &mut AppState) {
     if app.step == AppStep::Results {
         match std::fs::write("smartsec-report.md", app.export_md()) {
-            Ok(()) => app.md_exported = true,
+            Ok(()) => {
+                app.md_exported = true;
+                app.exported_report_path = Some(
+                    std::env::current_dir()
+                        .map(|dir| dir.join("smartsec-report.md"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from("smartsec-report.md")),
+                );
+            }
             Err(error) => {
                 app.md_exported = false;
+                app.exported_report_path = None;
                 app.run_error = Some(format!("Falha ao exportar relatório: {error}"));
             }
         }
@@ -610,6 +672,11 @@ fn new_scan(app: &mut AppState) {
     app.detail_max_scroll = 0;
     app.show_didactic = false;
     app.md_exported = false;
+    app.exported_report_path = None;
+    app.show_report_viewer = false;
+    app.report_content = String::new();
+    app.report_scroll = 0;
+    app.report_max_scroll = 0;
     app.focus = FocusTarget::SplashTarget;
 }
 
@@ -944,6 +1011,37 @@ mod tests {
         assert!(!press(&mut app, KeyCode::Esc));
         assert!(!app.show_didactic);
         assert_eq!(app.focus, FocusTarget::ResultsExport);
+    }
+
+    #[test]
+    fn report_viewer_opens_closes_and_restores_focus() {
+        let path = std::env::temp_dir().join("smartsec-report-viewer-test.md");
+        std::fs::write(&path, "# Relatório de teste\nconteúdo\n").unwrap();
+
+        let mut app = app();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsExport;
+        dispatch_action(&mut app, SemanticAction::OpenReportViewer);
+        assert!(!app.show_report_viewer, "sem path exportado não abre");
+
+        app.step = AppStep::Splash;
+        app.md_exported = true;
+        app.exported_report_path = Some(path.clone());
+        dispatch_action(&mut app, SemanticAction::OpenReportViewer);
+        assert!(!app.show_report_viewer, "fora dos resultados não abre");
+
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsExport;
+        dispatch_action(&mut app, SemanticAction::OpenReportViewer);
+        assert!(app.show_report_viewer);
+        assert_eq!(app.focus, FocusTarget::ReportClose);
+        assert!(app.report_content.contains("Relatório de teste"));
+
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_report_viewer);
+        assert_eq!(app.focus, FocusTarget::ResultsExport);
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

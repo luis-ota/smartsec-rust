@@ -28,6 +28,7 @@ pub enum FocusTarget {
     SettingsCancel,
     HelpClose,
     CommandList,
+    ReportClose,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +62,7 @@ pub enum SemanticAction {
     DeleteBackward,
     ClearText,
     OpenHelp,
+    OpenReportViewer,
     OpenCommandPalette,
     ExecuteCommand(usize),
 }
