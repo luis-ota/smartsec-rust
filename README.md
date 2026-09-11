@@ -79,6 +79,22 @@ cargo run -- scan --target example.com --config ./smartsec.toml --llm ollama --m
 # Na TUI em modo assistido, marque ou desmarque ferramentas com Espaco
 ```
 
+### Arquivo de configuração TOML
+
+O modelo comentado [`smartsec.example.toml`](smartsec.example.toml) mostra o
+schema mínimo: `target_url`, `active_tools`, `execution_type` e a tabela
+`[llm]`. Regras:
+
+- `--target` é sempre obrigatório na CLI; o `target_url` do arquivo é usado
+  pela TUI e substituído pela CLI no headless.
+- `--tools`, `--llm` e `--model` sobrescrevem os valores do arquivo.
+- `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`,
+  `custom`) além das canônicas (`Ollama`, `NvidiaNim`, `OpenAI`, `Custom`).
+- `base_url` e `model` ausentes assumem o padrão do provedor;
+  `execution_type` ausente assume `Assisted`.
+- `scan` headless sempre opera como Automático, independente de
+  `execution_type`.
+
 ### Configuracao da IA na TUI
 
 A tela `Configurar IA` separa conexao principal de confiabilidade e mostra

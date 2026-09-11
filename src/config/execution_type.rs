@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum ExecutionType {
     Auto,
+    #[default]
     Assisted,
 }
 
