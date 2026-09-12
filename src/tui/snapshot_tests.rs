@@ -175,6 +175,54 @@ fn export_path_and_report_viewer_match_80x24_snapshots() {
 }
 
 #[test]
+fn traceability_overlay_matches_80x24_snapshots() {
+    let mut app = app();
+    app.step = AppStep::Results;
+    app.show_trace_overlay = true;
+    app.focus = FocusTarget::TraceClose;
+    assert_snapshot(
+        &mut app,
+        &[
+            "Rastreabilidade",
+            "UC01",
+            "RNF01",
+            "REQ06",
+            "REQ09",
+            "REQ10",
+            "0/5 verificados",
+        ],
+    );
+
+    app.config.target_url = "http://169.254.1.2:3000".to_string();
+    app.orchestrator.execution_history.push({
+        let mut execution =
+            crate::domain::security_tool::SecurityTool::new("Nmap", "nmap -Pn -sT -sV");
+        execution.status = "succeeded".to_string();
+        execution.duration_ms = 11_500;
+        execution.podman_trace = vec![
+            "[15:54:54] $ podman info".to_string(),
+            "[15:54:55] podman rootless verificado".to_string(),
+        ];
+        execution
+    });
+    app.audit_log_path = Some(std::path::PathBuf::from(
+        "/home/user/.config/smartsec/scans/scan_1.json",
+    ));
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "4/5 verificados",
+            "alvo validado",
+            "rootless confirmado",
+            "Nmap ok",
+            "scan_1.json",
+            "f2 reabre",
+        ],
+    );
+    assert!(snapshot.contains("○ REQ10"), "{snapshot}");
+}
+
+#[test]
 fn settings_help_and_palette_match_80x24_snapshots() {
     let mut app = app();
     app.show_settings = true;

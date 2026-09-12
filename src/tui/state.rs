@@ -115,6 +115,7 @@ pub struct AppState {
     pub report_content: String,
     pub report_scroll: usize,
     pub report_max_scroll: usize,
+    pub show_trace_overlay: bool,
     pub show_didactic: bool,
     pub didactic_scroll: usize,
     pub didactic_max_scroll: usize,
@@ -221,6 +222,7 @@ impl AppState {
             report_content: String::new(),
             report_scroll: 0,
             report_max_scroll: 0,
+            show_trace_overlay: false,
             show_didactic: false,
             didactic_scroll: 0,
             didactic_max_scroll: 0,
@@ -336,6 +338,7 @@ impl AppState {
             || self.show_help_overlay
             || self.show_command_palette
             || self.show_report_viewer
+            || self.show_trace_overlay
     }
 
     async fn process_run_events(&mut self) {
