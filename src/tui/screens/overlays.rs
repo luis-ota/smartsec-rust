@@ -43,6 +43,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
         shortcut("ctrl+u", "limpar o campo de texto em foco"),
         shortcut("esc", "fechar ou voltar"),
         shortcut("f1", "abrir ajuda em qualquer contexto"),
+        shortcut("f2", "rastreabilidade da Sprint 1"),
         shortcut("ctrl+p", "abrir a paleta de comandos"),
         Line::from(""),
         Line::styled(
@@ -208,7 +209,7 @@ fn shortcut<'a>(key: &'a str, description: &'a str) -> Line<'a> {
     ])
 }
 
-fn centered_fixed(area: Rect, width: u16, height: u16) -> Rect {
+pub(crate) fn centered_fixed(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width.saturating_sub(2)).max(1);
     let height = height.min(area.height.saturating_sub(2)).max(1);
     Rect::new(
