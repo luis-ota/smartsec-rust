@@ -103,6 +103,19 @@ done
 [[ "$RESULTS_READY" == "true" ]] || fail "a TUI não concluiu em 240 segundos"
 cp "$EVIDENCE_ROOT/estado-atual.txt" "$EVIDENCE_ROOT/resultados-80x24.txt"
 
+# F2 abre a rastreabilidade da Sprint 1 com as evidências reais da sessão.
+tmux send-keys -t "$SESSION" F2
+sleep 1
+tmux capture-pane -p -t "$SESSION" >"$EVIDENCE_ROOT/rastreabilidade-80x24.txt"
+rg -q 'Rastreabilidade · Sprint 1' "$EVIDENCE_ROOT/rastreabilidade-80x24.txt" \
+  || fail "o overlay de rastreabilidade não abriu"
+rg -q '5/5 verificados' "$EVIDENCE_ROOT/rastreabilidade-80x24.txt" \
+  || fail "os cinco requisitos da Sprint 1 não foram evidenciados"
+rg -q 'IA decidiu|política local decidiu' "$EVIDENCE_ROOT/rastreabilidade-80x24.txt" \
+  || fail "a origem da decisão da IA não apareceu na rastreabilidade"
+tmux send-keys -t "$SESSION" Escape
+sleep 0.5
+
 # Resultados -> Nova análise -> Exportar.
 tmux send-keys -t "$SESSION" Tab Tab Enter
 for _ in $(seq 1 20); do
