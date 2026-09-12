@@ -25,7 +25,11 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let status = if app.exec_cancelled {
         "Execução cancelada; retornando às ferramentas".to_string()
     } else if total > 0 && completed == total {
-        "Varredura concluída; preparando análise".to_string()
+        format!(
+            "Preparando análise da IA {} · {}s",
+            app.spinner_char(),
+            app.analysis_wait_secs
+        )
     } else {
         format!("Executando varredura · {completed}/{total} concluídas · {percent}%")
     };
