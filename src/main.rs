@@ -492,14 +492,23 @@ mod tests {
 
     #[test]
     fn cli_values_have_precedence_over_configuration() {
+        let path =
+            std::env::temp_dir().join(format!("smartsec-precedence-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "target_url = \"http://config.local\"\nactive_tools = [\"Nuclei\"]\nexecution_type = \"Assisted\"\n\n[llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+        )
+        .unwrap();
         let options = ExecutionArgs {
-            config: None,
+            config: Some(path.clone()),
             tools: Some("Nmap".to_owned()),
             llm: None,
             model: None,
         };
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
+        assert_eq!(configured.target_url, "192.0.2.10");
         assert_eq!(configured.active_tools, vec!["Nmap"]);
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
