@@ -102,7 +102,9 @@ somente os campos aplicaveis. Provedores remotos exibem chave e consentimento;
 o Ollama local os oculta. `Tab` percorre os campos e acoes, `←`/`→` alteram
 selecoes, `Espaco` alterna opcoes e `Ctrl+U` limpa o campo atual. Valores
 invalidos mantem a tela aberta com uma mensagem acionavel. Chaves ficam no
-keyring do sistema e nunca sao gravadas no TOML.
+keyring do sistema e nunca sao gravadas no TOML. No Linux o keyring usa o
+Secret Service (por exemplo, gnome-keyring ou KWallet), que precisa estar
+ativo para salvar e ler chaves de provedores remotos.
 
 ### E2E real da TUI
 
