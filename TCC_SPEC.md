@@ -137,7 +137,7 @@ Na Sprint 1, Nmap e Nuclei reais executam exclusivamente em Podman rootless. A r
 
 A tela de configuracao da TUI deve permanecer legivel em `80x24`, separar conexao principal de confiabilidade, ocultar campos nao aplicaveis e manter a tela aberta quando houver erro de validacao ou persistencia. Todas as acoes disponiveis por teclado devem possuir equivalente por mouse. O fluxo Nmap -> decisao -> Nuclei -> auditoria -> relatorio possui roteiro E2E reproduzivel em `scripts/e2e_tui_local.sh`; a evidencia da homologacao esta em `docs/evidence/issue-53-tui-e2e.md`.
 
-O arquivo de configuracao TOML tem modelo comentado em `smartsec.example.toml`. No modo headless, `--target` e sempre obrigatorio na CLI e substitui o `target_url` do arquivo; `--tools`, `--llm` e `--model` sobrescrevem o arquivo. O campo `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`, `custom`) alem das canonicas; `base_url` e `model` ausentes assumem o padrao do provedor e `execution_type` ausente assume `Assisted`. O comando `scan` sempre opera como Automatico, independente do `execution_type` do arquivo.
+O arquivo de configuracao TOML tem modelo comentado em `smartsec.example.toml`. No modo headless, `--target` e sempre obrigatorio na CLI e substitui o `target_url` do arquivo; `--tools`, `--llm` e `--model` sobrescrevem o arquivo. No Linux, as chaves de API remota sao armazenadas no Secret Service do sistema (keyring) e nunca no TOML. O campo `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`, `custom`) alem das canonicas; `base_url` e `model` ausentes assumem o padrao do provedor e `execution_type` ausente assume `Assisted`. O comando `scan` sempre opera como Automatico, independente do `execution_type` do arquivo.
 
 ## 8. Macro-sprints
 
