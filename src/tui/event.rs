@@ -43,6 +43,16 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return dispatch_action(app, SemanticAction::OpenHelp);
     }
 
+    if key.code == KeyCode::F(2) {
+        return dispatch_action(app, SemanticAction::OpenTraceability);
+    }
+
+    if app.show_trace_overlay {
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return dispatch_action(app, SemanticAction::OpenCommandPalette);
+        }
+        return key_action(app, key).is_some_and(|action| dispatch_action(app, action));
+    }
     if app.show_report_viewer {
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return dispatch_action(app, SemanticAction::OpenCommandPalette);
@@ -74,6 +84,12 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
 }
 
 fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
+    if app.show_trace_overlay {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Enter => Some(SemanticAction::Back),
+            _ => None,
+        };
+    }
     if app.show_report_viewer {
         return match key.code {
             KeyCode::Esc | KeyCode::Enter => Some(SemanticAction::Back),
@@ -214,6 +230,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::ClearText => clear_text(app),
         SemanticAction::OpenHelp => open_help(app),
         SemanticAction::OpenReportViewer => open_report_viewer(app),
+        SemanticAction::OpenTraceability => open_traceability(app),
         SemanticAction::OpenCommandPalette => open_command_palette(app),
         SemanticAction::ExecuteCommand(index) => return execute_command(app, index),
     }
@@ -228,6 +245,9 @@ fn set_focus(app: &mut AppState, focus: FocusTarget) {
 }
 
 fn focus_order(app: &AppState) -> Vec<FocusTarget> {
+    if app.show_trace_overlay {
+        return vec![FocusTarget::TraceClose];
+    }
     if app.show_report_viewer {
         return vec![FocusTarget::ReportClose];
     }
@@ -353,12 +373,18 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::SettingsCancel => SemanticAction::CloseSettings,
         FocusTarget::HelpClose => SemanticAction::Back,
         FocusTarget::ReportClose => SemanticAction::Back,
+        FocusTarget::TraceClose => SemanticAction::Back,
         FocusTarget::CommandList => SemanticAction::ExecuteCommand(app.command_cursor),
     };
     dispatch_action(app, action);
 }
 
 fn go_back(app: &mut AppState) -> bool {
+    if app.show_trace_overlay {
+        app.show_trace_overlay = false;
+        app.focus = app.overlay_return_focus;
+        return false;
+    }
     if app.show_report_viewer {
         app.show_report_viewer = false;
         app.focus = app.overlay_return_focus;
@@ -497,6 +523,9 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
 }
 
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
+    if app.show_trace_overlay {
+        return;
+    }
     if app.show_report_viewer {
         app.report_scroll = if down {
             app.report_scroll
@@ -578,8 +607,23 @@ fn open_help(app: &mut AppState) {
     }
     app.show_command_palette = false;
     app.show_report_viewer = false;
+    app.show_trace_overlay = false;
     app.show_help_overlay = true;
     app.focus = FocusTarget::HelpClose;
+}
+
+fn open_traceability(app: &mut AppState) {
+    if app.show_trace_overlay {
+        return;
+    }
+    if !app.show_help_overlay && !app.show_command_palette && !app.show_report_viewer {
+        app.overlay_return_focus = app.focus;
+    }
+    app.show_help_overlay = false;
+    app.show_command_palette = false;
+    app.show_report_viewer = false;
+    app.show_trace_overlay = true;
+    app.focus = FocusTarget::TraceClose;
 }
 
 fn open_report_viewer(app: &mut AppState) {
@@ -589,6 +633,7 @@ fn open_report_viewer(app: &mut AppState) {
     app.overlay_return_focus = app.focus;
     app.show_help_overlay = false;
     app.show_command_palette = false;
+    app.show_trace_overlay = false;
     app.report_content = app
         .exported_report_path
         .as_ref()
@@ -606,6 +651,7 @@ fn open_command_palette(app: &mut AppState) {
     }
     app.show_help_overlay = false;
     app.show_report_viewer = false;
+    app.show_trace_overlay = false;
     app.show_command_palette = true;
     app.command_cursor = 0;
     app.focus = FocusTarget::CommandList;
@@ -1042,6 +1088,21 @@ mod tests {
         assert_eq!(app.focus, FocusTarget::ResultsExport);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn traceability_overlay_opens_with_f2_and_closes_restoring_focus() {
+        let mut app = app();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsList;
+
+        assert!(!press(&mut app, KeyCode::F(2)));
+        assert!(app.show_trace_overlay);
+        assert_eq!(app.focus, FocusTarget::TraceClose);
+
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_trace_overlay);
+        assert_eq!(app.focus, FocusTarget::ResultsList);
     }
 
     #[test]

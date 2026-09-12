@@ -40,6 +40,11 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
         return items;
     }
     items.push(CommandItem::new(
+        "Ver rastreabilidade da Sprint 1",
+        "f2",
+        SemanticAction::OpenTraceability,
+    ));
+    items.push(CommandItem::new(
         "Abrir configurações",
         "",
         SemanticAction::OpenSettings,
