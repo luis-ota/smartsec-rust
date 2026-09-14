@@ -23,6 +23,8 @@ pub struct Orchestrator {
     /// Podman (TUI e headless). Quando ausente, o trace segue acumulado em
     /// cada `SecurityTool` para auditoria.
     pub trace_sink: Option<mpsc::UnboundedSender<String>>,
+    /// Notifica a interface assim que o plano do Nuclei é validado.
+    pub decision_sink: Option<mpsc::UnboundedSender<DecisionRecord>>,
     started_at: String,
     latest_nmap_output: Option<String>,
 }
@@ -41,6 +43,7 @@ impl Orchestrator {
             cancelled: false,
             last_log: String::new(),
             trace_sink: None,
+            decision_sink: None,
             started_at: now_iso8601(),
             latest_nmap_output: None,
         }
@@ -167,6 +170,9 @@ impl Orchestrator {
             &self.agent.model,
         );
         self.decision_history.push(decision.clone());
+        if let Some(sink) = &self.decision_sink {
+            let _ = sink.send(decision.clone());
+        }
         let runner = NucleiTool;
         let arguments = runner.configure_command_with_plan(target, &decision.plan);
         let mut exec = SecurityTool::new(tool_info.name, &arguments);

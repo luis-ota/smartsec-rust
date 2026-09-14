@@ -1,9 +1,10 @@
-use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SUCCESS, SURFACE, TEXT};
+use crate::orchestrator::decision::DecisionSource;
+use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SUCCESS, SURFACE, TEXT, WARNING};
 use crate::tui::interaction::{FocusTarget, SemanticAction};
-use crate::tui::state::{AppState, ToolStatus};
+use crate::tui::state::{AiActivity, AppState, ToolStatus};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::Style,
+    style::{Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Paragraph, Wrap},
     Frame,
@@ -37,13 +38,102 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let progress_height = (total as u16).saturating_add(2).clamp(3, 6);
     let rows = Layout::vertical([
         Constraint::Length(progress_height),
+        Constraint::Length(4),
         Constraint::Min(3),
         Constraint::Length(2),
     ])
     .split(shell.content);
     render_progress(app, frame, rows[0], percent);
-    render_logs(app, frame, rows[1]);
-    render_actions(app, frame, rows[2]);
+    render_ai_activity(app, frame, rows[1]);
+    render_logs(app, frame, rows[2]);
+    render_actions(app, frame, rows[3]);
+}
+
+fn render_ai_activity(app: &AppState, frame: &mut Frame, area: Rect) {
+    let block = chrome::panel("Atuação da IA", false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (symbol, color, title, detail) = match app.ai_activity {
+        AiActivity::WaitingForEvidence => (
+            "○ ",
+            MUTED,
+            "Aguardando evidências do Nmap",
+            format!("modelo configurado: {}", app.config.llm.model),
+        ),
+        AiActivity::PlanningNuclei => (
+            app.spinner_char(),
+            ACCENT,
+            "IA definindo o plano do Nuclei",
+            format!(
+                "{} · perfis e limites serão validados pela política segura",
+                app.config.llm.model
+            ),
+        ),
+        AiActivity::PlanReady => {
+            let decision = app.ai_decision.as_ref();
+            let source = decision.map(|record| &record.source);
+            let title = if source == Some(&DecisionSource::Ai) {
+                "Plano da IA aceito pela política"
+            } else {
+                "Política local assumiu a decisão"
+            };
+            let color = if source == Some(&DecisionSource::Ai) {
+                SUCCESS
+            } else {
+                WARNING
+            };
+            let detail = decision.map_or_else(
+                || "parâmetros seguros aplicados ao Nuclei".to_string(),
+                |record| {
+                    format!(
+                        "{} paralelos · timeout {}s · {}",
+                        record
+                            .parameters
+                            .get("concurrency")
+                            .map_or("?", String::as_str),
+                        record
+                            .parameters
+                            .get("timeout_seconds")
+                            .map_or("?", String::as_str),
+                        record
+                            .parameters
+                            .get("templates")
+                            .map_or("", String::as_str)
+                    )
+                },
+            );
+            ("● ", color, title, detail)
+        }
+        AiActivity::GeneratingGuidance => (
+            app.spinner_char(),
+            ACCENT,
+            "IA gerando orientações de remediação",
+            format!(
+                "{} · {}s · severidades dos scanners permanecem imutáveis",
+                app.config.llm.model, app.analysis_wait_secs
+            ),
+        ),
+        AiActivity::Complete => (
+            "● ",
+            SUCCESS,
+            "Orientações processadas",
+            "resultado validado e pronto para auditoria".to_string(),
+        ),
+    };
+
+    let detail = chrome::truncate_width(&detail, inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(symbol, Style::default().fg(color).bold()),
+                Span::styled(title, Style::default().fg(TEXT).bold()),
+            ]),
+            Line::styled(detail, Style::default().fg(MUTED)),
+        ]))
+        .style(Style::default().bg(SURFACE)),
+        inner,
+    );
 }
 
 fn render_progress(app: &AppState, frame: &mut Frame, area: Rect, percent: u16) {

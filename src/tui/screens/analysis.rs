@@ -61,7 +61,7 @@ fn render_output(app: &AppState, frame: &mut Frame, area: Rect) {
             if app.analysis_phase == AnalysisPhase::Complete {
                 "Correlação finalizada"
             } else {
-                "Interpretando evidências e reduzindo falsos positivos"
+                "Gerando orientações sem alterar as severidades dos scanners"
             },
             Style::default().fg(TEXT).bold(),
         ),
