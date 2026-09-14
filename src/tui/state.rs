@@ -4,6 +4,7 @@ use crate::config::llm_config::LlmProviderKind;
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, ToolInfo};
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::decision::DecisionRecord;
 use crate::orchestrator::Orchestrator;
 use crate::tui::interaction::{FocusTarget, HitRegion, SemanticAction};
 use ratatui::layout::Rect;
@@ -47,6 +48,15 @@ pub enum AnalysisPhase {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AiActivity {
+    WaitingForEvidence,
+    PlanningNuclei,
+    PlanReady,
+    GeneratingGuidance,
+    Complete,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsField {
     Provider,
     BaseUrl,
@@ -70,6 +80,8 @@ pub struct ToolItem {
 enum RunEvent {
     ToolStarted(usize),
     ToolLog(String),
+    AiDecisionStarted,
+    AiDecisionFinished(DecisionRecord),
     ToolFinished {
         index: usize,
         execution: Box<SecurityTool>,
@@ -108,6 +120,8 @@ pub struct AppState {
     pub analysis_text: String,
     pub analysis_full_text: String,
     pub analysis_wait_secs: u64,
+    pub ai_activity: AiActivity,
+    pub ai_decision: Option<DecisionRecord>,
     pub result_cursor: usize,
     pub result_scroll: usize,
     pub result_detail_vuln: Option<usize>,
@@ -216,6 +230,8 @@ impl AppState {
             analysis_text: String::new(),
             analysis_full_text: String::new(),
             analysis_wait_secs: 0,
+            ai_activity: AiActivity::WaitingForEvidence,
+            ai_decision: None,
             result_cursor: 0,
             result_scroll: 0,
             result_detail_vuln: None,
@@ -386,6 +402,13 @@ impl AppState {
                         self.exec_logs.drain(..overflow);
                     }
                 }
+                RunEvent::AiDecisionStarted => {
+                    self.ai_activity = AiActivity::PlanningNuclei;
+                }
+                RunEvent::AiDecisionFinished(decision) => {
+                    self.ai_activity = AiActivity::PlanReady;
+                    self.ai_decision = Some(decision);
+                }
                 RunEvent::ToolFinished { index, execution } => {
                     let succeeded = execution.execution_error.is_none()
                         && matches!(execution.status.as_str(), "succeeded" | "skipped");
@@ -413,6 +436,7 @@ impl AppState {
                     self.orchestrator.execution_history.push(*execution);
                 }
                 RunEvent::AnalysisProgress { elapsed_secs } => {
+                    self.ai_activity = AiActivity::GeneratingGuidance;
                     self.analysis_wait_secs = elapsed_secs;
                     if elapsed_secs % 10 == 0 {
                         self.exec_logs
@@ -461,6 +485,7 @@ impl AppState {
                     self.analysis_full_text = self.orchestrator.last_log.clone();
                     self.analysis_text = self.analysis_full_text.clone();
                     self.analysis_phase = AnalysisPhase::Complete;
+                    self.ai_activity = AiActivity::Complete;
                     self.analysis_tick = 0;
                     self.step = AppStep::Analysis;
                     self.focus = FocusTarget::AnalysisCancel;
@@ -570,6 +595,8 @@ impl AppState {
         self.analysis_text.clear();
         self.analysis_full_text.clear();
         self.analysis_wait_secs = 0;
+        self.ai_activity = AiActivity::WaitingForEvidence;
+        self.ai_decision = None;
 
         let selected: Vec<_> = self
             .tools
@@ -589,7 +616,11 @@ impl AppState {
         self.run_task = Some(tokio::spawn(async move {
             let mut orchestrator = Orchestrator::new(config);
             for (index, tool) in selected {
+                let is_nuclei = tool.is_nuclei();
                 if sender.send(RunEvent::ToolStarted(index)).is_err() {
+                    return;
+                }
+                if is_nuclei && sender.send(RunEvent::AiDecisionStarted).is_err() {
                     return;
                 }
                 let (trace_tx, mut trace_rx) = mpsc::unbounded_channel::<String>();
@@ -604,9 +635,27 @@ impl AppState {
                         }
                     }
                 });
+                let decision_forwarder = if is_nuclei {
+                    let (decision_tx, mut decision_rx) = mpsc::unbounded_channel();
+                    orchestrator.decision_sink = Some(decision_tx);
+                    Some(tokio::spawn({
+                        let sender = sender.clone();
+                        async move {
+                            if let Some(decision) = decision_rx.recv().await {
+                                let _ = sender.send(RunEvent::AiDecisionFinished(decision));
+                            }
+                        }
+                    }))
+                } else {
+                    None
+                };
                 let execution = orchestrator.execute_tool(&tool, &target).await;
                 orchestrator.trace_sink = None;
+                orchestrator.decision_sink = None;
                 let _ = forwarder.await;
+                if let Some(forwarder) = decision_forwarder {
+                    let _ = forwarder.await;
+                }
                 if sender
                     .send(RunEvent::ToolFinished {
                         index,
@@ -935,6 +984,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ai_events_expose_the_real_pipeline_stage() {
+        let mut app = AppState::new(Configuration::default());
+        app.step = AppStep::Execution;
+        let (sender, receiver) = mpsc::unbounded_channel();
+        app.run_receiver = Some(receiver);
+
+        sender.send(RunEvent::AiDecisionStarted).unwrap();
+        app.process_run_events().await;
+        assert_eq!(app.ai_activity, AiActivity::PlanningNuclei);
+
+        let decision = crate::orchestrator::decision::decide_nuclei_plan(
+            "http://target.local",
+            None,
+            None,
+            "modelo-local",
+        );
+        sender
+            .send(RunEvent::AiDecisionFinished(decision.clone()))
+            .unwrap();
+        app.process_run_events().await;
+        assert_eq!(app.ai_activity, AiActivity::PlanReady);
+        assert_eq!(app.ai_decision.as_ref(), Some(&decision));
+
+        sender
+            .send(RunEvent::AnalysisProgress { elapsed_secs: 2 })
+            .unwrap();
+        app.process_run_events().await;
+        assert_eq!(app.ai_activity, AiActivity::GeneratingGuidance);
+    }
+
+    #[tokio::test]
     async fn run_events_update_progress_findings_and_audit_path() {
         let mut app = AppState::new(Configuration::default());
         app.step = AppStep::Execution;
@@ -994,6 +1074,7 @@ mod tests {
         assert_eq!(app.orchestrator.findings.len(), 1);
         assert_eq!(app.audit_log_path.as_ref(), Some(&audit_path));
         assert_eq!(app.step, AppStep::Analysis);
+        assert_eq!(app.ai_activity, AiActivity::Complete);
     }
 
     #[tokio::test]
