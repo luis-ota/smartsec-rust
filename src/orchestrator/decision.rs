@@ -75,7 +75,7 @@ pub fn decide_nuclei_plan(
     let fallback_plan = fallback_plan(&signal, target);
 
     if let Some(raw) = ai_response {
-        if let Ok(parsed) = serde_json::from_str::<AiPlanResponse>(raw) {
+        if let Ok(parsed) = serde_json::from_str::<AiPlanResponse>(extract_json_object(raw)) {
             if let Ok(plan) = validate_ai_plan(&signal, &parsed, target) {
                 return build_record(
                     DecisionSource::Ai,
@@ -204,6 +204,20 @@ fn fallback_plan(signal: &NmapSignal, target: &str) -> NucleiPlan {
         profiles,
         concurrency,
         timeout_seconds,
+    }
+}
+
+fn extract_json_object(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    let unfenced = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_suffix("```").map(str::trim_end))
+        .unwrap_or(trimmed);
+    match (unfenced.find('{'), unfenced.rfind('}')) {
+        (Some(start), Some(end)) if start <= end => &unfenced[start..=end],
+        _ => unfenced,
     }
 }
 
@@ -558,6 +572,36 @@ mod tests {
             .plan
             .profiles
             .contains(&NucleiTemplateProfile::HttpMisconfiguration));
+        assert!(record
+            .plan
+            .profiles
+            .contains(&NucleiTemplateProfile::HttpExposedPanels));
+    }
+
+    #[test]
+    fn fenced_or_wrapped_ai_plan_is_extracted_before_parsing() {
+        let xml = r#"
+<nmaprun>
+  <host>
+    <ports>
+      <port protocol="tcp" portid="80">
+        <state state="open" />
+        <service name="http" product="nginx" version="1.24.0" />
+      </port>
+    </ports>
+  </host>
+</nmaprun>
+"#;
+
+        let fenced = "```json\n{\"should_run\":true,\"profiles\":[\"http-misconfiguration\"],\"concurrency\":10,\"timeout_seconds\":5}\n```";
+        let record = decide_nuclei_plan("https://example.local", Some(xml), Some(fenced), "gpt-5");
+        assert_eq!(record.source, DecisionSource::Ai);
+        assert_eq!(record.plan.concurrency, 10);
+        assert_eq!(record.plan.timeout_seconds, 5);
+
+        let wrapped = "Plano sugerido:\n{\"should_run\":true,\"profiles\":[\"http-exposed-panels\"],\"concurrency\":8,\"timeout_seconds\":4}\nFim.";
+        let record = decide_nuclei_plan("https://example.local", Some(xml), Some(wrapped), "gpt-5");
+        assert_eq!(record.source, DecisionSource::Ai);
         assert!(record
             .plan
             .profiles
