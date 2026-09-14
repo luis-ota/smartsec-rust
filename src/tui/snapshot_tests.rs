@@ -100,7 +100,21 @@ fn execution_states_match_80x24_snapshots() {
     let mut app = app();
     app.step = AppStep::Execution;
     app.focus = FocusTarget::ExecutionLogs;
-    assert_snapshot(&mut app, &["Execução", "Aguardando a primeira saída"]);
+    assert_snapshot(
+        &mut app,
+        &[
+            "Execução",
+            "Atuação da IA",
+            "Aguardando evidências do Nmap",
+            "Aguardando a primeira saída",
+        ],
+    );
+
+    app.ai_activity = super::state::AiActivity::PlanningNuclei;
+    assert_snapshot(
+        &mut app,
+        &["IA definindo o plano do Nuclei", "política segura"],
+    );
 
     app.exec_logs = vec!["FALHA: ferramenta indisponível".to_string()];
     app.tools[0].status = ToolStatus::Failed;
