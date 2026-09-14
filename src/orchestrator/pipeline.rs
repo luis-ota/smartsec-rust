@@ -229,9 +229,9 @@ impl Orchestrator {
     }
 
     async fn request_nuclei_plan(&mut self, target: &str) -> Option<String> {
-        let prompt = format!(
-            "Analise o XML do Nmap e retorne somente JSON com os campos should_run, profiles, concurrency e timeout_seconds. Os únicos profiles permitidos são http-misconfiguration, http-exposed-panels, ssh-exposure, database-exposure e generic. Não invente flags, comandos nem texto adicional. Alvo: {target}\n\nLog do Nmap:\n{}",
-            self.latest_nmap_output.as_deref().unwrap_or_default()
+        let prompt = nuclei_plan_prompt(
+            target,
+            self.latest_nmap_output.as_deref().unwrap_or_default(),
         );
         self.agent.execute_with_fallback(&prompt).await.ok()
     }
@@ -400,6 +400,12 @@ fn podman_output(result: ExecutionResult) -> String {
     }
 }
 
+fn nuclei_plan_prompt(target: &str, nmap_output: &str) -> String {
+    format!(
+        "Analise o XML do Nmap e retorne somente JSON válido, sem cercas de código, com os campos should_run (booleano), profiles (lista com ao menos um perfil), concurrency (inteiro de 1 a 50) e timeout_seconds (inteiro de 1 a 10). Os únicos profiles permitidos são http-misconfiguration, http-exposed-panels, ssh-exposure, database-exposure e generic. Não invente flags, comandos nem texto adicional. Alvo: {target}\n\nLog do Nmap:\n{nmap_output}"
+    )
+}
+
 fn execution_status(status: &ExecutionStatus) -> String {
     match status {
         ExecutionStatus::Succeeded => "succeeded".to_string(),
@@ -448,6 +454,16 @@ mod tests {
             target_url: "http://test.local".to_string(),
             ..Configuration::default()
         }
+    }
+
+    #[test]
+    fn nuclei_plan_prompt_states_the_enforced_ranges() {
+        let prompt = nuclei_plan_prompt("http://alvo.local", "<nmaprun />");
+
+        assert!(prompt.contains("1 a 50"), "{prompt}");
+        assert!(prompt.contains("1 a 10"), "{prompt}");
+        assert!(prompt.contains("ao menos um perfil"), "{prompt}");
+        assert!(prompt.contains("http://alvo.local"));
     }
 
     #[test]
