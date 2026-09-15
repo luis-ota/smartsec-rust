@@ -9,11 +9,14 @@ Plataforma de analise de seguranca — prototipo escrito em Rust com interface d
 - [Distribuicao atual da Sprint 1](docs/PLANO_DE_DISTRIBUICAO.md)
 
 # Demonstracao
-## Modo Assitido
+
+Video completo da demonstracao: [`docs/demo-completo.mp4`](docs/demo-completo.mp4)
+
+## Modo Assistido (TUI)
 ![Modo Assistido](docs/assistido.gif)
 
-## Modo Automatico
-![Modo Automatico](docs/auto.gif)
+## Decisao da IA no relatorio
+![Decisao da IA no relatorio](docs/decisao-ia.gif)
 
 ## Modo Headless (CI/CD)
 ![Modo Headless](docs/headless.gif)
