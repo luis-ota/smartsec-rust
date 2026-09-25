@@ -387,6 +387,7 @@ mod tests {
             },
             nuclei_templates_path: None,
             nuclei_templates_commit: None,
+            tools: Vec::new(),
             output_file: None,
             output_dir: None,
             show_help: false,
