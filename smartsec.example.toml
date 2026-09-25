@@ -28,3 +28,21 @@ model = "llama3.2:1b"
 # Opcionais: caminho e commit esperado dos templates do Nuclei.
 # nuclei_templates_path = "/home/usuario/nuclei-templates"
 # nuclei_templates_commit = "b98e6097cb84e73e7a480436062d685a8f898824"
+
+# Ferramentas adicionais registradas por configuração (RNF08).
+# O manifesto é validado no carregamento: campos obrigatórios, duplicidade e
+# runner/parser precisam ser conhecidos. Runners: "nmap", "nuclei", "generic".
+# Parsers: "nmap-xml", "nuclei-jsonl", "generic-text".
+# Procedimento completo em docs/EXTENDING_TOOLS.md.
+#
+# [[tools]]
+# name = "Nikto"
+# description = "Scanner de servidores web"
+# category = "DAST"
+# image = "docker.io/sullo/nikto:2.5.0"
+# version = "2.5.0"
+# runner = "generic"
+# parser = "generic-text"
+# command_template = ["nikto", "-host", "{target}"]
+# output_format = "text"
+# enabled = true

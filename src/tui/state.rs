@@ -2,10 +2,12 @@ use crate::ai::agent::AIAgent;
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmProviderKind;
 use crate::config::Configuration;
-use crate::domain::security_tool::{SecurityTool, ToolInfo};
+use crate::domain::security_tool::SecurityTool;
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::decision::DecisionRecord;
 use crate::orchestrator::Orchestrator;
+use crate::tools::registry::{RunnerKind, ToolRegistry};
+use crate::tools::ToolManifest;
 use crate::tui::interaction::{FocusTarget, HitRegion, SemanticAction};
 use ratatui::layout::Rect;
 use std::path::PathBuf;
@@ -71,7 +73,8 @@ pub enum SettingsField {
 }
 
 pub struct ToolItem {
-    pub tool: ToolInfo,
+    pub tool: ToolManifest,
+    pub runner: RunnerKind,
     pub selected: bool,
     pub status: ToolStatus,
     pub progress: u16,
@@ -173,10 +176,13 @@ impl AppState {
         let orchestrator = Orchestrator::new(config.clone());
         let agent = orchestrator.agent_handle();
 
-        let tools = ToolInfo::all()
+        let registry = ToolRegistry::load(&config.tools);
+        let tools = registry
+            .tools()
             .iter()
-            .map(|t| ToolItem {
-                tool: t.clone(),
+            .map(|registered| ToolItem {
+                tool: registered.manifest.clone(),
+                runner: registered.runner,
                 selected: true,
                 status: ToolStatus::Pending,
                 progress: 0,
@@ -603,11 +609,11 @@ impl AppState {
             .iter()
             .enumerate()
             .filter(|(_, tool)| tool.selected)
-            .map(|(index, tool)| (index, tool.tool.clone()))
+            .map(|(index, tool)| (index, tool.tool.clone(), tool.runner))
             .collect();
         self.config.active_tools = selected
             .iter()
-            .map(|(_, tool)| tool.name.to_string())
+            .map(|(_, tool, _)| tool.name.to_string())
             .collect();
         let config = self.config.clone();
         let target = config.target_url.clone();
@@ -615,8 +621,8 @@ impl AppState {
         self.run_receiver = Some(receiver);
         self.run_task = Some(tokio::spawn(async move {
             let mut orchestrator = Orchestrator::new(config);
-            for (index, tool) in selected {
-                let is_nuclei = tool.is_nuclei();
+            for (index, tool, runner) in selected {
+                let is_nuclei = runner == RunnerKind::Nuclei;
                 if sender.send(RunEvent::ToolStarted(index)).is_err() {
                     return;
                 }
@@ -870,7 +876,7 @@ impl AppState {
             .find(|tool| tool.status == ToolStatus::Running)
         {
             let mut execution = SecurityTool::new(
-                tool.tool.name,
+                &tool.tool.name,
                 &format!("{} {}", tool.tool.name, self.config.target_url),
             );
             execution.executed_at =

@@ -1,5 +1,7 @@
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmConfig;
+use crate::tools::manifest::ToolManifest;
+use crate::tools::registry::ToolRegistry;
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -19,6 +21,8 @@ pub struct Configuration {
     pub llm: LlmConfig,
     pub nuclei_templates_path: Option<String>,
     pub nuclei_templates_commit: Option<String>,
+    /// Ferramentas adicionais declaradas em `[[tools]]` no TOML.
+    pub tools: Vec<ToolManifest>,
     pub output_file: Option<String>,
     pub show_help: bool,
     pub show_version: bool,
@@ -30,6 +34,7 @@ impl Configuration {
         let mut config = config;
         config.parse_args(args)?;
         config.llm.validate().map_err(anyhow::Error::msg)?;
+        config.validate_tools().map_err(anyhow::Error::msg)?;
         Ok(config)
     }
 
@@ -41,7 +46,16 @@ impl Configuration {
         let config =
             crate::config::persistence::load_config_file_from(path).map_err(anyhow::Error::msg)?;
         let config: Self = config.into();
+        config.validate_tools().map_err(anyhow::Error::msg)?;
         Ok(config)
+    }
+
+    /// Valida as ferramentas registradas em `[[tools]]` contra o catálogo,
+    /// produzindo erro acionável em pt-BR quando a configuração é inválida.
+    pub fn validate_tools(&self) -> Result<(), String> {
+        ToolRegistry::with_configured(&self.tools)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     pub fn parse_args(&mut self, args: &[String]) -> Result<()> {
@@ -160,6 +174,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             llm,
             nuclei_templates_path: p.nuclei_templates_path,
             nuclei_templates_commit: p.nuclei_templates_commit,
+            tools: p.tools,
             output_file: None,
             show_help: false,
             show_version: false,
@@ -239,6 +254,66 @@ mod tests {
         assert_eq!(config.llm.base_url, "http://localhost:11434/v1");
         assert_eq!(config.llm.model, "llama3.2:1b");
         assert!(config.llm.validate().is_ok());
+    }
+
+    #[test]
+    fn loads_tools_declared_in_the_toml() {
+        let path =
+            std::env::temp_dir().join(format!("smartsec-tools-valid-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "target_url = \"http://test.local\"\n\
+             [llm]\nprovider = \"ollama\"\n\
+             [[tools]]\n\
+             name = \"Nikto\"\n\
+             description = \"Scanner de servidores web\"\n\
+             category = \"DAST\"\n\
+             image = \"example/nikto:1\"\n\
+             version = \"1.0\"\n\
+             runner = \"generic\"\n\
+             parser = \"generic-text\"\n\
+             command_template = [\"nikto\", \"-host\", \"{target}\"]\n\
+             output_format = \"text\"\n",
+        )
+        .unwrap();
+
+        let config = Configuration::load_from_path(&path).unwrap();
+
+        assert_eq!(config.tools.len(), 1);
+        assert_eq!(config.tools[0].name, "Nikto");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn invalid_tool_configuration_fails_with_actionable_message() {
+        let path = std::env::temp_dir().join(format!(
+            "smartsec-tools-invalid-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "target_url = \"http://test.local\"\n\
+             [llm]\nprovider = \"ollama\"\n\
+             [[tools]]\n\
+             name = \"Nmap\"\n\
+             description = \"Duplicada\"\n\
+             category = \"RECON\"\n\
+             image = \"example/nmap:1\"\n\
+             version = \"1.0\"\n\
+             runner = \"generic\"\n\
+             parser = \"generic-text\"\n\
+             command_template = [\"nmap\", \"{target}\"]\n\
+             output_format = \"text\"\n",
+        )
+        .unwrap();
+
+        let error = Configuration::load_from_path(&path)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("duplicada"), "{error}");
+        assert!(error.contains("Nmap"), "{error}");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

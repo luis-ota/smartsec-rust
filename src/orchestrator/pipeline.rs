@@ -1,11 +1,13 @@
 use crate::ai::agent::AIAgent;
 use crate::config::Configuration;
-use crate::domain::security_tool::{SecurityTool, SecurityToolRunner, ToolInfo};
+use crate::domain::security_tool::{SecurityTool, SecurityToolRunner};
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
 use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
-use crate::tools::nmap::{NmapTool, NMAP_IMAGE, NMAP_VERSION};
-use crate::tools::nuclei::{NucleiTool, NUCLEI_IMAGE, NUCLEI_TEMPLATES_COMMIT, NUCLEI_VERSION};
+use crate::tools::nmap::NmapTool;
+use crate::tools::nuclei::{NucleiTool, NUCLEI_TEMPLATES_COMMIT};
+use crate::tools::registry::{ParserKind, RegisteredTool, RunnerKind, ToolRegistry};
+use crate::tools::ToolManifest;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -13,6 +15,9 @@ use tokio::sync::mpsc;
 pub struct Orchestrator {
     pub config: Configuration,
     pub agent: AIAgent,
+    /// Catálogo validado de ferramentas: resolve runner e parser pelo manifesto,
+    /// sem comparar nomes de ferramentas com strings mágicas.
+    pub registry: ToolRegistry,
     pub execution_history: Vec<SecurityTool>,
     pub decision_history: Vec<DecisionRecord>,
     pub findings: Vec<Vulnerability>,
@@ -33,9 +38,11 @@ impl Orchestrator {
     pub fn new(mut config: Configuration) -> Self {
         config.provider_mode = format!("{:?}", config.llm.provider);
         let agent = AIAgent::from_config(&config.llm);
+        let registry = ToolRegistry::load(&config.tools);
         Self {
             config,
             agent,
+            registry,
             execution_history: Vec::new(),
             decision_history: Vec::new(),
             findings: Vec::new(),
@@ -98,38 +105,78 @@ impl Orchestrator {
         }
     }
 
-    pub async fn execute_tool(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
-        if tool_info.is_nmap() {
-            return self.execute_nmap(tool_info, target).await;
+    pub async fn execute_tool(&mut self, manifest: &ToolManifest, target: &str) -> SecurityTool {
+        let registered = match self.registry.find(&manifest.name) {
+            Some(registered) => registered.clone(),
+            None => {
+                let arguments = format!("{} {target}", manifest.name);
+                let mut exec = SecurityTool::new(&manifest.name, &arguments);
+                exec.executed_at = now_iso8601();
+                exec.status = "failed".to_string();
+                let message = format!(
+                    "a ferramenta '{}' não está registrada no catálogo; revise a configuração [[tools]]",
+                    manifest.name
+                );
+                exec.execution_error = Some(message.clone());
+                exec.output = format!("[ERRO] {message}");
+                self.execution_history.push(exec.clone());
+                return exec;
+            }
+        };
+        match registered.runner {
+            RunnerKind::Nmap => self.execute_nmap(&registered, target).await,
+            RunnerKind::Nuclei => self.execute_nuclei_with_plan(&registered, target).await,
+            RunnerKind::Generic => self.execute_generic(&registered, target).await,
         }
-        if tool_info.is_nuclei() {
-            return self.execute_nuclei_with_plan(tool_info, target).await;
-        }
-        let arguments = format!("{} {target}", tool_info.name);
-        let mut exec = SecurityTool::new(tool_info.name, &arguments);
-        exec.executed_at = now_iso8601();
-        exec.status = "failed".to_string();
-        let message = format!(
-            "A ferramenta {} ainda não possui executor real e não será emulada",
-            tool_info.name
-        );
-        exec.execution_error = Some(message.clone());
-        exec.output = format!("[ERRO] {message}");
+    }
 
+    /// Executa o `command_template` do manifesto no executor Podman rootless.
+    async fn execute_generic(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
+        let arguments = tool.manifest.render_command(target).join(" ");
+        let mut exec = SecurityTool::new(&tool.manifest.name, &arguments);
+        exec.tool_version = Some(tool.manifest.version.clone());
+        exec.image = Some(tool.manifest.image.clone());
+        exec.executed_at = now_iso8601();
+        let executor = self.podman_executor();
+        match executor
+            .execute(&tool.manifest.image, &tool.manifest.render_command(target))
+            .await
+        {
+            Ok(result) => {
+                exec.podman_trace = result.trace.clone();
+                exec.status = execution_status(&result.status);
+                exec.duration_ms = result.duration.as_millis();
+                exec.stderr = sanitize(&result.stderr);
+                exec.output = podman_output(result);
+                if exec.output.starts_with("[ERRO]") {
+                    exec.status = "failed".to_string();
+                    exec.execution_error = Some(exec.output.clone());
+                }
+            }
+            Err(error) => {
+                exec.status = "failed".to_string();
+                let message = format!(
+                    "Não foi possível iniciar a varredura real de {}: {error:#}",
+                    tool.manifest.name
+                );
+                exec.output = format!("[ERRO] {message}");
+                exec.execution_error = Some(message);
+            }
+        }
         self.execution_history.push(exec.clone());
         exec
     }
 
-    async fn execute_nmap(&mut self, tool_info: &ToolInfo, target: &str) -> SecurityTool {
+    async fn execute_nmap(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
         let runner = NmapTool;
         let arguments = runner.configure_command(target);
-        let mut exec = SecurityTool::new(tool_info.name, &arguments);
-        exec.tool_version = Some(NMAP_VERSION.to_owned());
-        exec.image = Some(NMAP_IMAGE.to_owned());
+        let mut exec = SecurityTool::new(&tool.manifest.name, &arguments);
+        exec.tool_version = Some(tool.manifest.version.clone());
+        exec.image = Some(tool.manifest.image.clone());
         exec.executed_at = now_iso8601();
         let executor = self.podman_executor();
         match executor
-            .execute(NMAP_IMAGE, &NmapTool::container_arguments(target))
+            .execute(&tool.manifest.image, &NmapTool::container_arguments(target))
             .await
         {
             Ok(result) => {
@@ -159,7 +206,7 @@ impl Orchestrator {
 
     async fn execute_nuclei_with_plan(
         &mut self,
-        tool_info: &ToolInfo,
+        tool: &RegisteredTool,
         target: &str,
     ) -> SecurityTool {
         let ai_response = self.request_nuclei_plan(target).await;
@@ -175,9 +222,9 @@ impl Orchestrator {
         }
         let runner = NucleiTool;
         let arguments = runner.configure_command_with_plan(target, &decision.plan);
-        let mut exec = SecurityTool::new(tool_info.name, &arguments);
-        exec.image = Some(NUCLEI_IMAGE.to_string());
-        exec.tool_version = Some(NUCLEI_VERSION.to_string());
+        let mut exec = SecurityTool::new(&tool.manifest.name, &arguments);
+        exec.image = Some(tool.manifest.image.clone());
+        exec.tool_version = Some(tool.manifest.version.clone());
         exec.executed_at = now_iso8601();
         if !decision.plan.should_run {
             exec.status = "skipped".to_string();
@@ -202,7 +249,7 @@ impl Orchestrator {
         let executor = self.podman_executor();
         exec.output = match executor
             .execute_with_mounts(
-                NUCLEI_IMAGE,
+                &tool.manifest.image,
                 &NucleiTool::container_arguments_with_plan(target, &decision.plan),
                 &[(templates, "/root/nuclei-templates".to_string())],
             )
@@ -249,29 +296,50 @@ impl Orchestrator {
         let target = self.config.target_url.clone();
         let mut real_findings: Vec<Vulnerability> = Vec::new();
         for exec in &mut self.execution_history {
-            if exec.tool_name == "Nuclei" && !exec.output.is_empty() {
-                let (parsed, errors) =
-                    crate::orchestrator::nuclei_parser::parse_nuclei_findings_with_errors(
-                        &exec.output,
-                        &target,
-                    );
-                real_findings.extend(parsed);
-                if !errors.is_empty() {
-                    // A malformed JSONL record is an execution diagnostic, not a clean scan.
-                    let message = errors.join("; ");
-                    exec.execution_error = Some(message);
-                }
+            if exec.output.is_empty() {
+                continue;
             }
-            if exec.tool_name == "Nmap" && !exec.output.is_empty() {
-                let (parsed, errors) =
-                    crate::orchestrator::nmap_parser::parse_nmap_findings_with_errors(
-                        &exec.output,
-                        &target,
-                    );
-                real_findings.extend(parsed);
-                if exec.execution_error.is_none() && !errors.is_empty() {
-                    exec.execution_error = Some(errors.join("; "));
-                    exec.status = "failed".to_string();
+            let Some(registered) = self.registry.find(&exec.tool_name) else {
+                continue;
+            };
+            match registered.parser {
+                ParserKind::NucleiJsonl => {
+                    let (parsed, errors) =
+                        crate::orchestrator::nuclei_parser::parse_nuclei_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if !errors.is_empty() {
+                        // A malformed JSONL record is an execution diagnostic, not a clean scan.
+                        let message = errors.join("; ");
+                        exec.execution_error = Some(message);
+                    }
+                }
+                ParserKind::NmapXml => {
+                    let (parsed, errors) =
+                        crate::orchestrator::nmap_parser::parse_nmap_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
+                ParserKind::GenericText => {
+                    let (parsed, errors) =
+                        crate::orchestrator::generic_parser::parse_generic_findings_with_errors(
+                            &exec.output,
+                            &target,
+                            &registered.manifest.name,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
                 }
             }
         }
@@ -293,7 +361,7 @@ impl Orchestrator {
     #[allow(dead_code)]
     pub async fn run_full_pipeline(
         &mut self,
-        selected: &[&ToolInfo],
+        selected: &[&ToolManifest],
     ) -> Result<Vec<Vulnerability>, anyhow::Error> {
         let target = self.config.target_url.clone();
         for tool in selected {
@@ -480,5 +548,53 @@ mod tests {
             orch.findings.is_empty(),
             "Sem execuções, não deve haver achados"
         );
+    }
+
+    #[test]
+    fn build_findings_dispatches_the_parser_registered_for_the_tool() {
+        let mut config = make_config();
+        config.tools.push(ToolManifest {
+            name: "Nikto".to_string(),
+            description: "Scanner de servidores web".to_string(),
+            category: "DAST".to_string(),
+            image: "example/nikto:1".to_string(),
+            version: "1.0".to_string(),
+            runner: crate::tools::registry::RUNNER_GENERIC.to_string(),
+            parser: crate::tools::registry::PARSER_GENERIC_TEXT.to_string(),
+            command_template: vec![
+                "nikto".to_string(),
+                "-host".to_string(),
+                "{target}".to_string(),
+            ],
+            output_format: "text".to_string(),
+            enabled: true,
+        });
+        let mut orch = Orchestrator::new(config);
+        let mut execution = SecurityTool::new("Nikto", "nikto -host http://test.local");
+        execution.output = "Servidor expõe /admin sem autenticação\n".to_string();
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        assert_eq!(orch.findings.len(), 1);
+        assert_eq!(orch.findings[0].tool, "Nikto");
+        assert_eq!(orch.findings[0].severity, crate::domain::Severity::Info);
+    }
+
+    #[tokio::test]
+    async fn execute_tool_reports_an_unregistered_tool_without_podman() {
+        let mut orch = Orchestrator::new(make_config());
+        let manifest = ToolManifest {
+            name: "Inexistente".to_string(),
+            ..ToolManifest::default()
+        };
+
+        let execution = orch.execute_tool(&manifest, "http://test.local").await;
+
+        assert_eq!(execution.status, "failed");
+        assert!(execution
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("não está registrada")));
     }
 }

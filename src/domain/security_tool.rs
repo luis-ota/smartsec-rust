@@ -1,38 +1,6 @@
 use async_trait::async_trait;
 
 #[derive(Clone, Debug)]
-pub struct ToolInfo {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub category: &'static str,
-}
-
-impl ToolInfo {
-    pub fn all() -> Vec<Self> {
-        vec![
-            ToolInfo {
-                name: "Nmap",
-                description: "Mapeamento de hosts, portas e serviços",
-                category: "RECON",
-            },
-            ToolInfo {
-                name: "Nuclei",
-                description: "Scanner de vulnerabilidades (CVEs)",
-                category: "DAST",
-            },
-        ]
-    }
-
-    pub fn is_nuclei(&self) -> bool {
-        self.name == "Nuclei"
-    }
-
-    pub fn is_nmap(&self) -> bool {
-        self.name == "Nmap"
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct SecurityTool {
     #[allow(dead_code)]
     pub tool_name: String,
@@ -84,18 +52,4 @@ pub trait SecurityToolRunner: Send + Sync {
     fn tool_name(&self) -> &str;
     fn configure_command(&self, target: &str) -> String;
     async fn parse_output(&self, target: &str) -> Result<String, anyhow::Error>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn official_catalog_contains_nmap() {
-        let tools = ToolInfo::all();
-
-        let nmap = tools.iter().find(|tool| tool.is_nmap()).unwrap();
-        assert_eq!(nmap.name, "Nmap");
-        assert_eq!(nmap.category, "RECON");
-    }
 }

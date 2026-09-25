@@ -77,7 +77,7 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
             Line::from(vec![
                 Span::styled(format!("{prefix} {state} "), Style::default()),
                 Span::styled(format!("{:<12}", tool.tool.name), Style::default().bold()),
-                Span::styled(tool.tool.category, Style::default()),
+                Span::styled(tool.tool.category.clone(), Style::default()),
             ])
             .style(
                 Style::default()
@@ -118,8 +118,8 @@ fn render_tool_detail(app: &AppState, frame: &mut Frame, area: Rect) {
         ToolStatus::Failed => ("falhou", DANGER),
     };
     let lines = vec![
-        Line::styled(tool.tool.name, Style::default().fg(TEXT).bold()),
-        Line::styled(tool.tool.description, Style::default().fg(MUTED)),
+        Line::styled(&tool.tool.name, Style::default().fg(TEXT).bold()),
+        Line::styled(&tool.tool.description, Style::default().fg(MUTED)),
         Line::from(""),
         Line::from(vec![
             Span::styled("estado  ", Style::default().fg(MUTED)),

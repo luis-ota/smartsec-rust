@@ -66,13 +66,18 @@ fn orchestration_row(app: &AppState) -> RequirementRow {
         .orchestrator
         .execution_history
         .iter()
-        .filter(|execution| matches!(execution.tool_name.as_str(), "Nmap" | "Nuclei"))
+        .filter(|execution| {
+            app.orchestrator
+                .registry
+                .find(&execution.tool_name)
+                .is_some()
+        })
         .collect();
     let evidenced = executed
         .iter()
         .any(|execution| execution.status == "succeeded");
     let detail = if executed.is_empty() {
-        "aguardando disparo sequencial de Nmap e Nuclei".to_string()
+        "aguardando execução das ferramentas registradas".to_string()
     } else {
         executed
             .iter()
