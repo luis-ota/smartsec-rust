@@ -137,7 +137,7 @@ Na Sprint 1, Nmap e Nuclei reais executam exclusivamente em Podman rootless. A r
 
 A tela de configuracao da TUI deve permanecer legivel em `80x24`, separar conexao principal de confiabilidade, ocultar campos nao aplicaveis e manter a tela aberta quando houver erro de validacao ou persistencia. Todas as acoes disponiveis por teclado devem possuir equivalente por mouse. O fluxo Nmap -> decisao -> Nuclei -> auditoria -> relatorio possui roteiro E2E reproduzivel em `scripts/e2e_tui_local.sh`; a evidencia da homologacao esta em `docs/evidence/issue-53-tui-e2e.md`.
 
-O arquivo de configuracao TOML tem modelo comentado em `smartsec.example.toml`. No modo headless, `--target` e sempre obrigatorio na CLI e substitui o `target_url` do arquivo; `--tools`, `--llm` e `--model` sobrescrevem o arquivo. No Linux, as chaves de API remota sao armazenadas no Secret Service do sistema (keyring) e nunca no TOML. O campo `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`, `custom`) alem das canonicas; `base_url` e `model` ausentes assumem o padrao do provedor e `execution_type` ausente assume `Assisted`. O comando `scan` sempre opera como Automatico, independente do `execution_type` do arquivo.
+O arquivo de configuracao TOML tem modelo comentado em `smartsec.example.toml`. No modo headless, `--target` e sempre obrigatorio na CLI e substitui o `target_url` do arquivo; `--tools`, `--llm` e `--model` sobrescrevem o arquivo. No Linux, as chaves de API remota sao armazenadas no Secret Service do sistema (keyring) e nunca no TOML. O campo `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`, `custom`) alem das canonicas; `base_url` e `model` ausentes assumem o padrao do provedor e `execution_type` ausente assume `Assisted`. O comando `scan` sempre opera como Automatico, independente do `execution_type` do arquivo. O destino do relatorio Markdown e configuravel por `--output`/`--output-dir` na CLI ou por `output_file`/`output_dir` no TOML, com precedencia da CLI.
 
 ## 8. Macro-sprints
 
@@ -208,7 +208,7 @@ O CEP nao e pre-condicao para este TCC de desenvolvimento de ferramenta, conform
 - `1`: vulnerabilidade critica encontrada.
 - `2`: erro interno, de configuracao ou de execucao.
 
-Erro de scanner nao pode ser convertido em sucesso. Finding critico nao e erro interno: deve retornar `1` e preservar o relatorio.
+Erro de scanner nao pode ser convertido em sucesso. Finding critico nao e erro interno: deve retornar `1` e preservar o relatorio. No modo headless os codigos derivam do resultado consolidado (achados e falhas de execucao), nunca de mensagens de texto; a falha de execucao tem precedencia sobre o achado critico, e o relatorio e o log estruturado sao gravados antes da mensagem final.
 
 ## 11. Entregaveis
 

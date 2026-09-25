@@ -28,3 +28,8 @@ model = "llama3.2:1b"
 # Opcionais: caminho e commit esperado dos templates do Nuclei.
 # nuclei_templates_path = "/home/usuario/nuclei-templates"
 # nuclei_templates_commit = "b98e6097cb84e73e7a480436062d685a8f898824"
+
+# Opcionais: destino do relatório Markdown no modo headless.
+# As flags --output e --output-dir da CLI têm precedência sobre estes campos.
+# output_file = "smartsec-report.md"
+# output_dir = "/caminho/para/relatorios"
