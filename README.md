@@ -79,8 +79,23 @@ cargo run -- tool Nmap --target 192.0.2.10
 # Usar configuração TOML e substituir opções pela CLI
 cargo run -- scan --target example.com --config ./smartsec.toml --llm ollama --model llama3.1:8b
 
+# Escolher arquivo e diretório do relatório
+cargo run -- scan --target https://example.com --output relatorio.md --output-dir ./saida
+
 # Na TUI em modo assistido, marque ou desmarque ferramentas com Espaco
 ```
+
+### Exit codes do modo headless
+
+| Código | Significado |
+|---:|---|
+| 0 | nenhuma vulnerabilidade crítica |
+| 1 | vulnerabilidade crítica encontrada |
+| 2 | erro de configuração ou de execução |
+
+O relatório e o log estruturado são gravados antes da mensagem final. Falha de
+scanner retorna `2` mesmo que o relatório preserve achados; achado crítico
+retorna `1` e não é tratado como erro interno.
 
 ### Arquivo de configuração TOML
 
@@ -97,6 +112,8 @@ schema mínimo: `target_url`, `active_tools`, `execution_type` e a tabela
   `execution_type` ausente assume `Assisted`.
 - `scan` headless sempre opera como Automático, independente de
   `execution_type`.
+- `output_file` e `output_dir` definem o destino do relatório Markdown; as
+  flags `--output`/`--output-dir` têm precedência sobre o arquivo.
 
 ### Configuracao da IA na TUI
 
