@@ -1157,6 +1157,27 @@ mod tests {
     }
 
     #[test]
+    fn arrow_keys_scroll_the_log_and_toggle_follow() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.log_total_lines = 20;
+        app.log_visible_height = 5;
+        app.log_scroll = app.log_max_scroll();
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.log_scroll, 14);
+        assert!(!app.log_follow);
+
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(app.log_scroll, 15);
+        assert!(app.log_follow);
+    }
+
+    #[test]
     fn mouse_wheel_over_the_log_scrolls_and_pauses_follow() {
         let mut app = app();
         app.step = AppStep::Execution;

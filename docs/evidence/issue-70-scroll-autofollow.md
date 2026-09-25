@@ -23,7 +23,10 @@ Branch: `fix/issue-70-scroll-auto-follow`, derivada da `main` no commit `8adb770
 - `scroll` (teclas e roda do mouse) pausa o auto-follow ao subir no historico
   e o retoma ao voltar ao final.
 - Ao descartar entradas antigas (limite de 5000 linhas), o offset manual e
-  ajustado para a tela nao pular.
+  ajustado pelas linhas visuais removidas (mesma quebra do render), nao pela
+  quantidade de entradas.
+- O scroll e saturado no intervalo de `u16` suportado por
+  `Paragraph::scroll`, evitando wrap de offset em logs extremamente longos.
 
 Observacao: `Paragraph::line_count` e exposto pela feature
 `unstable-rendered-line-info` do ratatui 0.29. E a mesma dependencia ja
@@ -44,17 +47,50 @@ Cobertura:
 
 - `log_scroll_pauses_follow_and_resumes_at_the_bottom`: teclas pausam e
   retomam o auto-follow.
+- `arrow_keys_scroll_the_log_and_toggle_follow`: setas reais do terminal
+  (evento de tecla) percorrem o historico.
 - `mouse_wheel_over_the_log_scrolls_and_pauses_follow`: roda do mouse sobre o
   log tem o mesmo contrato.
 - `new_log_lines_respect_manual_scroll_and_resume_following`: novas mensagens
   nao puxam a tela depois de subir; ao religar o follow, a tela volta ao fim.
+- `draining_old_entries_shifts_the_manual_scroll_by_visual_rows`: o descarte
+  apos 5000 entradas anda pelo numero de linhas visuais removidas.
+- `log_max_scroll_saturates_at_u16_range`: offset nunca estoura o intervalo
+  aceito pelo render.
 - `wrapped_log_lines_expand_the_scroll_limit`: linhas longas geram limite de
   scroll visual; topo e fim ficam alcancaveis em 80x24.
+
+## Resultado observado
+
+```text
+$ cargo test --quiet wrapped_log_lines_expand_the_scroll_limit -- --nocapture
+--- topo apos rolar para cima ---
+┌ Log de saída ────────────────────────────────────────────────────────────────┐
+│L0-INICIOxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+│xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+│xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+│xxxxxxxxxxxxxxxxxxx0FIM                                                       │
+│L1-INICIOxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+└──────────────────────────────────────────────────────────────────────────────┘
+--- fim no auto-follow ---
+┌ Log de saída ────────────────────────────────────────────────────────────────┐
+│xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+│xxxxxxxxxxxxxxxxxxx4FIM                                                       │
+│L5-INICIOxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+│xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx│
+│xxxxxxxxxxxxxxxxxxx5FIM                                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+test result: ok. 1 passed
+```
+
+As duas capturas vem da renderizacao real em `80x24` (`TestBackend`): no topo
+a primeira linha longa aparece inteira e o fim do log nao; no auto-follow o
+ultimo trecho (`5FIM`) fica visivel.
 
 Suite completa da branch:
 
 ```text
-running 123 tests ... test result: ok. 123 passed
+running 126 tests ... test result: ok. 126 passed
 running 12 tests  ... test result: ok. 12 passed
 ```
 
