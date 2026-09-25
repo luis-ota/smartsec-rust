@@ -115,6 +115,10 @@ pub struct AppState {
     pub exec_logs: Vec<String>,
     pub log_scroll: usize,
     pub log_visible_height: usize,
+    /// Total de linhas visuais do log após a quebra automática do `Paragraph`.
+    pub log_total_lines: usize,
+    /// Auto-follow do final do log; desligado quando o usuário sobe no histórico.
+    pub log_follow: bool,
     pub analysis_phase: AnalysisPhase,
     pub analysis_tick: u64,
     pub analysis_text: String,
@@ -225,6 +229,8 @@ impl AppState {
             exec_logs: Vec::new(),
             log_scroll: 0,
             log_visible_height: 20,
+            log_total_lines: 0,
+            log_follow: true,
             analysis_phase: AnalysisPhase::Scanning,
             analysis_tick: 0,
             analysis_text: String::new(),
@@ -400,6 +406,9 @@ impl AppState {
                     let overflow = self.exec_logs.len().saturating_sub(MAX_EXEC_LOGS);
                     if overflow > 0 {
                         self.exec_logs.drain(..overflow);
+                        if !self.log_follow {
+                            self.log_scroll = self.log_scroll.saturating_sub(overflow);
+                        }
                     }
                 }
                 RunEvent::AiDecisionStarted => {
@@ -525,10 +534,19 @@ impl AppState {
     }
 
     fn follow_latest_log(&mut self) {
-        let visible = self.log_visible_height.max(1);
-        if self.exec_logs.len() > visible {
-            self.log_scroll = self.exec_logs.len().saturating_sub(visible);
+        if !self.log_follow {
+            return;
         }
+        self.log_scroll = self.log_max_scroll();
+    }
+
+    /// Limite de scroll considerando as linhas visuais após a quebra automática.
+    ///
+    /// Antes do primeiro render `log_total_lines` ainda é zero; nesse caso a
+    /// quantidade de entradas serve como piso para nunca perder linhas.
+    pub fn log_max_scroll(&self) -> usize {
+        let total = self.log_total_lines.max(self.exec_logs.len());
+        total.saturating_sub(self.log_visible_height.max(1))
     }
 
     fn advance_auto(&mut self) {
@@ -584,6 +602,8 @@ impl AppState {
         self.exec_tick = 0;
         self.exec_logs.clear();
         self.log_scroll = 0;
+        self.log_total_lines = 0;
+        self.log_follow = true;
         self.exec_cancelled = false;
         self.orchestrator = Orchestrator::new(self.config.clone());
         self.audit_log_path = None;
@@ -1091,5 +1111,36 @@ mod tests {
         assert_eq!(app.step, AppStep::Results);
         assert_eq!(app.tools[0].status, ToolStatus::Failed);
         assert!(app.run_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn new_log_lines_respect_manual_scroll_and_resume_following() {
+        let mut app = AppState::new(Configuration::default());
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        app.log_visible_height = 10;
+        app.log_total_lines = 100;
+        app.log_follow = false;
+        app.log_scroll = 5;
+        let (sender, receiver) = mpsc::unbounded_channel();
+        app.run_receiver = Some(receiver);
+
+        sender
+            .send(RunEvent::ToolLog("nova linha".to_string()))
+            .unwrap();
+        app.process_run_events().await;
+        assert_eq!(
+            app.log_scroll, 5,
+            "novas mensagens não podem puxar a tela após o usuário subir"
+        );
+        assert!(!app.log_follow);
+
+        app.log_follow = true;
+        sender
+            .send(RunEvent::ToolLog("outra linha".to_string()))
+            .unwrap();
+        app.process_run_events().await;
+        assert_eq!(app.log_scroll, app.log_max_scroll());
+        assert_eq!(app.log_scroll, 90);
     }
 }

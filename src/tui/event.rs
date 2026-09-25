@@ -567,12 +567,13 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
         }
         AppStep::Execution => {
             app.focus = FocusTarget::ExecutionLogs;
-            let max_scroll = app.exec_logs.len().saturating_sub(app.log_visible_height);
+            let max_scroll = app.log_max_scroll();
             app.log_scroll = if down {
                 app.log_scroll.saturating_add(amount).min(max_scroll)
             } else {
                 app.log_scroll.saturating_sub(amount)
             };
+            app.log_follow = app.log_scroll >= max_scroll;
         }
         AppStep::Results => {
             if app.result_detail_vuln.is_some() {
@@ -1127,6 +1128,67 @@ mod tests {
         assert_eq!(app.didactic_scroll, 4);
         dispatch_action(&mut app, SemanticAction::ScrollUp);
         assert_eq!(app.didactic_scroll, 1);
+    }
+
+    #[test]
+    fn log_scroll_pauses_follow_and_resumes_at_the_bottom() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.log_total_lines = 20;
+        app.log_visible_height = 5;
+        app.log_scroll = app.log_max_scroll();
+
+        dispatch_action(&mut app, SemanticAction::ScrollUp);
+        assert_eq!(app.log_scroll, 12);
+        assert!(!app.log_follow, "subir no histórico pausa o auto-follow");
+
+        dispatch_action(&mut app, SemanticAction::ScrollDown);
+        assert_eq!(app.log_scroll, 15);
+        assert!(app.log_follow, "voltar ao final retoma o auto-follow");
+
+        dispatch_action(&mut app, SemanticAction::ScrollUp);
+        for _ in 0..20 {
+            dispatch_action(&mut app, SemanticAction::ScrollDown);
+        }
+        assert_eq!(app.log_scroll, 15);
+        assert!(app.log_follow);
+    }
+
+    #[test]
+    fn mouse_wheel_over_the_log_scrolls_and_pauses_follow() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.log_total_lines = 20;
+        app.log_visible_height = 5;
+        app.log_scroll = app.log_max_scroll();
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 10,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.log_scroll, 12);
+        assert!(!app.log_follow);
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 10,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.log_scroll, 15);
+        assert!(app.log_follow);
     }
 
     #[test]
