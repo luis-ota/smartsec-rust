@@ -20,6 +20,7 @@ pub struct Configuration {
     pub nuclei_templates_path: Option<String>,
     pub nuclei_templates_commit: Option<String>,
     pub output_file: Option<String>,
+    pub output_dir: Option<String>,
     pub show_help: bool,
     pub show_version: bool,
 }
@@ -54,6 +55,9 @@ impl Configuration {
                 "-u" | "--url" => self.target_url = next_argument(args, &mut index, "--url")?,
                 "-o" | "--output" => {
                     self.output_file = Some(next_argument(args, &mut index, "--output")?);
+                }
+                "--output-dir" => {
+                    self.output_dir = Some(next_argument(args, &mut index, "--output-dir")?);
                 }
                 "-p" | "--provider" => {
                     let provider = next_argument(args, &mut index, "--provider")?;
@@ -160,7 +164,8 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             llm,
             nuclei_templates_path: p.nuclei_templates_path,
             nuclei_templates_commit: p.nuclei_templates_commit,
-            output_file: None,
+            output_file: p.output_file,
+            output_dir: p.output_dir,
             show_help: false,
             show_version: false,
         }

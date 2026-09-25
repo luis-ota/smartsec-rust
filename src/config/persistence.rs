@@ -16,6 +16,10 @@ pub struct PersistedConfig {
     pub nuclei_templates_path: Option<String>,
     #[serde(default)]
     pub nuclei_templates_commit: Option<String>,
+    #[serde(default)]
+    pub output_file: Option<String>,
+    #[serde(default)]
+    pub output_dir: Option<String>,
 }
 
 impl Default for PersistedConfig {
@@ -27,6 +31,8 @@ impl Default for PersistedConfig {
             llm: LlmConfig::default(),
             nuclei_templates_path: None,
             nuclei_templates_commit: None,
+            output_file: None,
+            output_dir: None,
         }
     }
 }
@@ -92,6 +98,8 @@ impl From<crate::config::Configuration> for PersistedConfig {
             llm: c.llm,
             nuclei_templates_path: c.nuclei_templates_path.clone(),
             nuclei_templates_commit: c.nuclei_templates_commit.clone(),
+            output_file: c.output_file,
+            output_dir: c.output_dir,
         }
     }
 }
@@ -105,6 +113,8 @@ impl From<&crate::config::Configuration> for PersistedConfig {
             llm: c.llm.clone(),
             nuclei_templates_path: c.nuclei_templates_path.clone(),
             nuclei_templates_commit: c.nuclei_templates_commit.clone(),
+            output_file: c.output_file.clone(),
+            output_dir: c.output_dir.clone(),
         }
     }
 }
