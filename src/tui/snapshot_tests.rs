@@ -270,6 +270,40 @@ fn settings_help_and_palette_match_80x24_snapshots() {
 }
 
 #[test]
+fn wrapped_log_lines_expand_the_scroll_limit() {
+    let mut app = app();
+    app.step = AppStep::Execution;
+    app.focus = FocusTarget::ExecutionLogs;
+    app.exec_logs = (0..6)
+        .map(|index| format!("L{index}-INICIO{}{index}FIM", "x".repeat(400)))
+        .collect();
+
+    let (bottom, _) = render_80x24(&mut app);
+    assert!(
+        app.log_total_lines > app.exec_logs.len(),
+        "linhas longas devem ocupar mais de uma linha visual"
+    );
+    assert!(app.log_max_scroll() > 0, "deve haver conteúdo além da tela");
+    assert!(
+        bottom.contains("5FIM"),
+        "o fim do log deve estar visível no auto-follow\n{bottom}"
+    );
+
+    app.log_follow = false;
+    app.log_scroll = 0;
+    let (top, _) = render_80x24(&mut app);
+    assert!(
+        top.contains("L0-INICIO"),
+        "o topo deve permanecer acessível\n{top}"
+    );
+    assert!(
+        !top.contains("5FIM"),
+        "o fim não pode aparecer na visão do topo\n{top}"
+    );
+    println!("--- topo apos rolar para cima ---\n{top}\n--- fim no auto-follow ---\n{bottom}");
+}
+
+#[test]
 fn semantic_focus_changes_the_rendered_list_style() {
     let mut app = app();
     app.step = AppStep::ToolSelect;
