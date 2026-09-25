@@ -300,6 +300,7 @@ fn wrapped_log_lines_expand_the_scroll_limit() {
         !top.contains("5FIM"),
         "o fim não pode aparecer na visão do topo\n{top}"
     );
+    println!("--- topo apos rolar para cima ---\n{top}\n--- fim no auto-follow ---\n{bottom}");
 }
 
 #[test]

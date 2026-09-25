@@ -188,6 +188,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.log_visible_height = inner.height.max(1) as usize;
+    app.log_width = inner.width.max(1);
     if app.exec_logs.is_empty() {
         app.log_total_lines = 0;
         app.log_scroll = 0;
@@ -234,7 +235,8 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
     } else {
         app.log_scroll.min(max_scroll)
     };
-    frame.render_widget(paragraph.scroll((app.log_scroll as u16, 0)), inner);
+    let scroll = app.log_scroll.min(u16::MAX as usize) as u16;
+    frame.render_widget(paragraph.scroll((scroll, 0)), inner);
     app.register_hit_region(area, SemanticAction::SetFocus(FocusTarget::ExecutionLogs));
 }
 
