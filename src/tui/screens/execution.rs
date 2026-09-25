@@ -188,10 +188,9 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.log_visible_height = inner.height.max(1) as usize;
-    app.log_scroll = app
-        .log_scroll
-        .min(app.exec_logs.len().saturating_sub(app.log_visible_height));
     if app.exec_logs.is_empty() {
+        app.log_total_lines = 0;
+        app.log_scroll = 0;
         let message = "Aguardando a primeira saída da varredura...";
         frame.render_widget(
             Paragraph::new(message).style(Style::default().fg(MUTED).bg(SURFACE)),
@@ -225,13 +224,17 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
             Line::styled(log.as_str(), Style::default().fg(color))
         })
         .collect();
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .style(Style::default().bg(SURFACE))
-            .wrap(Wrap { trim: false })
-            .scroll((app.log_scroll as u16, 0)),
-        inner,
-    );
+    let paragraph = Paragraph::new(Text::from(lines))
+        .style(Style::default().bg(SURFACE))
+        .wrap(Wrap { trim: false });
+    app.log_total_lines = paragraph.line_count(inner.width);
+    let max_scroll = app.log_max_scroll();
+    app.log_scroll = if app.log_follow {
+        max_scroll
+    } else {
+        app.log_scroll.min(max_scroll)
+    };
+    frame.render_widget(paragraph.scroll((app.log_scroll as u16, 0)), inner);
     app.register_hit_region(area, SemanticAction::SetFocus(FocusTarget::ExecutionLogs));
 }
 
