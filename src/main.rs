@@ -15,9 +15,9 @@ mod tui;
 mod utils;
 
 use crate::config::execution_type::ExecutionType;
-use crate::domain::security_tool::ToolInfo;
 use crate::domain::Severity;
 use crate::orchestrator::Orchestrator;
+use crate::tools::registry::{RegisteredTool, ToolRegistry};
 use anyhow::Result;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -237,7 +237,7 @@ impl CommandLineInterface {
         println!();
 
         let mut orchestrator = Orchestrator::new(config.clone());
-        let all_tools = ToolInfo::all();
+        let all_tools = orchestrator.registry.tools().to_vec();
         let selected = selected_tools(&all_tools, &config.active_tools);
 
         println!("[1/3] Executando ferramentas de segurança...");
@@ -262,8 +262,10 @@ impl CommandLineInterface {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
-            println!("  [{:>2}/{:>2}] {:<12} ", i + 1, total, tool.name);
-            let exec = orchestrator.execute_tool(tool, &config.target_url).await;
+            println!("  [{:>2}/{:>2}] {:<12} ", i + 1, total, tool.manifest.name);
+            let exec = orchestrator
+                .execute_tool(&tool.manifest, &config.target_url)
+                .await;
             if let Some(error) = &exec.execution_error {
                 println!("  FALHA ({error})");
             } else {
@@ -380,13 +382,12 @@ fn build_config(
     } else {
         ExecutionType::Assisted
     };
+    let registry = ToolRegistry::with_configured(&config.tools)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     if options.tools.is_none() && manual_tool.is_none() {
-        let catalog = ToolInfo::all();
-        config.active_tools.retain(|selected| {
-            catalog
-                .iter()
-                .any(|tool| tool.name.eq_ignore_ascii_case(selected))
-        });
+        config
+            .active_tools
+            .retain(|selected| registry.find(selected).is_some());
     }
     if let Some(tools) = &options.tools {
         config.active_tools = tools
@@ -402,7 +403,7 @@ fn build_config(
     if let Some(tool) = manual_tool {
         config.active_tools = vec![tool];
     }
-    validate_tools(&config.active_tools)?;
+    validate_tools(&registry, &config.active_tools)?;
     if let Some(provider) = &options.llm {
         let kind = parse_provider(provider)?;
         config.llm.provider = kind;
@@ -422,13 +423,9 @@ fn build_config(
     Ok(config)
 }
 
-fn validate_tools(active_tools: &[String]) -> Result<()> {
-    let catalog = ToolInfo::all();
+fn validate_tools(registry: &ToolRegistry, active_tools: &[String]) -> Result<()> {
     for selected in active_tools {
-        if !catalog
-            .iter()
-            .any(|tool| tool.name.eq_ignore_ascii_case(selected))
-        {
+        if registry.find(selected).is_none() {
             anyhow::bail!("ferramenta desconhecida: {selected}");
         }
     }
@@ -445,14 +442,17 @@ fn parse_provider(provider: &str) -> Result<config::llm_config::LlmProviderKind>
     }
 }
 
-fn selected_tools<'a>(tools: &'a [ToolInfo], active_tools: &[String]) -> Vec<&'a ToolInfo> {
+fn selected_tools<'a>(
+    tools: &'a [RegisteredTool],
+    active_tools: &[String],
+) -> Vec<&'a RegisteredTool> {
     tools
         .iter()
         .filter(|tool| {
             active_tools.is_empty()
                 || active_tools
                     .iter()
-                    .any(|active| active.eq_ignore_ascii_case(tool.name))
+                    .any(|active| active.eq_ignore_ascii_case(&tool.manifest.name))
         })
         .collect()
 }
@@ -508,6 +508,30 @@ mod tests {
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
         assert_eq!(configured.target_url, "192.0.2.10");
         assert_eq!(configured.active_tools, vec!["Nmap"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn accepts_a_tool_registered_by_configuration() {
+        let path = std::env::temp_dir().join(format!(
+            "smartsec-configured-tool-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "target_url = \"http://config.local\"\nactive_tools = [\"Nikto\"]\n\n[llm]\nprovider = \"Ollama\"\n\n[[tools]]\nname = \"Nikto\"\ndescription = \"Scanner de servidores web\"\ncategory = \"DAST\"\nimage = \"example/nikto:1\"\nversion = \"1.0\"\nrunner = \"generic\"\nparser = \"generic-text\"\ncommand_template = [\"nikto\", \"-host\", \"{target}\"]\noutput_format = \"text\"\n",
+        )
+        .unwrap();
+        let options = ExecutionArgs {
+            config: Some(path.clone()),
+            tools: Some("Nikto".to_owned()),
+            llm: None,
+            model: None,
+        };
+
+        let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
+
+        assert_eq!(configured.active_tools, vec!["Nikto"]);
         std::fs::remove_file(&path).ok();
     }
 

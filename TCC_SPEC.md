@@ -119,7 +119,7 @@ Modulos atuais do prototipo:
 - `src/main.rs`: entrada CLI, TUI e headless.
 - `src/tui/`: telas, eventos e estado da interface.
 - `src/orchestrator/`: pipeline, sandbox e parsers.
-- `src/tools/`: runners reais de Nmap e Nuclei.
+- `src/tools/`: manifesto e registry extensivel de ferramentas, alem dos runners reais de Nmap e Nuclei.
 - `src/ai/` e `src/llm/`: agente e provedores LLM.
 - `src/domain/`: severidade, ferramentas e vulnerabilidades.
 - `src/config/`: configuracao e persistencia.
@@ -137,7 +137,7 @@ Na Sprint 1, Nmap e Nuclei reais executam exclusivamente em Podman rootless. A r
 
 A tela de configuracao da TUI deve permanecer legivel em `80x24`, separar conexao principal de confiabilidade, ocultar campos nao aplicaveis e manter a tela aberta quando houver erro de validacao ou persistencia. Todas as acoes disponiveis por teclado devem possuir equivalente por mouse. O fluxo Nmap -> decisao -> Nuclei -> auditoria -> relatorio possui roteiro E2E reproduzivel em `scripts/e2e_tui_local.sh`; a evidencia da homologacao esta em `docs/evidence/issue-53-tui-e2e.md`.
 
-O arquivo de configuracao TOML tem modelo comentado em `smartsec.example.toml`. No modo headless, `--target` e sempre obrigatorio na CLI e substitui o `target_url` do arquivo; `--tools`, `--llm` e `--model` sobrescrevem o arquivo. No Linux, as chaves de API remota sao armazenadas no Secret Service do sistema (keyring) e nunca no TOML. O campo `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`, `custom`) alem das canonicas; `base_url` e `model` ausentes assumem o padrao do provedor e `execution_type` ausente assume `Assisted`. O comando `scan` sempre opera como Automatico, independente do `execution_type` do arquivo.
+O arquivo de configuracao TOML tem modelo comentado em `smartsec.example.toml`. Ferramentas adicionais podem ser registradas pela chave `[[tools]]` (manifesto com nome, descricao, categoria, imagem, versao, runner, parser, `command_template` com o marcador `{target}`, formato de saida e `enabled`), validadas contra runners (`nmap`, `nuclei`, `generic`) e parsers (`nmap-xml`, `nuclei-jsonl`, `generic-text`) registrados; o nucleo resolve runner e parser pelo registry, sem comparar nomes de ferramentas. Configuracao invalida (duplicidade, campo obrigatorio ausente ou runner/parser desconhecido) falha com mensagem acionavel em pt-BR, e o procedimento de extensao esta em `docs/EXTENDING_TOOLS.md`. No modo headless, `--target` e sempre obrigatorio na CLI e substitui o `target_url` do arquivo; `--tools`, `--llm` e `--model` sobrescrevem o arquivo. No Linux, as chaves de API remota sao armazenadas no Secret Service do sistema (keyring) e nunca no TOML. O campo `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`, `custom`) alem das canonicas; `base_url` e `model` ausentes assumem o padrao do provedor e `execution_type` ausente assume `Assisted`. O comando `scan` sempre opera como Automatico, independente do `execution_type` do arquivo.
 
 ## 8. Macro-sprints
 
