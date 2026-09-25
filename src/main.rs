@@ -5,6 +5,7 @@
 //! Supports interactive TUI mode and structured `scan`/`tool` commands.
 
 mod ai;
+mod code_agent;
 mod config;
 mod domain;
 mod llm;
