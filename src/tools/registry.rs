@@ -52,6 +52,14 @@ fn registered_parsers() -> String {
     [PARSER_NMAP_XML, PARSER_NUCLEI_JSONL, PARSER_GENERIC_TEXT].join(", ")
 }
 
+fn expected_output_format(parser: ParserKind) -> &'static str {
+    match parser {
+        ParserKind::NmapXml => "xml",
+        ParserKind::NucleiJsonl => "jsonl",
+        ParserKind::GenericText => "text",
+    }
+}
+
 /// Ferramenta embutida ou registrada por configuração, já validada e ligada a
 /// um runner e a um parser conhecidos.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,6 +166,18 @@ impl ToolRegistry {
                 registered_parsers()
             )
         })?;
+        let expected_format = expected_output_format(parser);
+        if !manifest
+            .output_format
+            .trim()
+            .eq_ignore_ascii_case(expected_format)
+        {
+            return Err(format!(
+                "{label}: 'output_format' deve ser '{expected_format}' para o parser '{}'; encontrado '{}'",
+                manifest.parser.trim(),
+                manifest.output_format.trim()
+            ));
+        }
         if self.find(&manifest.name).is_some() {
             return Err(format!(
                 "ferramenta duplicada: '{}' já está registrada no catálogo",
@@ -336,6 +356,27 @@ mod tests {
 
         assert!(message.contains("Nikto"), "{message}");
         assert!(message.contains("'image'"), "{message}");
+    }
+
+    #[test]
+    fn rejects_output_format_incompatible_with_the_parser() {
+        let mut manifest = generic_manifest("Nikto");
+        manifest.output_format = "xml".to_string();
+
+        let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("Nikto"), "{message}");
+        assert!(message.contains("output_format"), "{message}");
+        assert!(message.contains("'text'"), "{message}");
+    }
+
+    #[test]
+    fn output_format_comparison_is_case_insensitive() {
+        let mut manifest = generic_manifest("Nikto");
+        manifest.output_format = "TEXT".to_string();
+
+        assert!(ToolRegistry::with_configured(&[manifest]).is_ok());
     }
 
     #[test]

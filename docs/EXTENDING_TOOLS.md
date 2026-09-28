@@ -27,12 +27,12 @@ Todos os campos são obrigatórios, exceto `enabled` (padrão `true`).
 | `name` | string | Nome exibido e chave de seleção (`--tools`, TUI). Único no catálogo (comparação sem diferenciar maiúsculas). |
 | `description` | string | Texto curto exibido na TUI. |
 | `category` | string | Categoria livre (ex.: `RECON`, `DAST`). |
-| `image` | string | Imagem do container Podman rootless, de preferência com versão fixada. |
+| `image` | string | Referência de imagem do container (`registry/nome:tag` ou `nome@sha256:<digest>`). Não pode conter espaços nem caracteres de controle e não pode começar com `-`, bloqueando injeção de opções do Podman como `--privileged` e `--volume`. |
 | `version` | string | Versão da ferramenta, gravada no log estruturado (RNF09). |
 | `runner` | string | Runner registrado que executa a ferramenta. |
 | `parser` | string | Parser registrado que interpreta a saída. |
-| `command_template` | lista de strings | Comando do container; deve conter o marcador `{target}` em ao menos um argumento. |
-| `output_format` | string | Formato esperado da saída (ex.: `text`, `xml`, `jsonl`). |
+| `command_template` | lista de strings | Comando do container; nenhum item pode ser vazio, o primeiro item é o executável (não pode começar com `-`) e ao menos um argumento deve conter o marcador `{target}`. |
+| `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl`, `text` para `generic-text`. |
 | `enabled` | bool | Opcional. `false` mantém a ferramenta fora do catálogo. |
 
 O alvo informado na CLI substitui exatamente o marcador `{target}`. Nenhum
@@ -99,7 +99,10 @@ acionável em pt-BR. Exemplos:
 - campo obrigatório ausente: `a ferramenta 'Nikto' não define o campo obrigatório 'version' em [[tools]]`;
 - runner desconhecido: `a ferramenta 'Nikto' usa o runner desconhecido 'foo'; runners registrados: nmap, nuclei, generic`;
 - parser desconhecido, com a lista de parsers registrados;
-- `command_template` sem o marcador `{target}`.
+- `image` inválida: vazia, com espaços/caracteres de controle, iniciada por `-` ou fora do formato de referência;
+- `command_template` com item vazio, primeiro item iniciado por `-` ou sem o marcador `{target}`;
+- `output_format` incompatível com o parser escolhido;
+- TOML malformado na seção `[[tools]]`.
 
 ## Adicionando um novo runner ou parser
 

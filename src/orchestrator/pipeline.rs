@@ -35,10 +35,18 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
-    pub fn new(mut config: Configuration) -> Self {
+    /// Cria o orquestrador validando a configuração `[[tools]]`; uma
+    /// configuração inválida interrompe o fluxo com a mensagem acionável.
+    pub fn new(config: Configuration) -> anyhow::Result<Self> {
+        let registry = ToolRegistry::with_configured(&config.tools)?;
+        Ok(Self::with_registry(config, registry))
+    }
+
+    /// Cria o orquestrador com um registry já validado (evita revalidar a
+    /// configuração na TUI).
+    pub fn with_registry(mut config: Configuration, registry: ToolRegistry) -> Self {
         config.provider_mode = format!("{:?}", config.llm.provider);
         let agent = AIAgent::from_config(&config.llm);
-        let registry = ToolRegistry::load(&config.tools);
         Self {
             config,
             agent,
@@ -193,8 +201,10 @@ impl Orchestrator {
             }
             Err(error) => {
                 exec.status = "failed".to_string();
-                let message =
-                    format!("Não foi possível iniciar a varredura real do Nmap: {error:#}");
+                let message = format!(
+                    "Não foi possível iniciar a varredura real de {}: {error:#}",
+                    tool.manifest.name
+                );
                 exec.output = format!("[ERRO] {message}");
                 self.latest_nmap_output = Some(exec.output.clone());
                 exec.execution_error = Some(message);
@@ -228,7 +238,10 @@ impl Orchestrator {
         exec.executed_at = now_iso8601();
         if !decision.plan.should_run {
             exec.status = "skipped".to_string();
-            exec.output = format!("Nuclei ignorado pela política: {}", decision.justification);
+            exec.output = format!(
+                "{} ignorado pela política: {}",
+                tool.manifest.name, decision.justification
+            );
             self.execution_history.push(exec.clone());
             return exec;
         }
@@ -269,7 +282,8 @@ impl Orchestrator {
             Err(error) => {
                 exec.status = "failed".to_string();
                 exec.execution_error = Some(format!(
-                    "Não foi possível iniciar a varredura real do Nuclei: {error:#}"
+                    "Não foi possível iniciar a varredura real de {}: {error:#}",
+                    tool.manifest.name
                 ));
                 format!(
                     "[ERRO] {}",
@@ -541,8 +555,37 @@ mod tests {
     }
 
     #[test]
+    fn new_rejects_invalid_tool_configuration_with_actionable_error() {
+        let mut config = make_config();
+        config.tools.push(ToolManifest {
+            name: "Nmap".to_string(),
+            description: "Duplicada".to_string(),
+            category: "RECON".to_string(),
+            image: "example/nmap:1".to_string(),
+            version: "1.0".to_string(),
+            runner: crate::tools::registry::RUNNER_GENERIC.to_string(),
+            parser: crate::tools::registry::PARSER_GENERIC_TEXT.to_string(),
+            command_template: vec!["nmap".to_string(), "{target}".to_string()],
+            output_format: "text".to_string(),
+            enabled: true,
+        });
+
+        let error = Orchestrator::new(config)
+            .err()
+            .expect("configuração inválida deveria falhar")
+            .to_string();
+
+        assert!(
+            error.contains("configuração de ferramentas inválida"),
+            "{error}"
+        );
+        assert!(error.contains("duplicada"), "{error}");
+        assert!(error.contains("Nmap"), "{error}");
+    }
+
+    #[test]
     fn real_run_empty_history_produces_no_findings() {
-        let mut orch = Orchestrator::new(make_config());
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
         orch.build_findings();
         assert!(
             orch.findings.is_empty(),
@@ -569,7 +612,7 @@ mod tests {
             output_format: "text".to_string(),
             enabled: true,
         });
-        let mut orch = Orchestrator::new(config);
+        let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
         let mut execution = SecurityTool::new("Nikto", "nikto -host http://test.local");
         execution.output = "Servidor expõe /admin sem autenticação\n".to_string();
         orch.execution_history.push(execution);
@@ -583,7 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_tool_reports_an_unregistered_tool_without_podman() {
-        let mut orch = Orchestrator::new(make_config());
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
         let manifest = ToolManifest {
             name: "Inexistente".to_string(),
             ..ToolManifest::default()

@@ -94,7 +94,7 @@ fn orchestration_row(app: &AppState) -> RequirementRow {
     };
     RequirementRow {
         id: "REQ06",
-        title: "Orquestração de Nmap e Nuclei",
+        title: "Execução orquestrada das ferramentas",
         detail,
         evidenced,
     }
@@ -271,7 +271,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn app() -> AppState {
-        AppState::new(Configuration::default())
+        AppState::new(Configuration::default()).expect("configuração de teste válida")
     }
 
     fn nmap_execution() -> SecurityTool {
