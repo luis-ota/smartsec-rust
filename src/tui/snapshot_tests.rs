@@ -46,7 +46,7 @@ fn assert_snapshot(app: &mut AppState, expected: &[&str]) -> String {
 }
 
 fn app() -> AppState {
-    AppState::new(Configuration::default())
+    AppState::new(Configuration::default()).expect("configuração de teste válida")
 }
 
 fn finding() -> Vulnerability {
