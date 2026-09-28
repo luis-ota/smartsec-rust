@@ -387,12 +387,13 @@ mod tests {
             },
             nuclei_templates_path: None,
             nuclei_templates_commit: None,
+            tools: Vec::new(),
             output_file: None,
             output_dir: None,
             show_help: false,
             show_version: false,
         };
-        let mut app = AppState::new(config);
+        let mut app = AppState::new(config).expect("configuração de teste válida");
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -414,7 +415,8 @@ mod tests {
 
     #[test]
     fn shows_masked_key_and_consent_for_remote_provider() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.settings_provider_idx = 2;
         app.settings_input_base_url = "https://api.openai.com/v1".to_string();
         app.settings_input_api_key = "secret-value".to_string();
@@ -434,7 +436,8 @@ mod tests {
 
     #[test]
     fn exposes_mouse_regions_for_every_keyboard_action_at_80x24() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.settings_provider_idx = 2;
         app.settings_input_base_url = "https://api.openai.com/v1".to_string();
         let expected_fields = app.visible_settings_fields();
@@ -467,7 +470,8 @@ mod tests {
 
     #[test]
     fn compact_layout_scrolls_to_the_focused_conditional_field() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.show_settings = true;
         app.settings_fallback_enabled = true;
         app.settings_field = SettingsField::FallbackModel;

@@ -66,13 +66,18 @@ fn orchestration_row(app: &AppState) -> RequirementRow {
         .orchestrator
         .execution_history
         .iter()
-        .filter(|execution| matches!(execution.tool_name.as_str(), "Nmap" | "Nuclei"))
+        .filter(|execution| {
+            app.orchestrator
+                .registry
+                .find(&execution.tool_name)
+                .is_some()
+        })
         .collect();
     let evidenced = executed
         .iter()
         .any(|execution| execution.status == "succeeded");
     let detail = if executed.is_empty() {
-        "aguardando disparo sequencial de Nmap e Nuclei".to_string()
+        "aguardando execução das ferramentas registradas".to_string()
     } else {
         executed
             .iter()
@@ -89,7 +94,7 @@ fn orchestration_row(app: &AppState) -> RequirementRow {
     };
     RequirementRow {
         id: "REQ06",
-        title: "Orquestração de Nmap e Nuclei",
+        title: "Execução orquestrada das ferramentas",
         detail,
         evidenced,
     }
@@ -266,7 +271,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn app() -> AppState {
-        AppState::new(Configuration::default())
+        AppState::new(Configuration::default()).expect("configuração de teste válida")
     }
 
     fn nmap_execution() -> SecurityTool {

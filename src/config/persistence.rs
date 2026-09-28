@@ -1,5 +1,6 @@
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmConfig;
+use crate::tools::manifest::ToolManifest;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -17,6 +18,8 @@ pub struct PersistedConfig {
     #[serde(default)]
     pub nuclei_templates_commit: Option<String>,
     #[serde(default)]
+    pub tools: Vec<ToolManifest>,
+    #[serde(default)]
     pub output_file: Option<String>,
     #[serde(default)]
     pub output_dir: Option<String>,
@@ -31,6 +34,7 @@ impl Default for PersistedConfig {
             llm: LlmConfig::default(),
             nuclei_templates_path: None,
             nuclei_templates_commit: None,
+            tools: Vec::new(),
             output_file: None,
             output_dir: None,
         }
@@ -98,6 +102,7 @@ impl From<crate::config::Configuration> for PersistedConfig {
             llm: c.llm,
             nuclei_templates_path: c.nuclei_templates_path.clone(),
             nuclei_templates_commit: c.nuclei_templates_commit.clone(),
+            tools: c.tools,
             output_file: c.output_file,
             output_dir: c.output_dir,
         }
@@ -113,6 +118,7 @@ impl From<&crate::config::Configuration> for PersistedConfig {
             llm: c.llm.clone(),
             nuclei_templates_path: c.nuclei_templates_path.clone(),
             nuclei_templates_commit: c.nuclei_templates_commit.clone(),
+            tools: c.tools.clone(),
             output_file: c.output_file.clone(),
             output_dir: c.output_dir.clone(),
         }
