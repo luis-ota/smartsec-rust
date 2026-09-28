@@ -16,6 +16,7 @@ mod utils;
 
 use crate::config::execution_type::ExecutionType;
 use crate::domain::security_tool::ToolInfo;
+use crate::domain::vulnerability::Vulnerability;
 use crate::domain::Severity;
 use crate::orchestrator::Orchestrator;
 use anyhow::Result;
@@ -26,6 +27,11 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+
+/// Contrato de saída do modo headless (TCC_SPEC.md, seção 10).
+const EXIT_SUCCESS: i32 = 0;
+const EXIT_CRITICAL: i32 = 1;
+const EXIT_ERROR: i32 = 2;
 
 /// CommandLineInterface (per class diagram).
 ///
@@ -66,6 +72,8 @@ struct ExecutionArgs {
     tools: Option<String>,
     llm: Option<String>,
     model: Option<String>,
+    output: Option<String>,
+    output_dir: Option<String>,
 }
 
 impl Cli {
@@ -133,6 +141,8 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
             "--tools" => options.tools = Some(value(&mut index, "--tools")?),
             "--llm" => options.llm = Some(value(&mut index, "--llm")?),
             "--model" => options.model = Some(value(&mut index, "--model")?),
+            "--output" | "-o" => options.output = Some(value(&mut index, "--output")?),
+            "--output-dir" => options.output_dir = Some(value(&mut index, "--output-dir")?),
             other => {
                 anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções")
             }
@@ -146,7 +156,8 @@ fn print_help() {
     println!("SmartSec - Plataforma de análise de segurança");
     println!("Uso: smartsec <scan|tool> --target <ALVO> [OPÇÕES]");
     println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -h, --help\n  -V, --version");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
+    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
 }
 
 impl CommandLineInterface {
@@ -154,14 +165,14 @@ impl CommandLineInterface {
         Self { arguments }
     }
 
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(self) -> Result<i32> {
         let cli = Cli::parse(&self.arguments)?;
         if self
             .arguments
             .iter()
             .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
         {
-            return Ok(());
+            return Ok(EXIT_SUCCESS);
         }
         match cli.command {
             Some(CliCommand::Scan(args)) => {
@@ -174,7 +185,8 @@ impl CommandLineInterface {
             }
             None => {
                 let config = config::Configuration::load(&[])?;
-                Self::display_tui(config).await
+                Self::display_tui(config).await?;
+                Ok(EXIT_SUCCESS)
             }
         }
     }
@@ -223,7 +235,7 @@ impl CommandLineInterface {
         }
     }
 
-    pub async fn run_headless(config: config::Configuration) -> Result<()> {
+    pub async fn run_headless(config: config::Configuration) -> Result<i32> {
         config.validate_target().map_err(anyhow::Error::msg)?;
 
         println!("═══════════════════════════════════════════════════════════");
@@ -252,7 +264,7 @@ impl CommandLineInterface {
         for (i, tool) in selected.iter().enumerate() {
             if orchestrator.cancelled {
                 println!("  X Cancelado.");
-                return Ok(());
+                return Ok(EXIT_ERROR);
             }
             if orchestrator.paused {
                 loop {
@@ -341,27 +353,70 @@ impl CommandLineInterface {
         println!("  Próximo passo: {}", orchestrator.determine_next_step());
         println!("  Contêiner: {}", orchestrator.container_id());
         println!();
-        let output_file = config
-            .output_file
-            .as_deref()
-            .unwrap_or("smartsec-report.md");
+        let report_path = resolve_report_path(&config)?;
         let log_result = orchestrator.persist_scan_log();
-        let report_result =
-            crate::report::ReportGenerator::export_to_markdown(&report, output_file);
+        let report_result = crate::report::ReportGenerator::export_to_markdown(
+            &report,
+            &report_path.to_string_lossy(),
+        );
         let log_path = log_result?;
         report_result?;
         println!("═══════════════════════════════════════════════════════════");
-        println!("  OK Relatório exportado: {output_file}");
+        println!("  OK Relatório exportado: {}", report_path.display());
         println!("  OK Log estruturado: {}", log_path.display());
+        let exit_code = headless_exit_code(&orchestrator.findings, scan_failure.as_deref());
         if let Some(failure) = scan_failure {
-            println!("  FALHA Varredura concluída com erros.");
+            println!("  FALHA Varredura concluída com erros: {failure}");
             println!("═══════════════════════════════════════════════════════════");
-            anyhow::bail!("A varredura não foi concluída: {failure}");
+            return Ok(exit_code);
         }
         println!("  OK Análise concluída.");
         println!("═══════════════════════════════════════════════════════════");
-        Ok(())
+        Ok(exit_code)
     }
+}
+
+/// Código de saída consolidado do modo headless (TCC_SPEC.md, seção 10).
+///
+/// A falha de execução tem precedência sobre o achado crítico: uma varredura
+/// incompleta precisa ser investigada antes de o resultado ser considerado.
+pub fn headless_exit_code(findings: &[Vulnerability], scan_failure: Option<&str>) -> i32 {
+    if scan_failure.is_some() {
+        return EXIT_ERROR;
+    }
+    if findings
+        .iter()
+        .any(|finding| finding.severity == Severity::Critical)
+    {
+        return EXIT_CRITICAL;
+    }
+    EXIT_SUCCESS
+}
+
+/// Resolve o caminho do relatório e cria o diretório de saída quando definido.
+fn resolve_report_path(config: &config::Configuration) -> Result<std::path::PathBuf> {
+    let file = config
+        .output_file
+        .as_deref()
+        .unwrap_or("smartsec-report.md");
+    let path = match config.output_dir.as_deref().filter(|dir| !dir.is_empty()) {
+        Some(dir) => {
+            let file_name = std::path::Path::new(file)
+                .file_name()
+                .map(std::ffi::OsStr::to_os_string)
+                .unwrap_or_else(|| "smartsec-report.md".into());
+            let directory = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&directory).map_err(|error| {
+                anyhow::anyhow!(
+                    "não foi possível criar o diretório de saída '{}': {error}",
+                    directory.display()
+                )
+            })?;
+            directory.join(file_name)
+        }
+        None => std::path::PathBuf::from(file),
+    };
+    Ok(path)
 }
 
 fn build_config(
@@ -417,6 +472,18 @@ fn build_config(
         }
         config.llm.model = model.clone();
     }
+    if let Some(output) = &options.output {
+        if output.trim().is_empty() {
+            anyhow::bail!("o arquivo de saída não pode ser vazio");
+        }
+        config.output_file = Some(output.clone());
+    }
+    if let Some(dir) = &options.output_dir {
+        if dir.trim().is_empty() {
+            anyhow::bail!("o diretório de saída não pode ser vazio");
+        }
+        config.output_dir = Some(dir.clone());
+    }
     config.validate_target().map_err(anyhow::Error::msg)?;
     config.llm.validate().map_err(anyhow::Error::msg)?;
     Ok(config)
@@ -458,15 +525,105 @@ fn selected_tools<'a>(tools: &'a [ToolInfo], active_tools: &[String]) -> Vec<&'a
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let cli = CommandLineInterface::new(arguments);
-    cli.run().await
+    match cli.run().await {
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("Erro: {error:#}");
+            std::process::exit(EXIT_ERROR);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::vulnerability::FindingSource;
+
+    fn vulnerability(severity: Severity) -> Vulnerability {
+        Vulnerability {
+            title: "Achado de teste".to_string(),
+            severity,
+            description: "Descrição".to_string(),
+            tool: "Nmap".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: FindingSource::Real,
+            target: "http://test.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-24T12:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn classifies_headless_exit_codes() {
+        assert_eq!(headless_exit_code(&[], None), EXIT_SUCCESS);
+        assert_eq!(
+            headless_exit_code(&[vulnerability(Severity::Critical)], None),
+            EXIT_CRITICAL
+        );
+        assert_eq!(
+            headless_exit_code(&[vulnerability(Severity::Info)], None),
+            EXIT_SUCCESS
+        );
+        assert_eq!(
+            headless_exit_code(&[], Some("falha do scanner")),
+            EXIT_ERROR
+        );
+        assert_eq!(
+            headless_exit_code(
+                &[vulnerability(Severity::Critical)],
+                Some("falha do scanner")
+            ),
+            EXIT_ERROR,
+            "falha de execução tem precedência sobre o achado crítico"
+        );
+    }
+
+    #[test]
+    fn output_dir_overrides_the_report_destination() {
+        let dir = std::env::temp_dir().join(format!("smartsec-output-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = config::Configuration {
+            output_dir: Some(dir.to_string_lossy().into_owned()),
+            output_file: Some("relatorio.md".to_string()),
+            ..config::Configuration::default()
+        };
+
+        let path = resolve_report_path(&config).unwrap();
+
+        assert_eq!(path, dir.join("relatorio.md"));
+        assert!(dir.is_dir(), "o diretório de saída deve ser criado");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_flags_configure_the_report_destination() {
+        let path =
+            std::env::temp_dir().join(format!("smartsec-output-flags-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "target_url = \"http://config.local\"\nactive_tools = [\"Nmap\"]\n\
+             [llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+        )
+        .unwrap();
+        let options = ExecutionArgs {
+            config: Some(path.clone()),
+            tools: None,
+            llm: None,
+            model: None,
+            output: Some("personalizado.md".to_owned()),
+            output_dir: Some("saida".to_owned()),
+        };
+
+        let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
+
+        assert_eq!(configured.output_file.as_deref(), Some("personalizado.md"));
+        assert_eq!(configured.output_dir.as_deref(), Some("saida"));
+        std::fs::remove_file(&path).ok();
+    }
 
     #[test]
     fn parses_scan_target_and_options() {
@@ -504,6 +661,7 @@ mod tests {
             tools: Some("Nmap".to_owned()),
             llm: None,
             model: None,
+            ..ExecutionArgs::default()
         };
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
         assert_eq!(configured.target_url, "192.0.2.10");
@@ -518,6 +676,7 @@ mod tests {
             tools: Some("Inexistente".to_owned()),
             llm: None,
             model: None,
+            ..ExecutionArgs::default()
         };
         assert!(build_config(&options, "não é um alvo".to_owned(), None, true).is_err());
         assert!(build_config(
