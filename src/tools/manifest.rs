@@ -3,6 +3,76 @@ use serde::{Deserialize, Serialize};
 /// Marcador substituído pelo alvo real dentro de `command_template`.
 pub const TARGET_PLACEHOLDER: &str = "{target}";
 
+const IMAGE_HINT: &str = "use 'registry/nome:tag' ou 'nome@sha256:<digest>', sem opções do Podman";
+
+fn is_valid_image_reference(image: &str) -> bool {
+    let name = match image.split_once('@') {
+        Some((name, digest)) => {
+            let Some((algorithm, value)) = digest.split_once(':') else {
+                return false;
+            };
+            if algorithm.is_empty()
+                || !algorithm
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '.'))
+            {
+                return false;
+            }
+            if value.len() < 32 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+                return false;
+            }
+            name
+        }
+        None => image,
+    };
+    let segment_start = name.rfind('/').map_or(0, |index| index + 1);
+    let (name, tag) = match name[segment_start..].find(':') {
+        Some(offset) => {
+            let index = segment_start + offset;
+            (&name[..index], Some(&name[index + 1..]))
+        }
+        None => (name, None),
+    };
+    if let Some(tag) = tag {
+        if !is_valid_tag(tag) {
+            return false;
+        }
+    }
+    let components: Vec<&str> = name.split('/').collect();
+    if components.is_empty() {
+        return false;
+    }
+    components
+        .iter()
+        .enumerate()
+        .all(|(index, component)| is_valid_component(component, index == 0))
+}
+
+fn is_valid_tag(tag: &str) -> bool {
+    if tag.is_empty() || tag.len() > 128 {
+        return false;
+    }
+    let mut characters = tag.chars();
+    let first = characters.next().unwrap_or_default();
+    (first.is_ascii_alphanumeric() || first == '_')
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+fn is_valid_component(component: &str, allow_registry_port: bool) -> bool {
+    let mut characters = component.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    first.is_ascii_alphanumeric()
+        && component.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '.' | '_' | '-')
+                || (allow_registry_port && c == ':')
+        })
+}
+
 /// Manifesto de uma ferramenta de segurança.
 ///
 /// O manifesto é a única fonte de metadados do catálogo: nome exibido,
@@ -74,9 +144,28 @@ impl ToolManifest {
                 ));
             }
         }
+        self.validate_image(&label)?;
         if self.command_template.is_empty() {
             return Err(format!(
                 "{label} não define o campo obrigatório 'command_template' em [[tools]]"
+            ));
+        }
+        for (index, argument) in self.command_template.iter().enumerate() {
+            if argument.trim().is_empty() {
+                return Err(format!(
+                    "{label}: 'command_template' não pode conter item vazio (item {})",
+                    index + 1
+                ));
+            }
+        }
+        let executable = self
+            .command_template
+            .first()
+            .map(|argument| argument.trim())
+            .unwrap_or_default();
+        if executable.starts_with('-') {
+            return Err(format!(
+                "{label}: o primeiro item de 'command_template' deve ser o executável e não pode começar com '-'"
             ));
         }
         if !self
@@ -86,6 +175,31 @@ impl ToolManifest {
         {
             return Err(format!(
                 "{label}: 'command_template' deve conter o marcador {TARGET_PLACEHOLDER}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Bloqueia valores de `image` que virariam opções do Podman (`--privileged`,
+    /// `--volume`, ...) ou referências inválidas.
+    fn validate_image(&self, label: &str) -> Result<(), String> {
+        let image = self.image.trim();
+        if image
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err(format!(
+                "{label}: o campo 'image' não pode conter espaços nem caracteres de controle; {IMAGE_HINT}"
+            ));
+        }
+        if image.starts_with('-') {
+            return Err(format!(
+                "{label}: o campo 'image' não pode começar com '-' porque o Podman o interpretaria como opção; {IMAGE_HINT}"
+            ));
+        }
+        if !is_valid_image_reference(image) {
+            return Err(format!(
+                "{label}: o campo 'image' deve ser uma referência de imagem válida; {IMAGE_HINT}"
             ));
         }
         Ok(())
@@ -135,6 +249,82 @@ mod tests {
         let parsed: ToolManifest = toml::from_str("name = \"Ferramenta\"").unwrap();
 
         assert!(parsed.enabled);
+    }
+
+    #[test]
+    fn rejects_image_that_would_be_a_podman_option() {
+        for image in ["--privileged", "--volume", "--volume=/:/host:rw", "-v"] {
+            let mut manifest = manifest();
+            manifest.image = image.to_string();
+
+            let error = manifest.validate(0).unwrap_err();
+
+            assert!(error.contains("Ferramenta"), "{image}: {error}");
+            assert!(error.contains("image"), "{image}: {error}");
+            assert!(error.contains("Podman"), "{image}: {error}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_image_references() {
+        for image in [
+            "",
+            "   ",
+            "alpine --privileged",
+            "foo/bar baz",
+            "alpine:",
+            "/alpine",
+            "foo//bar",
+            "foo/--bar",
+            "alpine@sha256:xyz",
+        ] {
+            let mut manifest = manifest();
+            manifest.image = image.to_string();
+
+            assert!(
+                manifest.validate(0).is_err(),
+                "imagem inválida aceita: {image:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_common_image_references() {
+        for image in [
+            "alpine",
+            "alpine:3.20",
+            "localhost:5000/nikto:2.5.0",
+            "docker.io/instrumentisto/nmap:7.95",
+            "docker.io/projectdiscovery/nuclei@sha256:2a11faa83464d769a888f1abb9396d5b4d8640619dfc6310086bf5c0d4003481",
+            "example/tool@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ] {
+            let mut manifest = manifest();
+            manifest.image = image.to_string();
+
+            assert!(manifest.validate(0).is_ok(), "imagem válida rejeitada: {image}");
+        }
+    }
+
+    #[test]
+    fn rejects_empty_item_and_flag_first_in_command_template() {
+        let mut tool = manifest();
+        tool.command_template = vec![
+            "tool".to_string(),
+            String::new(),
+            TARGET_PLACEHOLDER.to_string(),
+        ];
+        let error = tool.validate(0).unwrap_err();
+        assert!(error.contains("item vazio"), "{error}");
+
+        let mut tool = manifest();
+        tool.command_template = vec!["--privileged".to_string(), TARGET_PLACEHOLDER.to_string()];
+        let error = tool.validate(0).unwrap_err();
+        assert!(error.contains("primeiro item"), "{error}");
+        assert!(error.contains("executável"), "{error}");
+
+        let mut tool = manifest();
+        tool.command_template = vec!["   ".to_string(), TARGET_PLACEHOLDER.to_string()];
+        assert!(tool.validate(0).unwrap_err().contains("item vazio"));
     }
 
     #[test]

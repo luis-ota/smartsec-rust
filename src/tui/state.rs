@@ -6,7 +6,7 @@ use crate::domain::security_tool::SecurityTool;
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::decision::DecisionRecord;
 use crate::orchestrator::Orchestrator;
-use crate::tools::registry::{RunnerKind, ToolRegistry};
+use crate::tools::registry::RunnerKind;
 use crate::tools::ToolManifest;
 use crate::tui::interaction::{FocusTarget, HitRegion, SemanticAction};
 use ratatui::layout::Rect;
@@ -180,12 +180,15 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Configuration) -> Self {
-        let orchestrator = Orchestrator::new(config.clone());
+    /// Inicializa o estado da TUI validando a configuração de ferramentas; uma
+    /// configuração inválida impede a entrada na interface com a mensagem
+    /// acionável do registry.
+    pub fn new(config: Configuration) -> anyhow::Result<Self> {
+        let orchestrator = Orchestrator::new(config.clone())?;
         let agent = orchestrator.agent_handle();
 
-        let registry = ToolRegistry::load(&config.tools);
-        let tools = registry
+        let tools = orchestrator
+            .registry
             .tools()
             .iter()
             .map(|registered| ToolItem {
@@ -219,7 +222,7 @@ impl AppState {
         let fallback_base_url = config.llm.fallback_base_url.clone();
         let fallback_model = config.llm.fallback_model.clone();
 
-        Self {
+        Ok(Self {
             config,
             orchestrator,
             agent,
@@ -293,7 +296,7 @@ impl AppState {
             hit_regions: Vec::new(),
             run_receiver: None,
             run_task: None,
-        }
+        })
     }
 
     pub fn begin_frame(&mut self, area: Rect) {
@@ -621,7 +624,8 @@ impl AppState {
         self.log_total_lines = 0;
         self.log_follow = true;
         self.exec_cancelled = false;
-        self.orchestrator = Orchestrator::new(self.config.clone());
+        let registry = self.orchestrator.registry.clone();
+        self.orchestrator = Orchestrator::with_registry(self.config.clone(), registry.clone());
         self.audit_log_path = None;
         self.run_error = None;
         self.llm_warning = None;
@@ -650,7 +654,7 @@ impl AppState {
         let (sender, receiver) = mpsc::unbounded_channel();
         self.run_receiver = Some(receiver);
         self.run_task = Some(tokio::spawn(async move {
-            let mut orchestrator = Orchestrator::new(config);
+            let mut orchestrator = Orchestrator::with_registry(config, registry);
             for (index, tool, runner) in selected {
                 let is_nuclei = runner == RunnerKind::Nuclei;
                 if sender.send(RunEvent::ToolStarted(index)).is_err() {
@@ -1004,7 +1008,8 @@ mod tests {
 
     #[tokio::test]
     async fn analysis_progress_feeds_the_wait_indicator() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.step = AppStep::Execution;
         let (sender, receiver) = mpsc::unbounded_channel();
         app.run_receiver = Some(receiver);
@@ -1039,7 +1044,8 @@ mod tests {
 
     #[tokio::test]
     async fn ai_events_expose_the_real_pipeline_stage() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.step = AppStep::Execution;
         let (sender, receiver) = mpsc::unbounded_channel();
         app.run_receiver = Some(receiver);
@@ -1070,7 +1076,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_events_update_progress_findings_and_audit_path() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.step = AppStep::Execution;
         let (sender, receiver) = mpsc::unbounded_channel();
         app.run_receiver = Some(receiver);
@@ -1100,7 +1107,8 @@ mod tests {
                 }),
             })
             .unwrap();
-        let mut orchestrator = Orchestrator::new(Configuration::default());
+        let mut orchestrator =
+            Orchestrator::new(Configuration::default()).expect("configuração de teste válida");
         orchestrator.findings.push(Vulnerability {
             title: "Achado real".to_string(),
             severity: Severity::Info,
@@ -1133,7 +1141,8 @@ mod tests {
 
     #[tokio::test]
     async fn disconnected_worker_surfaces_an_error_instead_of_hanging() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.step = AppStep::Execution;
         app.tools[0].status = ToolStatus::Running;
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -1149,7 +1158,8 @@ mod tests {
 
     #[tokio::test]
     async fn new_log_lines_respect_manual_scroll_and_resume_following() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
         app.log_visible_height = 10;
@@ -1180,7 +1190,8 @@ mod tests {
 
     #[tokio::test]
     async fn draining_old_entries_shifts_the_manual_scroll_by_visual_rows() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
         app.log_visible_height = 10;
@@ -1208,7 +1219,8 @@ mod tests {
 
     #[test]
     fn log_max_scroll_saturates_at_u16_range() {
-        let mut app = AppState::new(Configuration::default());
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.log_total_lines = usize::MAX;
         app.log_visible_height = 1;
 

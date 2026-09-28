@@ -290,6 +290,30 @@ mod tests {
     }
 
     #[test]
+    fn malformed_toml_in_the_tools_section_is_reported() {
+        let path = std::env::temp_dir().join(format!(
+            "smartsec-tools-malformed-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "target_url = \"http://test.local\"\n\
+             [llm]\nprovider = \"ollama\"\n\
+             [[tools]]\n\
+             name = \"Nikto\n\
+             runner = \"generic\"\n",
+        )
+        .unwrap();
+
+        let error = Configuration::load_from_path(&path)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("configuração TOML inválida"), "{error}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn invalid_tool_configuration_fails_with_actionable_message() {
         let path = std::env::temp_dir().join(format!(
             "smartsec-tools-invalid-{}.toml",

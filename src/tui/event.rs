@@ -878,7 +878,7 @@ mod tests {
     use ratatui::Terminal;
 
     fn app() -> AppState {
-        AppState::new(Configuration::default())
+        AppState::new(Configuration::default()).expect("configuração de teste válida")
     }
 
     fn finding() -> crate::domain::vulnerability::Vulnerability {

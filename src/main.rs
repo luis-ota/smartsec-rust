@@ -193,13 +193,14 @@ impl CommandLineInterface {
     }
 
     async fn display_tui(initial_config: config::Configuration) -> Result<()> {
+        let mut app = tui::state::AppState::new(initial_config)?;
+
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        let mut app = tui::state::AppState::new(initial_config);
         let result = Self::tui_loop(&mut terminal, &mut app).await;
 
         disable_raw_mode()?;
@@ -249,7 +250,7 @@ impl CommandLineInterface {
         println!("  Scanners: Podman sem privilégios de root");
         println!();
 
-        let mut orchestrator = Orchestrator::new(config.clone());
+        let mut orchestrator = Orchestrator::new(config.clone())?;
         let all_tools = orchestrator.registry.tools().to_vec();
         let selected = selected_tools(&all_tools, &config.active_tools);
 
@@ -686,6 +687,7 @@ mod tests {
             tools: Some("Nikto".to_owned()),
             llm: None,
             model: None,
+            ..ExecutionArgs::default()
         };
 
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
