@@ -37,17 +37,18 @@ model = "llama3.2:1b"
 # Ferramentas adicionais registradas por configuração (RNF08).
 # O manifesto é validado no carregamento: campos obrigatórios, duplicidade e
 # runner/parser precisam ser conhecidos. Runners: "nmap", "nuclei", "generic".
-# Parsers: "nmap-xml", "nuclei-jsonl", "generic-text".
+# Parsers: "nmap-xml", "nuclei-jsonl", "nikto-json", "generic-text".
+# Nmap, Nuclei e Nikto ja sao embutidos; use outro nome aqui para nao duplicar.
 # Procedimento completo em docs/EXTENDING_TOOLS.md.
 #
 # [[tools]]
-# name = "Nikto"
+# name = "ZAP"
 # description = "Scanner de servidores web"
 # category = "DAST"
-# image = "docker.io/sullo/nikto:2.5.0"
-# version = "2.5.0"
+# image = "docker.io/zaproxy/zap:2.14.0"
+# version = "2.14.0"
 # runner = "generic"
 # parser = "generic-text"
-# command_template = ["nikto", "-host", "{target}"]
+# command_template = ["zap", "-host", "{target}"]
 # output_format = "text"
 # enabled = true
