@@ -270,14 +270,14 @@ mod tests {
             "target_url = \"http://test.local\"\n\
              [llm]\nprovider = \"ollama\"\n\
              [[tools]]\n\
-             name = \"Nikto\"\n\
+             name = \"ZAP\"\n\
              description = \"Scanner de servidores web\"\n\
              category = \"DAST\"\n\
-             image = \"example/nikto:1\"\n\
+             image = \"example/zap:1\"\n\
              version = \"1.0\"\n\
              runner = \"generic\"\n\
              parser = \"generic-text\"\n\
-             command_template = [\"nikto\", \"-host\", \"{target}\"]\n\
+             command_template = [\"zap\", \"-host\", \"{target}\"]\n\
              output_format = \"text\"\n",
         )
         .unwrap();
@@ -285,7 +285,7 @@ mod tests {
         let config = Configuration::load_from_path(&path).unwrap();
 
         assert_eq!(config.tools.len(), 1);
-        assert_eq!(config.tools[0].name, "Nikto");
+        assert_eq!(config.tools[0].name, "ZAP");
         std::fs::remove_file(&path).ok();
     }
 
@@ -300,7 +300,7 @@ mod tests {
             "target_url = \"http://test.local\"\n\
              [llm]\nprovider = \"ollama\"\n\
              [[tools]]\n\
-             name = \"Nikto\n\
+             name = \"ZAP\n\
              runner = \"generic\"\n",
         )
         .unwrap();
