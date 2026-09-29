@@ -96,6 +96,29 @@ fn tool_selection_loading_ready_and_empty_match_80x24_snapshots() {
 }
 
 #[test]
+fn the_nikto_is_selectable_in_the_tool_catalog_of_the_tui() {
+    let mut app = app();
+    app.step = AppStep::ToolSelect;
+    app.tool_detecting = false;
+
+    // O catálogo da TUI vem do registry, sem lista manual de ferramentas.
+    let names: Vec<&str> = app
+        .tools
+        .iter()
+        .map(|tool| tool.tool.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Nikto"),
+        "o Nikto deveria estar selecionável na TUI: {names:?}"
+    );
+    assert!(names.contains(&"Nmap"), "{names:?}");
+    assert!(names.contains(&"Nuclei"), "{names:?}");
+
+    // E aparece na lista renderizada em 80x24.
+    assert_snapshot(&mut app, &["Ferramentas de segurança", "Nikto", "DAST"]);
+}
+
+#[test]
 fn execution_states_match_80x24_snapshots() {
     let mut app = app();
     app.step = AppStep::Execution;

@@ -1,4 +1,5 @@
-use crate::tools::manifest::ToolManifest;
+use crate::tools::manifest::{ToolManifest, TARGET_PLACEHOLDER};
+use crate::tools::nikto::{NIKTO_IMAGE, NIKTO_VERSION};
 use crate::tools::nmap::{NMAP_IMAGE, NMAP_VERSION};
 use crate::tools::nuclei::{NUCLEI_IMAGE, NUCLEI_VERSION};
 
@@ -11,6 +12,8 @@ pub const RUNNER_GENERIC: &str = "generic";
 pub const PARSER_NMAP_XML: &str = "nmap-xml";
 pub const PARSER_NUCLEI_JSONL: &str = "nuclei-jsonl";
 pub const PARSER_GENERIC_TEXT: &str = "generic-text";
+/// Parser do relatório JSON do Nikto.
+pub const PARSER_NIKTO_JSON: &str = "nikto-json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunnerKind {
@@ -24,6 +27,7 @@ pub enum ParserKind {
     NmapXml,
     NucleiJsonl,
     GenericText,
+    NiktoJson,
 }
 
 fn runner_kind(runner: &str) -> Option<RunnerKind> {
@@ -40,6 +44,7 @@ fn parser_kind(parser: &str) -> Option<ParserKind> {
         PARSER_NMAP_XML => Some(ParserKind::NmapXml),
         PARSER_NUCLEI_JSONL => Some(ParserKind::NucleiJsonl),
         PARSER_GENERIC_TEXT => Some(ParserKind::GenericText),
+        PARSER_NIKTO_JSON => Some(ParserKind::NiktoJson),
         _ => None,
     }
 }
@@ -49,7 +54,13 @@ fn registered_runners() -> String {
 }
 
 fn registered_parsers() -> String {
-    [PARSER_NMAP_XML, PARSER_NUCLEI_JSONL, PARSER_GENERIC_TEXT].join(", ")
+    [
+        PARSER_NMAP_XML,
+        PARSER_NUCLEI_JSONL,
+        PARSER_GENERIC_TEXT,
+        PARSER_NIKTO_JSON,
+    ]
+    .join(", ")
 }
 
 fn expected_output_format(parser: ParserKind) -> &'static str {
@@ -57,6 +68,7 @@ fn expected_output_format(parser: ParserKind) -> &'static str {
         ParserKind::NmapXml => "xml",
         ParserKind::NucleiJsonl => "jsonl",
         ParserKind::GenericText => "text",
+        ParserKind::NiktoJson => "json",
     }
 }
 
@@ -90,6 +102,7 @@ impl ToolRegistry {
             RunnerKind::Nuclei,
             ParserKind::NucleiJsonl,
         );
+        registry.push_builtin(nikto_manifest(), RunnerKind::Generic, ParserKind::NiktoJson);
         registry
     }
 
@@ -239,12 +252,32 @@ fn nuclei_manifest() -> ToolManifest {
     }
 }
 
+/// Manifesto embutido do Nikto.
+///
+/// Usa o runner `generic`: o `command_template` abaixo é o comando validado
+/// empiricamente no container (ver `docs/evidence/issue-14-nikto.md`), sem
+/// shell, com `-o -` para escrever o JSON no stdout e `-ask no` para impedir
+/// que o prompt do CIRT.net contamine a saída.
+fn nikto_manifest() -> ToolManifest {
+    ToolManifest {
+        name: "Nikto".to_string(),
+        description: "Scanner de configuração de servidores web".to_string(),
+        category: "DAST".to_string(),
+        image: NIKTO_IMAGE.to_string(),
+        version: NIKTO_VERSION.to_string(),
+        runner: RUNNER_GENERIC.to_string(),
+        parser: PARSER_NIKTO_JSON.to_string(),
+        command_template: crate::tools::nikto::container_arguments(TARGET_PLACEHOLDER),
+        output_format: "json".to_string(),
+        enabled: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::persistence::PersistedConfig;
     use crate::config::Configuration;
-
     fn generic_manifest(name: &str) -> ToolManifest {
         ToolManifest {
             name: name.to_string(),
@@ -276,29 +309,116 @@ mod tests {
     }
 
     #[test]
+    fn builtin_catalog_exposes_nikto_with_pinned_image_and_version() {
+        let registry = ToolRegistry::builtin();
+
+        let nikto = registry
+            .find("nikto")
+            .expect("o Nikto deve estar no catálogo embutido");
+
+        assert_eq!(nikto.manifest.name, "Nikto");
+        assert_eq!(nikto.parser, ParserKind::NiktoJson);
+        assert_eq!(nikto.runner, RunnerKind::Generic);
+        assert_eq!(nikto.manifest.output_format, "json");
+        assert!(nikto.manifest.enabled);
+
+        // Imagem fixada por digest e versão registrada para o log estruturado.
+        assert!(
+            nikto.manifest.image.contains("@sha256:"),
+            "{}",
+            nikto.manifest.image
+        );
+        assert_eq!(nikto.manifest.version, "2.1.6");
+    }
+
+    #[test]
+    fn builtin_nikto_command_template_avoids_shell_and_targets_the_placeholder() {
+        let registry = ToolRegistry::builtin();
+        let nikto = registry.find("nikto").unwrap();
+
+        // O manifesto embutido passa pela mesma validação das ferramentas do TOML.
+        assert!(nikto.manifest.validate(0).is_ok());
+
+        let command = nikto.manifest.render_command("http://169.254.1.2:3000");
+
+        assert_eq!(command.first().map(String::as_str), Some("nikto.pl"));
+        assert!(command.contains(&"http://169.254.1.2:3000".to_string()));
+        // Nenhum item do comando introduz metacaractere de shell.
+        for argument in &command {
+            assert!(
+                !argument.contains(['|', '>', '<', ';', '$', '&', '`']),
+                "{argument}"
+            );
+        }
+        // Nenhum placeholder sobrevive à renderização.
+        assert!(!command.iter().any(|item| item.contains(TARGET_PLACEHOLDER)));
+    }
+
+    #[test]
+    fn nikto_is_rejected_when_a_configured_tool_reuses_its_name() {
+        let mut manifest = generic_manifest("Nikto");
+        manifest.runner = RUNNER_GENERIC.to_string();
+        manifest.parser = PARSER_NIKTO_JSON.to_string();
+        manifest.output_format = "json".to_string();
+
+        let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("duplicada"), "{message}");
+        assert!(message.contains("Nikto"), "{message}");
+    }
+
+    #[test]
+    fn rejects_a_configured_tool_declaring_the_nikto_parser_with_the_wrong_format() {
+        let mut manifest = generic_manifest("NiktoWeb");
+        manifest.parser = PARSER_NIKTO_JSON.to_string();
+
+        let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("output_format"), "{message}");
+        assert!(message.contains("'json'"), "{message}");
+        assert!(message.contains(PARSER_NIKTO_JSON), "{message}");
+    }
+
+    #[test]
+    fn a_configured_tool_can_use_the_nikto_parser() {
+        let mut manifest = generic_manifest("NiktoLegado");
+        manifest.parser = PARSER_NIKTO_JSON.to_string();
+        manifest.output_format = "json".to_string();
+
+        let registry = ToolRegistry::with_configured(&[manifest]).unwrap();
+
+        assert_eq!(
+            registry.find("NiktoLegado").unwrap().parser,
+            ParserKind::NiktoJson
+        );
+    }
+
+    #[test]
     fn registers_a_tool_declared_in_toml_configuration() {
         let persisted: PersistedConfig = toml::from_str(
             "target_url = \"http://test.local\"\n\
              [llm]\nprovider = \"ollama\"\n\
              [[tools]]\n\
-             name = \"Nikto\"\n\
+             name = \"ZAP\"\n\
              description = \"Scanner de servidores web\"\n\
              category = \"DAST\"\n\
-             image = \"docker.io/sullo/nikto:2.5.0\"\n\
-             version = \"2.5.0\"\n\
+             image = \"docker.io/zaproxy/zap:2.14.0\"\n\
+             version = \"2.14.0\"\n\
              runner = \"generic\"\n\
              parser = \"generic-text\"\n\
-             command_template = [\"nikto\", \"-host\", \"{target}\"]\n\
+             command_template = [\"zap\", \"-host\", \"{target}\"]\n\
              output_format = \"text\"\n",
         )
         .unwrap();
         let config = Configuration::from(persisted);
         let registry = ToolRegistry::with_configured(&config.tools).unwrap();
 
-        let nikto = registry.find("nikto").unwrap();
-        assert_eq!(nikto.runner, RunnerKind::Generic);
-        assert_eq!(nikto.parser, ParserKind::GenericText);
-        assert_eq!(nikto.manifest.version, "2.5.0");
+        let zap = registry.find("zap").unwrap();
+        assert_eq!(zap.runner, RunnerKind::Generic);
+        assert_eq!(zap.parser, ParserKind::GenericText);
+        assert_eq!(zap.manifest.version, "2.14.0");
     }
 
     #[test]
@@ -313,7 +433,7 @@ mod tests {
     #[test]
     fn rejects_duplicated_configured_tools() {
         let error =
-            ToolRegistry::with_configured(&[generic_manifest("Nikto"), generic_manifest("nikto")])
+            ToolRegistry::with_configured(&[generic_manifest("ZAP"), generic_manifest("zap")])
                 .unwrap_err();
 
         assert!(error.to_string().contains("duplicada"), "{error}");
@@ -321,13 +441,13 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_runner_citing_the_tool_and_the_field() {
-        let mut manifest = generic_manifest("Nikto");
+        let mut manifest = generic_manifest("ZAP");
         manifest.runner = "runner-inexistente".to_string();
 
         let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("Nikto"), "{message}");
+        assert!(message.contains("ZAP"), "{message}");
         assert!(message.contains("runner desconhecido"), "{message}");
         assert!(message.contains("runner-inexistente"), "{message}");
         assert!(message.contains("nmap"), "{message}");
@@ -335,45 +455,45 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_parser_citing_the_tool_and_the_field() {
-        let mut manifest = generic_manifest("Nikto");
+        let mut manifest = generic_manifest("ZAP");
         manifest.parser = "parser-inexistente".to_string();
 
         let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("Nikto"), "{message}");
+        assert!(message.contains("ZAP"), "{message}");
         assert!(message.contains("parser desconhecido"), "{message}");
         assert!(message.contains("generic-text"), "{message}");
     }
 
     #[test]
     fn rejects_a_missing_required_field_citing_the_tool() {
-        let mut manifest = generic_manifest("Nikto");
+        let mut manifest = generic_manifest("ZAP");
         manifest.image.clear();
 
         let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("Nikto"), "{message}");
+        assert!(message.contains("ZAP"), "{message}");
         assert!(message.contains("'image'"), "{message}");
     }
 
     #[test]
     fn rejects_output_format_incompatible_with_the_parser() {
-        let mut manifest = generic_manifest("Nikto");
+        let mut manifest = generic_manifest("ZAP");
         manifest.output_format = "xml".to_string();
 
         let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("Nikto"), "{message}");
+        assert!(message.contains("ZAP"), "{message}");
         assert!(message.contains("output_format"), "{message}");
         assert!(message.contains("'text'"), "{message}");
     }
 
     #[test]
     fn output_format_comparison_is_case_insensitive() {
-        let mut manifest = generic_manifest("Nikto");
+        let mut manifest = generic_manifest("ZAP");
         manifest.output_format = "TEXT".to_string();
 
         assert!(ToolRegistry::with_configured(&[manifest]).is_ok());
@@ -381,11 +501,11 @@ mod tests {
 
     #[test]
     fn a_disabled_tool_stays_out_of_the_catalog() {
-        let mut manifest = generic_manifest("Nikto");
+        let mut manifest = generic_manifest("ZAP");
         manifest.enabled = false;
 
         let registry = ToolRegistry::with_configured(&[manifest]).unwrap();
 
-        assert!(registry.find("Nikto").is_none());
+        assert!(registry.find("ZAP").is_none());
     }
 }

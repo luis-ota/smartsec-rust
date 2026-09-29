@@ -24,9 +24,9 @@ Video completo da demonstracao: [`docs/demo-completo.mp4`](docs/demo-completo.mp
 
 ## Aviso
 
-Este e um **prototipo / prova de conceito**. O catalogo atual oferece Nmap e
-Nuclei reais, executados somente em containers Podman rootless; os binarios dos
-scanners nunca sao chamados diretamente no host. As demais ferramentas
+Este e um **prototipo / prova de conceito**. O catalogo atual oferece Nmap,
+Nuclei e Nikto reais, executados somente em containers Podman rootless; os
+binarios dos scanners nunca sao chamados diretamente no host. As demais ferramentas
 previstas no TCC ainda nao fazem parte do catalogo executavel.
 
 ## Funcionalidades
@@ -36,6 +36,7 @@ previstas no TCC ainda nao fazem parte do catalogo executavel.
 - **Nmap real** via Podman rootless, com portas e serviços extraídos do XML
 - **Suporte a mouse** — todos os botoes e listas sao clicaveis
 - **Nuclei real** — imagem fixada por digest, templates montados somente-leitura e plano Nmap/IA aplicado aos argumentos
+- **Nikto real** — imagem fixada por digest e relatorio JSON escrito no stdout sem shell e sem arquivo
 - **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM
 - **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes e explicacoes didaticas
 - **Evidencia segura** — preserva template, matcher, endpoint, host, URL e tags, sem corpos HTTP, credenciais ou query strings
@@ -155,7 +156,7 @@ src/
   main.rs              Ponto de entrada (CLI + TUI + headless)
   tui/                 Interface de terminal (telas, estado, eventos, mouse)
   orchestrator/        Pipeline de execucao, sandbox, parsers
-  tools/               Runners reais das ferramentas (Nmap e Nuclei)
+  tools/               Runners reais das ferramentas (Nmap, Nuclei e Nikto)
   ai/                  Agente IA (prompt LLM + analise)
   llm/                 Provedores LLM (openai, ollama, nvidia-nim)
   domain/              Modelos de dados (vulnerabilidade, severidade, ferramentas)
