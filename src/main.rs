@@ -679,12 +679,12 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "target_url = \"http://config.local\"\nactive_tools = [\"Nikto\"]\n\n[llm]\nprovider = \"Ollama\"\n\n[[tools]]\nname = \"Nikto\"\ndescription = \"Scanner de servidores web\"\ncategory = \"DAST\"\nimage = \"example/nikto:1\"\nversion = \"1.0\"\nrunner = \"generic\"\nparser = \"generic-text\"\ncommand_template = [\"nikto\", \"-host\", \"{target}\"]\noutput_format = \"text\"\n",
+            "target_url = \"http://config.local\"\nactive_tools = [\"ZAP\"]\n\n[llm]\nprovider = \"Ollama\"\n\n[[tools]]\nname = \"ZAP\"\ndescription = \"Scanner de servidores web\"\ncategory = \"DAST\"\nimage = \"example/zap:1\"\nversion = \"1.0\"\nrunner = \"generic\"\nparser = \"generic-text\"\ncommand_template = [\"zap\", \"-host\", \"{target}\"]\noutput_format = \"text\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {
             config: Some(path.clone()),
-            tools: Some("Nikto".to_owned()),
+            tools: Some("ZAP".to_owned()),
             llm: None,
             model: None,
             ..ExecutionArgs::default()
@@ -692,7 +692,7 @@ mod tests {
 
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
 
-        assert_eq!(configured.active_tools, vec!["Nikto"]);
+        assert_eq!(configured.active_tools, vec!["ZAP"]);
         std::fs::remove_file(&path).ok();
     }
 

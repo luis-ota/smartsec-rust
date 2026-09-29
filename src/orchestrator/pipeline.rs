@@ -355,6 +355,18 @@ impl Orchestrator {
                         exec.status = "failed".to_string();
                     }
                 }
+                ParserKind::NiktoJson => {
+                    let (parsed, errors) =
+                        crate::orchestrator::nikto_parser::parse_nikto_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
             }
         }
         self.findings = real_findings;
@@ -597,15 +609,15 @@ mod tests {
     fn build_findings_dispatches_the_parser_registered_for_the_tool() {
         let mut config = make_config();
         config.tools.push(ToolManifest {
-            name: "Nikto".to_string(),
+            name: "ZAP".to_string(),
             description: "Scanner de servidores web".to_string(),
             category: "DAST".to_string(),
-            image: "example/nikto:1".to_string(),
+            image: "example/zap:1".to_string(),
             version: "1.0".to_string(),
             runner: crate::tools::registry::RUNNER_GENERIC.to_string(),
             parser: crate::tools::registry::PARSER_GENERIC_TEXT.to_string(),
             command_template: vec![
-                "nikto".to_string(),
+                "zap".to_string(),
                 "-host".to_string(),
                 "{target}".to_string(),
             ],
@@ -613,14 +625,14 @@ mod tests {
             enabled: true,
         });
         let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
-        let mut execution = SecurityTool::new("Nikto", "nikto -host http://test.local");
+        let mut execution = SecurityTool::new("ZAP", "zap -host http://test.local");
         execution.output = "Servidor expõe /admin sem autenticação\n".to_string();
         orch.execution_history.push(execution);
 
         orch.build_findings();
 
         assert_eq!(orch.findings.len(), 1);
-        assert_eq!(orch.findings[0].tool, "Nikto");
+        assert_eq!(orch.findings[0].tool, "ZAP");
         assert_eq!(orch.findings[0].severity, crate::domain::Severity::Info);
     }
 
@@ -639,5 +651,159 @@ mod tests {
             .execution_error
             .as_deref()
             .is_some_and(|error| error.contains("não está registrada")));
+    }
+
+    fn nikto_execution(output: &str, status: &str) -> SecurityTool {
+        let mut execution = SecurityTool::new("Nikto", "nikto.pl -h http://test.local");
+        execution.output = output.to_string();
+        execution.status = status.to_string();
+        execution
+    }
+
+    #[test]
+    fn build_findings_uses_the_nikto_parser_registered_for_the_builtin_tool() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let report = include_str!("../../tests/fixtures/nikto/relatorio.json");
+        orch.execution_history
+            .push(nikto_execution(report, "succeeded"));
+
+        orch.build_findings();
+
+        assert_eq!(orch.findings.len(), 5);
+        assert!(orch.findings.iter().all(|f| f.tool == "Nikto"));
+        assert!(orch
+            .findings
+            .iter()
+            .all(|f| f.source == crate::domain::vulnerability::FindingSource::Real));
+        assert!(orch
+            .findings
+            .iter()
+            .any(|f| f.evidence.contains("url: http://test.local/")));
+        assert!(orch
+            .execution_history
+            .iter()
+            .all(|execution| execution.execution_error.is_none()));
+    }
+
+    #[test]
+    fn invalid_nikto_output_marks_the_execution_as_failed() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let invalid = include_str!("../../tests/fixtures/nikto/invalido.json");
+        orch.execution_history
+            .push(nikto_execution(invalid, "succeeded"));
+
+        orch.build_findings();
+
+        assert!(orch.findings.is_empty());
+        let execution = &orch.execution_history[0];
+        assert_eq!(execution.status, "failed");
+        assert!(execution
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("JSON do Nikto inválido")));
+    }
+
+    #[test]
+    fn a_nikto_target_without_a_web_server_is_reported_as_an_execution_error() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let diagnostic = include_str!("../../tests/fixtures/nikto/sem_servidor.json");
+        // O Nikto termina com exit status 0 mesmo sem encontrar servidor web.
+        orch.execution_history
+            .push(nikto_execution(diagnostic, "succeeded"));
+
+        orch.build_findings();
+
+        assert!(
+            orch.findings.is_empty(),
+            "diagnóstico do Nikto não pode virar vulnerabilidade: {:?}",
+            orch.findings
+        );
+        let execution = &orch.execution_history[0];
+        assert_eq!(execution.status, "failed");
+        assert!(execution
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| { error.contains("não encontrou servidor web") }));
+    }
+
+    #[test]
+    fn a_nikto_failure_keeps_the_original_execution_error() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let mut execution = nikto_execution(
+            "[ERRO] O container smartsec-abc encerrou com status 125",
+            "failed:125",
+        );
+        execution.execution_error =
+            Some("O container smartsec-abc encerrou com status 125".to_string());
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        let stored = &orch.execution_history[0];
+        assert_eq!(stored.status, "failed:125");
+        assert!(stored
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("encerrou com status 125")));
+        assert!(orch.findings.is_empty());
+    }
+
+    #[test]
+    fn a_nikto_timeout_is_kept_as_timeout_and_produces_no_findings() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let timeout = "[ERRO] O container smartsec-abc excedeu o tempo limite de 15 minutos.";
+        let mut execution = nikto_execution(timeout, "timeout");
+        execution.execution_error = Some(timeout.to_string());
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        let stored = &orch.execution_history[0];
+        assert_eq!(stored.status, "timeout");
+        assert!(stored
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("tempo limite")));
+        assert!(orch.findings.is_empty());
+    }
+
+    #[test]
+    fn nmap_and_nuclei_results_are_unchanged_by_the_nikto_parser() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+
+        let mut nmap = SecurityTool::new("Nmap", "nmap -Pn -sT -sV -oX - http://test.local");
+        nmap.output = include_str!("../../tests/fixtures/nmap_open.xml").to_string();
+        orch.execution_history.push(nmap);
+
+        let mut nuclei = SecurityTool::new("Nuclei", "nuclei -u test.local -jsonl");
+        nuclei.output = concat!(
+            r#"{"template-id":"http-missing-security-headers","info":{"name":"HTTP Missing Security Headers","severity":"info"},"matched-at":"http://test.local","matcher-name":"content-security-policy"}"#,
+            "\n"
+        )
+        .to_string();
+        orch.execution_history.push(nuclei);
+
+        orch.build_findings();
+
+        assert_eq!(orch.findings.len(), 2);
+        let nmap_finding = orch
+            .findings
+            .iter()
+            .find(|finding| finding.tool == "Nmap")
+            .expect("o achado do Nmap deve continuar presente");
+        let nuclei_finding = orch
+            .findings
+            .iter()
+            .find(|finding| finding.tool == "Nuclei")
+            .expect("o achado do Nuclei deve continuar presente");
+        assert!(nmap_finding.evidence.contains("porta=3000/tcp"));
+        assert_eq!(
+            nuclei_finding.title,
+            "Cabeçalho de segurança ausente — content-security-policy"
+        );
+        assert!(orch
+            .execution_history
+            .iter()
+            .all(|execution| execution.execution_error.is_none()));
     }
 }
