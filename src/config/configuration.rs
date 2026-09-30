@@ -273,7 +273,7 @@ mod tests {
              name = \"ScannerExemplo\"\n\
              description = \"Scanner de servidores web\"\n\
              category = \"DAST\"\n\
-             image = \"example/zap:1\"\n\
+             image = \"example/scanner:1\"\n\
              version = \"1.0\"\n\
              runner = \"generic\"\n\
              parser = \"generic-text\"\n\

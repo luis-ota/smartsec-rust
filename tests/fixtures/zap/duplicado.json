@@ -1,0 +1,49 @@
+{
+	"@programName": "ZAP",
+	"@version": "2.14.0",
+	"@generated": "Wed, 30 Sep 2026 19:31:14",
+	"site": [
+		{
+			"@name": "http://alvo.local",
+			"@host": "alvo.local",
+			"@port": "80",
+			"@ssl": "false",
+			"alerts": [
+				{
+					"pluginid": "10038",
+					"alertRef": "10038-1",
+					"alert": "Content Security Policy (CSP) Header Not Set",
+					"riskcode": "2",
+					"confidence": "3",
+					"riskdesc": "Medium (High)",
+					"count": "2",
+					"cweid": "693",
+					"solution": "<p>Ensure that your web server is configured.</p>",
+					"instances": [
+						{
+							"uri": "http://alvo.local",
+							"method": "GET"
+						}
+					]
+				},
+				{
+					"pluginid": "10038",
+					"alertRef": "10038-1",
+					"alert": "Content Security Policy (CSP) Header Not Set",
+					"riskcode": "2",
+					"confidence": "3",
+					"riskdesc": "Medium (High)",
+					"count": "2",
+					"cweid": "693",
+					"solution": "<p>Ensure that your web server is configured.</p>",
+					"instances": [
+						{
+							"uri": "http://alvo.local",
+							"method": "GET"
+						}
+					]
+				}
+			]
+		}
+	]
+}

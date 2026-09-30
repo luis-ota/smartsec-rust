@@ -6,5 +6,6 @@ pub mod registry;
 pub mod sqlmap;
 pub mod repository;
 pub mod trufflehog;
+pub mod zap;
 
 pub use manifest::ToolManifest;

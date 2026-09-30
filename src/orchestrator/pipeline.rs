@@ -3,7 +3,7 @@ use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner};
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
-use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
+use crate::orchestrator::sandbox::{self, ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::nmap::NmapTool;
 use crate::tools::nuclei::{NucleiTool, NUCLEI_TEMPLATES_COMMIT};
 use crate::tools::registry::{ParserKind, RegisteredTool, RunnerKind, ToolRegistry};
@@ -136,7 +136,125 @@ impl Orchestrator {
             RunnerKind::Nuclei => self.execute_nuclei_with_plan(&registered, target).await,
             RunnerKind::Generic => self.execute_generic(&registered, target).await,
             RunnerKind::Repository => self.execute_repository(&registered, target).await,
+            RunnerKind::Zap => self.execute_zap(&registered, target).await,
         }
+    }
+
+    /// Executa o ZAP com um plano de automação montado em memória.
+    ///
+    /// O plano é gravado num diretório temporário do host e montado em somente
+    /// leitura, como os templates do Nuclei. O job `report` do ZAP só sabe
+    /// gravar um arquivo — ele sempre acrescenta a extensão do template ao nome
+    /// e não existe parâmetro de saída em stdout (verificado executando o
+    /// container, `docs/evidence/issue-28-zap.md`) —, então o relatório é
+    /// coletado do diretório de saída gravável antes da remoção do container.
+    async fn execute_zap(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
+        let arguments = crate::tools::zap::container_arguments(target).join(" ");
+        let mut exec = SecurityTool::new(&tool.manifest.name, &arguments);
+        exec.tool_version = Some(tool.manifest.version.clone());
+        exec.image = Some(tool.manifest.image.clone());
+        exec.executed_at = now_iso8601();
+
+        let plan = zap_plan_dir();
+        if let Err(error) = std::fs::create_dir(&plan) {
+            return self.fail_zap(
+                &mut exec,
+                format!(
+                    "Não foi possível criar o diretório temporário do plano de automação do ZAP em {}: {error}",
+                    plan.display()
+                ),
+            );
+        }
+        let _plan_dir = PlanDirectory(plan.clone());
+        let plan_file = plan.join("scan.yaml");
+        if let Err(error) = std::fs::write(&plan_file, crate::tools::zap::automation_plan(target)) {
+            return self.fail_zap(
+                &mut exec,
+                format!(
+                    "Não foi possível gravar o plano de automação do ZAP em {}: {error}",
+                    plan_file.display()
+                ),
+            );
+        }
+
+        let output = match sandbox::WritableOutput::new(
+            crate::tools::zap::ZAP_OUTPUT_DIR,
+            crate::tools::zap::ZAP_REPORT_FILE,
+        ) {
+            Ok(output) => output
+                .with_memory(crate::tools::zap::ZAP_MEMORY_LIMIT)
+                .with_tmpfs(crate::tools::zap::ZAP_HOME_TMPFS),
+            Err(error) => {
+                return self.fail_zap(
+                    &mut exec,
+                    format!(
+                        "Não foi possível criar o diretório de saída do relatório do ZAP: {error}"
+                    ),
+                );
+            }
+        };
+
+        let executor = self.podman_executor();
+        let result = executor
+            .execute_with_artifact(
+                &tool.manifest.image,
+                &crate::tools::zap::container_arguments(target),
+                &[(plan, crate::tools::zap::ZAP_AUTOMATION_DIR.to_string())],
+                &output,
+            )
+            .await;
+
+        match result {
+            Ok(result) => {
+                exec.podman_trace = result.trace.clone();
+                exec.status = execution_status(&result.status);
+                exec.duration_ms = result.duration.as_millis();
+                exec.stderr = sanitize(&result.stderr);
+                let succeeded =
+                    result.status == ExecutionStatus::Succeeded && result.cleanup_error.is_none();
+                // O relatório coletado é a saída estruturada da ferramenta; o
+                // plano de automação e o trace ficam no log operacional.
+                let diagnostic = podman_output(result.clone());
+                if succeeded {
+                    match result.artifact {
+                        Some(report) => exec.output = report,
+                        None => {
+                            // Artefato ausente não é varredura limpa.
+                            let message = result.artifact_error.unwrap_or_else(|| {
+                                "o ZAP não produziu relatório JSON; a execução precisa ser revisada"
+                                    .to_string()
+                            });
+                            exec.status = "failed".to_string();
+                            exec.execution_error = Some(message);
+                            exec.output = diagnostic;
+                        }
+                    }
+                } else {
+                    exec.execution_error = Some(diagnostic.clone());
+                    exec.output = diagnostic;
+                }
+            }
+            Err(error) => {
+                let message = format!(
+                    "Não foi possível iniciar a varredura real de {}: {error:#}",
+                    tool.manifest.name
+                );
+                exec.status = "failed".to_string();
+                exec.execution_error = Some(message.clone());
+                exec.output = format!("[ERRO] {message}");
+            }
+        }
+        self.execution_history.push(exec.clone());
+        exec
+    }
+
+    /// Registra uma falha de preparação do ZAP sem chamar o Podman.
+    fn fail_zap(&mut self, exec: &mut SecurityTool, message: String) -> SecurityTool {
+        exec.status = "failed".to_string();
+        exec.execution_error = Some(message.clone());
+        exec.output = format!("[ERRO] {message}");
+        self.execution_history.push(exec.clone());
+        exec.clone()
     }
 
     /// Executa o `command_template` do manifesto no executor Podman rootless.
@@ -436,6 +554,9 @@ impl Orchestrator {
                 ParserKind::TruffleHogJsonl => {
                     let (parsed, errors) =
                         crate::orchestrator::trufflehog_parser::parse_trufflehog_findings_with_errors(
+                ParserKind::ZapJson => {
+                    let (parsed, errors) =
+                        crate::orchestrator::zap_parser::parse_zap_findings_with_errors(
                             &exec.output,
                             &target,
                         );
@@ -551,6 +672,32 @@ impl Orchestrator {
 
 fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Diretório temporário que recebe o plano de automação do ZAP.
+///
+/// O plano é gerado em memória e gravado aqui; o executor o monta em somente
+/// leitura no container. O diretório vive no `TMPDIR` do host, é específico
+/// desta execução e é removido ao final.
+fn zap_plan_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "smartsec-zap-plano-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
+}
+
+/// Remove o diretório do plano de automação ao final da execução, inclusive nos
+/// caminhos de erro e de cancelamento.
+struct PlanDirectory(std::path::PathBuf);
+
+impl Drop for PlanDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn podman_output(result: ExecutionResult) -> String {
@@ -690,12 +837,12 @@ mod tests {
             name: "ScannerExemplo".to_string(),
             description: "Scanner de servidores web".to_string(),
             category: "DAST".to_string(),
-            image: "example/zap:1".to_string(),
+            image: "example/scanner:1".to_string(),
             version: "1.0".to_string(),
             runner: crate::tools::registry::RUNNER_GENERIC.to_string(),
             parser: crate::tools::registry::PARSER_GENERIC_TEXT.to_string(),
             command_template: vec![
-                "zap".to_string(),
+                "scanner".to_string(),
                 "-host".to_string(),
                 "{target}".to_string(),
             ],
@@ -704,6 +851,7 @@ mod tests {
         });
         let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
         let mut execution = SecurityTool::new("ScannerExemplo", "zap -host http://test.local");
+        let mut execution = SecurityTool::new("ScannerExemplo", "scanner -host http://test.local");
         execution.output = "Servidor expõe /admin sem autenticação\n".to_string();
         orch.execution_history.push(execution);
 
@@ -831,6 +979,127 @@ mod tests {
         let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
         let timeout = "[ERRO] O container smartsec-abc excedeu o tempo limite de 15 minutos.";
         let mut execution = nikto_execution(timeout, "timeout");
+        execution.execution_error = Some(timeout.to_string());
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        let stored = &orch.execution_history[0];
+        assert_eq!(stored.status, "timeout");
+        assert!(stored
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("tempo limite")));
+        assert!(orch.findings.is_empty());
+    }
+
+    fn zap_execution(output: &str, status: &str) -> SecurityTool {
+        let mut execution = SecurityTool::new(
+            "ZAP",
+            "zap.sh -Xmx1024m -cmd -autorun /zap/automation/scan.yaml -config spider.scope=http://test.local",
+        );
+        execution.output = output.to_string();
+        execution.status = status.to_string();
+        execution
+    }
+
+    #[test]
+    fn build_findings_uses_the_zap_parser_registered_for_the_builtin_tool() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let report = include_str!("../../tests/fixtures/zap/relatorio.json");
+        orch.execution_history
+            .push(zap_execution(report, "succeeded"));
+
+        orch.build_findings();
+
+        assert_eq!(orch.findings.len(), 4);
+        assert!(orch.findings.iter().all(|f| f.tool == "ZAP"));
+        assert!(orch
+            .findings
+            .iter()
+            .all(|f| f.source == crate::domain::vulnerability::FindingSource::Real));
+        // A severidade vem do riskcode do ZAP, não do texto do alerta.
+        assert_eq!(orch.findings[0].severity, crate::domain::Severity::Medium);
+        assert_eq!(orch.findings[2].severity, crate::domain::Severity::Low);
+        assert!(orch.findings[0]
+            .evidence
+            .contains("url: http://169.254.1.2:3000/"));
+        assert!(orch
+            .execution_history
+            .iter()
+            .all(|execution| execution.execution_error.is_none()));
+    }
+
+    #[test]
+    fn invalid_zap_output_marks_the_execution_as_failed() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let invalid = include_str!("../../tests/fixtures/zap/invalido.json");
+        orch.execution_history
+            .push(zap_execution(invalid, "succeeded"));
+
+        orch.build_findings();
+
+        assert!(orch.findings.is_empty());
+        let execution = &orch.execution_history[0];
+        assert_eq!(execution.status, "failed");
+        assert!(execution
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("JSON do ZAP inválido")));
+    }
+
+    #[test]
+    fn a_zap_missing_artifact_is_kept_as_an_execution_error() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let mut execution = zap_execution(
+            "artefato /smartsec-out/zap-report.json não coletado",
+            "failed",
+        );
+        execution.execution_error = Some(
+            "o container /smartsec-out/zap-report.json não gerou o relatório; revise o trace do Podman e o plano de automação da ferramenta"
+                .to_string(),
+        );
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        let stored = &orch.execution_history[0];
+        assert_eq!(stored.status, "failed");
+        assert!(stored
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("não gerou o relatório")));
+        // Uma saída que não é relatório nunca vira varredura limpa.
+        assert!(orch.findings.is_empty());
+    }
+
+    #[test]
+    fn a_zap_failure_keeps_the_original_execution_error() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let mut execution = zap_execution(
+            "[ERRO] O container smartsec-abc encerrou com status 125",
+            "failed:125",
+        );
+        execution.execution_error =
+            Some("O container smartsec-abc encerrou com status 125".to_string());
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        let stored = &orch.execution_history[0];
+        assert_eq!(stored.status, "failed:125");
+        assert!(stored
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("encerrou com status 125")));
+        assert!(orch.findings.is_empty());
+    }
+
+    #[test]
+    fn a_zap_timeout_is_kept_as_timeout_and_produces_no_findings() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let timeout = "[ERRO] O container smartsec-abc excedeu o tempo limite de 15 minutos.";
+        let mut execution = zap_execution(timeout, "timeout");
         execution.execution_error = Some(timeout.to_string());
         orch.execution_history.push(execution);
 
