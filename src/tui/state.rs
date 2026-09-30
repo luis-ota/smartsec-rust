@@ -724,12 +724,8 @@ impl AppState {
                     }
                 }
             });
-            let analysis = orchestrator
-                .agent
-                .analyze_logs(&orchestrator.findings)
-                .await;
+            orchestrator.analyze_findings().await;
             heartbeat.abort();
-            orchestrator.last_log = analysis;
             let audit_log = orchestrator
                 .persist_scan_log()
                 .map_err(|error| error.to_string());

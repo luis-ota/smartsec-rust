@@ -1,4 +1,6 @@
 use crate::ai::agent::AIAgent;
+use crate::ai::analysis_service::AnalysisResult;
+use crate::ai::analysis_service::AnalysisService;
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner};
 use crate::domain::vulnerability::Vulnerability;
@@ -32,6 +34,9 @@ pub struct Orchestrator {
     pub decision_sink: Option<mpsc::UnboundedSender<DecisionRecord>>,
     started_at: String,
     latest_nmap_output: Option<String>,
+    /// Resultado estruturado da última análise da IA, com modelo, provedor
+    /// efetivo, fallback, motivo da falha e horário.
+    pub last_analysis_result: Option<AnalysisResult>,
 }
 
 impl Orchestrator {
@@ -45,7 +50,7 @@ impl Orchestrator {
     /// Cria o orquestrador com um registry já validado (evita revalidar a
     /// configuração na TUI).
     pub fn with_registry(mut config: Configuration, registry: ToolRegistry) -> Self {
-        config.provider_mode = format!("{:?}", config.llm.provider);
+        config.provider_mode = config.llm.provider.label().to_string();
         let agent = AIAgent::from_config(&config.llm);
         Self {
             config,
@@ -61,6 +66,7 @@ impl Orchestrator {
             decision_sink: None,
             started_at: now_iso8601(),
             latest_nmap_output: None,
+            last_analysis_result: None,
         }
     }
 
@@ -295,12 +301,29 @@ impl Orchestrator {
         exec
     }
 
+    /// Interpreta os achados com o serviço único de análise da IA.
+    ///
+    /// Único caminho para a IA interpretar logs, usado pela TUI e pelo modo
+    /// headless. Concentrar a chamada aqui impede que os dois modos voltem a
+    /// divergir (issue #23) e garante que consentimento, teto de 45 s (RNF04),
+    /// validação da resposta e fallback sejam sempre os mesmos.
+    pub async fn analyze_findings(&mut self) -> AnalysisResult {
+        let result = AnalysisService::new()
+            .analyze(&mut self.agent, &self.findings)
+            .await;
+        self.last_log = result.text.clone();
+        self.last_analysis_result = Some(result.clone());
+        result
+    }
+
     async fn request_nuclei_plan(&mut self, target: &str) -> Option<String> {
         let prompt = nuclei_plan_prompt(
             target,
             self.latest_nmap_output.as_deref().unwrap_or_default(),
         );
-        self.agent.execute_with_fallback(&prompt).await.ok()
+        AnalysisService::new()
+            .request(&mut self.agent, &prompt)
+            .await
     }
 
     /// Constrói os achados reais a partir da execução dos scanners.
@@ -407,8 +430,8 @@ impl Orchestrator {
 
         self.build_findings();
 
-        let analysis = self.agent.analyze_logs(&self.findings).await;
-        self.last_log = analysis;
+        let analysis = self.analyze_findings().await;
+        self.last_log = analysis.text;
         Ok(self.findings.clone())
     }
 
@@ -466,6 +489,10 @@ impl Orchestrator {
                 .map(DecisionRecord::sanitized)
                 .collect(),
             ..metadata
+        };
+        let metadata = match &self.last_analysis_result {
+            Some(result) => metadata.with_analysis(result),
+            None => metadata,
         };
         crate::orchestrator::scan_logger::save_scan_log(&metadata)
     }
