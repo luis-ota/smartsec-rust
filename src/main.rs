@@ -295,6 +295,10 @@ impl CommandLineInterface {
         println!();
 
         orchestrator.build_findings();
+        orchestrator.correlate_and_enrich_findings().await;
+        for line in orchestrator.enrichment.lines_pt_br() {
+            println!("  │ {line}");
+        }
         let scan_failure = orchestrator
             .execution_history
             .iter()
@@ -315,10 +319,11 @@ impl CommandLineInterface {
         }
         println!();
 
-        let report = crate::report::ReportGenerator::compile_report(
+        let report = crate::report::ReportGenerator::compile_report_with_enrichment(
             &config,
             &orchestrator.findings,
             &orchestrator.decision_history,
+            &orchestrator.enrichment,
         );
         let crit = orchestrator
             .findings
@@ -556,6 +561,9 @@ mod tests {
             target: "http://test.local".to_string(),
             evidence: "evidência".to_string(),
             detected_at: "2026-09-24T12:00:00Z".to_string(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
         }
     }
 

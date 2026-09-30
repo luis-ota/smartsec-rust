@@ -144,6 +144,9 @@ pub fn parse_nuclei_findings_with_errors(
                 "template: {safe_template} | matcher: {safe_matcher} | endpoint: {safe_endpoint} | host: {safe_host} | url: {safe_url} | tags: {safe_tags}"
             ),
             detected_at: detected_at.clone(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
         });
     }
 

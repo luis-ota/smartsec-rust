@@ -334,6 +334,9 @@ pub fn parse_trufflehog_findings_with_errors(
                 if result.verified { "sim" } else { "não" }
             ),
             detected_at: detected_at.clone(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
         });
     }
 

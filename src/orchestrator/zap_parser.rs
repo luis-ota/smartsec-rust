@@ -357,6 +357,9 @@ pub fn parse_zap_findings_with_errors(
                 target: target.to_string(),
                 evidence,
                 detected_at: detected_at.clone(),
+                origins: Vec::new(),
+                enrichment: None,
+                severity_conflict: None,
             });
         }
     }

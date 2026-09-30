@@ -455,6 +455,9 @@ pub fn parse_sqlmap_findings_with_errors(
                 "sqlmap parâmetro: {safe_parameter} | método: {safe_method} | tipo: {safe_type} | técnica: {safe_detail} | url: {safe_url}"
             ),
             detected_at: detected_at.clone(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
         });
     }
 
