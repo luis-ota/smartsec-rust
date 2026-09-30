@@ -14,6 +14,12 @@ pub(crate) struct ProviderOutcome {
     pub provider: String,
     pub model: String,
     pub fallback_used: bool,
+    /// Erro do provedor principal quando a alternativa local respondeu.
+    ///
+    /// Sem este campo o log estruturado registraria `llm_fallback_used: true`
+    /// sem explicar **por que** o provedor configurado foi abandonado, e a
+    /// queda passaria a parecer uma escolha em vez de uma falha.
+    pub primary_error: Option<String>,
 }
 
 pub struct AIAgent {
@@ -223,11 +229,16 @@ impl AIAgent {
     /// Executa o prompt na cadeia principal -> alternativa local dentro de um
     /// orçamento de tempo único.
     ///
-    /// O prazo (RNF04) é contado uma vez: o provedor principal e a alternativa
-    /// local dividem o mesmo orçamento, para que a soma das tentativas não
-    /// ultrapasse o limite acordado. O retorno identifica qual provedor
-    /// respondeu, porque o fallback local às vezes responde e o resultado
-    /// persistido precisa distinguir isso do provedor configurado.
+    /// O prazo (RNF04) é contado uma vez e **dividido**: o provedor principal
+    /// recebe `primary_share` e a alternativa local fica com o restante. Sem
+    /// essa divisão, um provedor principal que trava consumiria os 45 segundos
+    /// inteiros — o mesmo valor de `timeout_secs` validado pela configuração —
+    /// e a alternativa local jamais seria llamada, tornando o fallback (RNF06)
+    /// decorativo no caminho que mais importa, que é a queda do provedor.
+    ///
+    /// O retorno identifica qual provedor respondeu e carrega o erro do
+    /// principal, porque o resultado persistido precisa distinguir "a
+    /// alternativa respondeu" de "a alternativa nunca foi tentada".
     pub(crate) async fn execute_with_fallback(
         &mut self,
         prompt: &str,
@@ -239,7 +250,7 @@ impl AIAgent {
         let started = Instant::now();
         let primary_result = if self.remote_allowed {
             execute_within(
-                prompt_limit(deadline, started),
+                primary_budget(deadline),
                 self.provider.execute_prompt(prompt, &self.model),
             )
             .await
@@ -255,10 +266,12 @@ impl AIAgent {
                 provider: self.provider_label.clone(),
                 model: self.model.clone(),
                 fallback_used: false,
+                primary_error: None,
             }),
             Err(primary_error) => {
                 self.execution_history
                     .push(format!("A LLM principal falhou: {primary_error}"));
+                let reason = primary_error.to_string();
                 let Some(fallback) = &self.fallback_provider else {
                     return Err(primary_error);
                 };
@@ -274,6 +287,7 @@ impl AIAgent {
                         provider: self.fallback_provider_label.clone(),
                         model: self.fallback_model.clone(),
                         fallback_used: true,
+                        primary_error: Some(reason),
                     }),
                     Err(fallback_error) => Err(anyhow::anyhow!(
                         "a LLM principal falhou ({primary_error}); a alternativa local falhou ({fallback_error})"
@@ -313,6 +327,24 @@ impl AIAgent {
 /// Tempo restante do orçamento da análise para uma nova tentativa.
 fn prompt_limit(deadline: Duration, started: Instant) -> Duration {
     deadline.saturating_sub(started.elapsed())
+}
+
+/// Fatia do orçamento reservada ao provedor principal.
+///
+/// A alternativa local fica com o que sobrar, o que é o mínimo necessário para
+/// ela conseguir responder. Com o padrão de 45 s, o principal recebe 33 s e a
+/// alternativa 12 s; a soma continua sendo o teto de RNF04.
+/// Fração do orçamento reservada ao provedor principal: 3/4.
+///
+/// O restante fica com a alternativa local. Ver `primary_budget`.
+pub(crate) const PRIMARY_BUDGET_NUMERATOR: u32 = 3;
+pub(crate) const PRIMARY_BUDGET_DENOMINATOR: u32 = 4;
+
+pub(crate) fn primary_budget(deadline: Duration) -> Duration {
+    deadline
+        .checked_div(PRIMARY_BUDGET_DENOMINATOR)
+        .map(|part| part * PRIMARY_BUDGET_NUMERATOR)
+        .unwrap_or(deadline)
 }
 
 /// Aplica o orçamento de tempo da análise a uma chamada de provedor.
@@ -421,6 +453,12 @@ mod tests {
         assert!(outcome.fallback_used);
         assert_eq!(outcome.provider, "Ollama");
         assert_eq!(outcome.model, "llama3.1:8b");
+        // A causa da queda do principal viaja com o resultado, para que o log
+        // estruturado não registre um fallback sem explicação.
+        assert!(outcome
+            .primary_error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("provedor indisponível")));
         assert!(agent
             .execution_history
             .iter()
@@ -450,6 +488,7 @@ mod tests {
         assert!(!outcome.fallback_used);
         assert_eq!(outcome.provider, "OpenAI");
         assert_eq!(outcome.model, "gpt-4o");
+        assert!(outcome.primary_error.is_none());
     }
 
     #[tokio::test]
