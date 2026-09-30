@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,6 +10,89 @@ use tokio::sync::mpsc;
 static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const PODMAN_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 const ROOTLESS_NETWORK: &str = "pasta:--map-host-loopback=169.254.1.2";
+const DEFAULT_MEMORY_LIMIT: &str = "512m";
+
+/// Opções de montaje do diretório gravável de saída de uma ferramenta.
+///
+/// É o único ponto de escrita do container fora das tmpfs: o executor cria um
+/// diretório **vazio** no `TMPDIR` do host e o monta em `container_dir` com
+/// `rw,noexec,nosuid,nodev`. Nada mais do host é montado, nenhuma capacidade é
+/// adicionada e o diretório é removido quando o `WritableOutput` sai de escopo.
+pub struct WritableOutput {
+    /// Limite de memória do container, no formato aceito pelo Podman.
+    pub memory: String,
+    /// tmpfs adicionais exigidas pela ferramenta, já no formato do Podman.
+    pub extra_tmpfs: Vec<String>,
+    /// Caminho do diretório gravável dentro do container.
+    pub container_dir: String,
+    /// Nome do arquivo de artefato a coletar dentro do diretório gravável.
+    pub file_name: String,
+    host_dir: PathBuf,
+}
+
+impl WritableOutput {
+    /// Cria o diretório de saída no `TMPDIR` do host.
+    ///
+    /// O diretório é criado com modo `0733` (gravar e percorrer, sem listar)
+    /// porque, em Podman rootless sem `keep-id`, o usuário do container é um
+    /// *subuid* do host e não consegue gravar em um diretório `0755` do usuário
+    /// do host. O diretório pai é o `TMPDIR` do próprio processo do SmartSec, de
+    /// modo que só o processo e o container o alcançam.
+    pub fn new(container_dir: &str, file_name: &str) -> std::io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let host_dir = std::env::temp_dir().join(format!(
+            "smartsec-saida-{}-{}",
+            std::process::id(),
+            CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&host_dir)?;
+        std::fs::set_permissions(&host_dir, std::fs::Permissions::from_mode(0o733))?;
+        Ok(Self {
+            memory: DEFAULT_MEMORY_LIMIT.to_owned(),
+            extra_tmpfs: Vec::new(),
+            container_dir: container_dir.to_owned(),
+            file_name: file_name.to_owned(),
+            host_dir,
+        })
+    }
+
+    /// Substitui o limite de memória do container.
+    pub fn with_memory(mut self, memory: &str) -> Self {
+        self.memory = memory.to_owned();
+        self
+    }
+
+    /// Acrescenta uma tmpfs adicional exigida pela ferramenta.
+    pub fn with_tmpfs(mut self, tmpfs: &str) -> Self {
+        self.extra_tmpfs.push(tmpfs.to_owned());
+        self
+    }
+
+    /// Diretório criado no host.
+    pub fn host_dir(&self) -> &Path {
+        &self.host_dir
+    }
+
+    /// Caminho do artefato dentro do container.
+    pub fn container_path(&self) -> String {
+        format!("{}/{}", self.container_dir, self.file_name)
+    }
+
+    /// Especificação de volume como o Podman espera em `--volume`.
+    fn mount_spec(&self) -> String {
+        format!(
+            "{}:{}:rw,noexec,nosuid,nodev",
+            self.host_dir.display(),
+            self.container_dir
+        )
+    }
+}
+
+impl Drop for WritableOutput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.host_dir);
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionStatus {
@@ -27,6 +110,17 @@ pub struct ExecutionResult {
     pub container_id: String,
     pub cleanup_error: Option<String>,
     pub trace: Vec<String>,
+    /// Artefato escrito pelo scanner no diretório de saída gravável, coletado
+    /// antes da remoção do container. `None` quando a execução não pediu
+    /// coleta ou quando o scanner não escreveu o artefato; o motivo fica em
+    /// [`Self::artifact_error`].
+    pub artifact: Option<String>,
+    /// Motivo pelo qual o artefato solicitado não pôde ser coletado.
+    ///
+    /// Ausência do artefato não é falha fatal da varredura, mas precisa ser
+    /// reportada: uma saída não coletada nunca pode ser lida como varredura
+    /// limpa.
+    pub artifact_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -34,6 +128,14 @@ pub struct PodmanExecutor {
     binary: PathBuf,
     timeout: Duration,
     log_sink: Option<mpsc::UnboundedSender<String>>,
+}
+
+/// Opções de uma execução: recursos do container, montagens e saída gravável.
+struct ExecutionProfile<'a> {
+    memory: &'a str,
+    extra_tmpfs: &'a [String],
+    mounts: &'a [(PathBuf, String)],
+    writable_output: Option<&'a WritableOutput>,
 }
 
 /// Coletor do trace operacional completo de uma execução Podman.
@@ -110,6 +212,61 @@ impl PodmanExecutor {
         command: &[String],
         mounts: &[(PathBuf, String)],
     ) -> anyhow::Result<ExecutionResult> {
+        let profile = ExecutionProfile {
+            memory: DEFAULT_MEMORY_LIMIT,
+            extra_tmpfs: &[],
+            mounts,
+            writable_output: None,
+        };
+        self.run(image, command, &profile).await
+    }
+
+    /// Executa a varredura coletando um artefato escrito pelo container.
+    ///
+    /// É a contraparte de [`PodmanExecutor::execute_with_mounts`] para
+    /// scanners que **só** conseguem gravar um arquivo estruturado — como o
+    /// ZAP, cujo job `report` sempre acrescenta a extensão do template ao nome e
+    /// portanto nunca escreve no stdout.
+    ///
+    /// O executor cria o diretório de saída vazio no `TMPDIR` do host e monta
+    /// apenas esse diretório, com `rw,noexec,nosuid,nodev`, em
+    /// `output.container_dir`. Depois da execução e **antes** de remover o
+    /// container, o arquivo é lido e devolvido em
+    /// [`ExecutionResult::artifact`].
+    ///
+    /// A coleta não usa `podman cp`: o tmpfs do container é desmontado quando o
+    /// container encerra, então um artefato em `/tmp` (tmpfs) é irrecuperável
+    /// depois da saída. Como o diretório de saída é um bind mount do host, o
+    /// arquivo já está no host e lê-lo diretamente evita uma operação extra de
+    /// host que só funcionaria por acidente (ver
+    /// `docs/evidence/issue-28-zap.md`).
+    ///
+    /// Artefato ausente não derruba a varredura: o motivo vai para
+    /// [`ExecutionResult::artifact_error`] e a varredura segue marcada como
+    /// falha pelo pipeline, nunca como varredura limpa. O guard de limpeza
+    /// permanece armado em todos esses caminhos, então nenhum container vaza.
+    pub async fn execute_with_artifact(
+        &self,
+        image: &str,
+        command: &[String],
+        mounts: &[(PathBuf, String)],
+        output: &WritableOutput,
+    ) -> anyhow::Result<ExecutionResult> {
+        let profile = ExecutionProfile {
+            memory: output.memory.as_str(),
+            extra_tmpfs: &output.extra_tmpfs,
+            mounts,
+            writable_output: Some(output),
+        };
+        self.run(image, command, &profile).await
+    }
+
+    async fn run(
+        &self,
+        image: &str,
+        command: &[String],
+        profile: &ExecutionProfile<'_>,
+    ) -> anyhow::Result<ExecutionResult> {
         let mut trace = TraceCollector::new(self.log_sink.clone());
         self.ensure_rootless(&mut trace).await?;
 
@@ -130,7 +287,7 @@ impl PodmanExecutor {
             "--network".to_owned(),
             ROOTLESS_NETWORK.to_owned(),
             "--memory".to_owned(),
-            "512m".to_owned(),
+            profile.memory.to_owned(),
             "--cpus".to_owned(),
             "1".to_owned(),
             "--pids-limit".to_owned(),
@@ -145,9 +302,17 @@ impl PodmanExecutor {
             "--tmpfs".to_owned(),
             "/root/.config:rw,noexec,nosuid,nodev,size=16m".to_owned(),
         ];
-        for (host, container) in mounts {
+        for tmpfs in profile.extra_tmpfs {
+            create_args.push("--tmpfs".to_owned());
+            create_args.push((*tmpfs).to_owned());
+        }
+        for (host, container) in profile.mounts {
             create_args.push("--volume".to_owned());
             create_args.push(format!("{}:{}:ro", host.display(), container));
+        }
+        if let Some(output) = profile.writable_output {
+            create_args.push("--volume".to_owned());
+            create_args.push(output.mount_spec());
         }
         create_args.push(image.to_owned());
         create_args.extend(command.iter().cloned());
@@ -220,6 +385,12 @@ impl PodmanExecutor {
         ));
 
         let execution = self.run_attached(&container_id, &mut trace).await;
+        // O artefato é coletado antes da remoção do container, para que a
+        // remoção nunca impeça a leitura e a limpeza nunca vaze o container.
+        let (artifact, artifact_error) = match profile.writable_output {
+            Some(output) => collect_artifact(output, &mut trace),
+            None => (None, None),
+        };
         let cleanup_error = self
             .remove_container(&container_id, &mut trace)
             .await
@@ -250,6 +421,8 @@ impl PodmanExecutor {
             container_id,
             cleanup_error,
             trace: trace.lines,
+            artifact,
+            artifact_error,
         })
     }
 
@@ -449,6 +622,43 @@ impl Drop for ContainerCleanup {
     }
 }
 
+/// Lê o artefato do diretório de saída depois da execução do scanner.
+///
+/// A ausência do artefato não é uma falha da varredura — o scanner pode ter
+/// encerrado antes de gerar o relatório —, mas precisa ser reportada: uma saída
+/// não coletada nunca pode ser interpretada como varredura limpa.
+fn collect_artifact(
+    output: &WritableOutput,
+    trace: &mut TraceCollector,
+) -> (Option<String>, Option<String>) {
+    let container_path = output.container_path();
+    let path = output.host_dir().join(&output.file_name);
+    trace.emit(format!("$ leitura do artefato {container_path}"));
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            trace.emit(format!(
+                "artefato {container_path} coletado ({} bytes)",
+                content.len()
+            ));
+            (Some(content), None)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let message = format!(
+                "o container {container_path} não gerou o relatório; revise o trace do Podman e o plano de automação da ferramenta"
+            );
+            trace.emit(format!("artefato ausente: {message}"));
+            (None, Some(message))
+        }
+        Err(error) => {
+            let message = format!(
+                "não foi possível ler o artefato {container_path} produzido pelo container: {error}"
+            );
+            trace.emit(format!("falha na leitura do artefato: {message}"));
+            (None, Some(message))
+        }
+    }
+}
+
 fn output_message(stderr: &[u8]) -> String {
     let message = String::from_utf8_lossy(stderr);
     let message = message.trim();
@@ -570,6 +780,8 @@ mod tests {
         assert_eq!(result.status, ExecutionStatus::Succeeded);
         assert_eq!(result.container_id, "container-123");
         assert_eq!(result.cleanup_error, None);
+        assert_eq!(result.artifact, None);
+        assert_eq!(result.artifact_error, None);
         assert!(result.duration <= Duration::from_secs(1));
         let calls = fake.calls();
         assert!(calls.contains("create --name smartsec-"));
@@ -697,6 +909,188 @@ mod tests {
         assert!(trace.contains("container-123 removido"));
         assert_eq!(result.stdout, "scanner line 1\nscanner line 2\n");
         assert_eq!(result.stderr, "scanner warning\n");
+    }
+
+    /// `start.sh` que grava um artefato no diretório de saída gravável montado
+    /// pelo executor, localizado no `calls.log` da própria chamada.
+    fn write_artifact_script(content: &str) -> String {
+        format!(
+            "saida=$(sed -n 's/.*--volume \\([^:]*\\):\\/smartsec-out:.*/\\1/p' \"$(dirname \"$0\")/calls.log\" | head -1)\n\
+             printf '%s' '{content}' > \"$saida/relatorio.json\"\n\
+             exit 0\n",
+            content = content.replace('\'', "'\\''")
+        )
+    }
+
+    #[tokio::test]
+    async fn collects_the_artifact_written_in_the_writable_output_dir() {
+        let fake = FakePodman::new(&write_artifact_script("{\"alertas\":[]}"));
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(5));
+        let output = WritableOutput::new("/smartsec-out", "relatorio.json")
+            .unwrap()
+            .with_memory("1536m")
+            .with_tmpfs("/home/zap:rw,noexec,nosuid,nodev,size=512m");
+        let host_dir = output.host_dir().to_path_buf();
+
+        let result = executor
+            .execute_with_artifact(
+                "example/zap:1",
+                &["zap.sh".to_owned(), "-cmd".to_owned()],
+                &[],
+                &output,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.artifact.as_deref(), Some("{\"alertas\":[]}"));
+        assert_eq!(result.artifact_error, None);
+        assert_eq!(result.status, ExecutionStatus::Succeeded);
+
+        // O diretório de saída é o único bind mount gravável, com as travas.
+        let calls = fake.calls();
+        assert!(
+            calls.contains(&format!(
+                "{}:/smartsec-out:rw,noexec,nosuid,nodev",
+                host_dir.display()
+            )),
+            "{calls}"
+        );
+        // O container mantém as travas do executor e a memória ajustada.
+        assert!(calls.contains("--read-only"), "{calls}");
+        assert!(calls.contains("--cap-drop all"), "{calls}");
+        assert!(
+            calls.contains("--security-opt no-new-privileges"),
+            "{calls}"
+        );
+        assert!(calls.contains("--memory 1536m"), "{calls}");
+        assert!(
+            calls.contains("--tmpfs /home/zap:rw,noexec,nosuid,nodev,size=512m"),
+            "{calls}"
+        );
+        // Nenhuma montagem recebe escrita além do diretório de saída.
+        assert!(!calls.contains(":rw\n") || calls.contains(":rw,noexec,nosuid,nodev"));
+        assert!(
+            calls.contains("rm --force --ignore container-123"),
+            "{calls}"
+        );
+        assert!(
+            result
+                .trace
+                .iter()
+                .any(|line| line
+                    .ends_with("artefato /smartsec-out/relatorio.json coletado (14 bytes)")),
+            "{:?}",
+            result.trace
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_artifact_is_reported_and_still_removes_the_container() {
+        let fake = FakePodman::new("printf 'sem relatorio\\n'; exit 0");
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(5));
+        let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+
+        let result = executor
+            .execute_with_artifact("example/zap:1", &["zap.sh".to_owned()], &[], &output)
+            .await
+            .unwrap();
+
+        assert_eq!(result.artifact, None);
+        let error = result
+            .artifact_error
+            .expect("a ausência precisa ser reportada");
+        assert!(error.contains("/smartsec-out/relatorio.json"), "{error}");
+        assert!(error.contains("não gerou o relatório"), "{error}");
+        // A varredura em si não é elevada a falha pelo executor...
+        assert_eq!(result.status, ExecutionStatus::Succeeded);
+        // ...mas o container é removido normalmente.
+        assert!(
+            fake.calls().contains("rm --force --ignore container-123"),
+            "o container não pode vazar: {}",
+            fake.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_scan_still_collects_the_artifact_and_removes_the_container() {
+        let fake =
+            FakePodman::new(&write_artifact_script("{\"parcial\":1}").replace("exit 0", "exit 3"));
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(5));
+        let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+
+        let result = executor
+            .execute_with_artifact("example/zap:1", &["zap.sh".to_owned()], &[], &output)
+            .await
+            .unwrap();
+
+        // O ZAP pode terminar com status diferente de zero e ainda assim ter
+        // gerado o relatório; o artefato é aproveitado.
+        assert_eq!(result.status, ExecutionStatus::Failed(Some(3)));
+        assert_eq!(result.artifact.as_deref(), Some("{\"parcial\":1}"));
+        assert!(fake.calls().contains("rm --force --ignore container-123"));
+    }
+
+    #[tokio::test]
+    async fn a_timeout_collects_no_artifact_and_removes_the_container() {
+        let fake = FakePodman::new("exec sleep 10");
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(1));
+        let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+
+        let result = executor
+            .execute_with_artifact("example/zap:1", &["zap.sh".to_owned()], &[], &output)
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, ExecutionStatus::TimedOut);
+        assert_eq!(result.artifact, None);
+        assert!(result.artifact_error.is_some());
+        let calls = fake.calls();
+        assert!(calls.contains("kill container-123"), "{calls}");
+        assert!(
+            calls.contains("rm --force --ignore container-123"),
+            "{calls}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_an_artifact_run_removes_the_container() {
+        let fake = FakePodman::new("exec sleep 10");
+        let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(30));
+        let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+        let task = tokio::spawn(async move {
+            executor
+                .execute_with_artifact("example/zap:1", &["zap.sh".to_owned()], &[], &output)
+                .await
+        });
+
+        for _ in 0..50 {
+            if fake.calls().contains("start --attach container-123") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        task.abort();
+        let _ = task.await;
+
+        for _ in 0..50 {
+            if fake.calls().contains("rm --force --ignore smartsec-") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(fake.calls().contains("rm --force --ignore smartsec-"));
+    }
+
+    #[test]
+    fn the_writable_output_dir_is_removed_when_the_value_goes_out_of_scope() {
+        let path = {
+            let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+            let path = output.host_dir().to_path_buf();
+            assert!(path.is_dir());
+            assert_eq!(output.container_path(), "/smartsec-out/relatorio.json");
+            path
+        };
+        assert!(!path.exists(), "o diretório de saída não pode sobrar");
     }
 
     #[tokio::test]

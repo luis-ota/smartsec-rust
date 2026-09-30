@@ -1,0 +1,25 @@
+#!/bin/sh
+# Fake paralelo do Podman para o fluxo do ZAP.
+#
+# Diferente de `tests/fixtures/fake_podman`, este fake também simula o
+# relatório gravado pelo container no diretório de saída montado em
+# `/smartsec-out`: o executor cria esse diretório no host e o monta em modo
+# leitura e escrita, e o `podman cp` não é usado na coleta.
+#
+# O fake NÃO modifica o fake compartilhado, que outros agentes usam.
+#
+# Variáveis de ambiente lidas pelo `start.sh`:
+#   SMARTSEC_FAKE_REPORT   conteúdo a gravar como `zap-report.json`.
+#   SMARTSEC_FAKE_DIR      diretório montado em `/smartsec-out` (por padrão,
+#                          deduzido da chamada `create` registrada em calls.log).
+
+directory=$(dirname "$0")
+printf '%s\n' "$*" >> "$directory/calls.log"
+
+case "$1" in
+  info) printf 'true\n' ;;
+  create) exec sh "$directory/create.sh" ;;
+  start) exec sh "$directory/start.sh" ;;
+  kill) exit 0 ;;
+  rm) exec sh "$directory/cleanup.sh" ;;
+esac
