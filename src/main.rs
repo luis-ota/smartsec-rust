@@ -52,6 +52,8 @@ struct Cli {
 enum CliCommand {
     Scan(ScanArgs),
     Tool(ToolArgs),
+    History(HistoryArgs),
+    Show(ShowArgs),
 }
 
 #[derive(Debug)]
@@ -65,6 +67,18 @@ struct ToolArgs {
     tool: String,
     target: String,
     options: ExecutionArgs,
+}
+
+/// Argumentos de `history`: listagem das execuções com limite configurável.
+#[derive(Debug)]
+struct HistoryArgs {
+    limit: usize,
+}
+
+/// Argumentos de `show`: abertura de uma execução pelo `scan_id`.
+#[derive(Debug)]
+struct ShowArgs {
+    scan_id: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -97,6 +111,34 @@ impl Cli {
             return Ok(Self { command: None });
         }
         let command = arguments[0].as_str();
+        match command {
+            "history" => {
+                let limit = parse_history_limit(&arguments[1..])?;
+                return Ok(Self {
+                    command: Some(CliCommand::History(HistoryArgs { limit })),
+                });
+            }
+            "show" => {
+                let scan_id = arguments
+                    .get(1)
+                    .ok_or_else(|| anyhow::anyhow!("o scan_id da execução é obrigatório"))?;
+                if scan_id.starts_with('-') {
+                    anyhow::bail!("o scan_id da execução deve vir antes das opções; use --help para ver as opções");
+                }
+                if arguments.len() > 2 {
+                    anyhow::bail!(
+                        "argumento desconhecido: {}; use --help para ver as opções",
+                        arguments[2]
+                    );
+                }
+                return Ok(Self {
+                    command: Some(CliCommand::Show(ShowArgs {
+                        scan_id: scan_id.clone(),
+                    })),
+                });
+            }
+            _ => {}
+        }
         let (tool, start) = match command {
             "scan" => (None, 1),
             "tool" => {
@@ -153,12 +195,42 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
     Ok((target, options))
 }
 
+/// Interpreta o limite de `history` (`--limit`, `-n` ou `--limite`).
+///
+/// Valores ausentes assumem o padrão; valores inválidos ou zero são recusados
+/// com mensagem acionável, pois um limite vazio esconderia execuções.
+fn parse_history_limit(arguments: &[String]) -> Result<usize> {
+    const DEFAULT_LIMIT: usize = 20;
+    let mut limit = DEFAULT_LIMIT;
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = arguments[index].as_str();
+        if !matches!(argument, "--limit" | "-n" | "--limite") {
+            anyhow::bail!("argumento desconhecido: {argument}; use --help para ver as opções");
+        }
+        index += 1;
+        let value = arguments
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("o argumento {argument} exige um valor"))?;
+        limit = value.parse::<usize>().map_err(|_| {
+            anyhow::anyhow!("o limite deve ser um número inteiro maior que zero: {value}")
+        })?;
+        if limit == 0 {
+            anyhow::bail!("o limite deve ser maior que zero");
+        }
+        index += 1;
+    }
+    Ok(limit)
+}
+
 fn print_help() {
     println!("SmartSec - Plataforma de análise de segurança");
     println!("Uso: smartsec <scan|tool> --target <ALVO> [OPÇÕES]");
-    println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
-    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
+    println!("     smartsec history [--limit <N>]");
+    println!("     smartsec show <SCAN_ID>");
+    println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.\n  history           Lista as execuções recentes do histórico.\n  show <SCAN_ID>    Mostra o detalhe de uma execução pelo identificador.");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -n, --limit <N>        Quantidade de execuções exibidas por 'history' (padrão: 20)\n  -h, --help\n  -V, --version");
+    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração, de execução ou de consulta ao histórico");
 }
 
 impl CommandLineInterface {
@@ -184,6 +256,8 @@ impl CommandLineInterface {
                 let config = build_config(&args.options, args.target, Some(args.tool), true)?;
                 Self::run_headless(config).await
             }
+            Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
+            Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
             None => {
                 let config = config::Configuration::load(&[])?;
                 Self::display_tui(config).await?;
@@ -235,6 +309,174 @@ impl CommandLineInterface {
                 return Ok(());
             }
         }
+    }
+
+    /// Lista as execuções gravadas no histórico, da mais recente para a mais antiga.
+    ///
+    /// A listagem é somente leitura: nenhum artefato original é alterado. Cada
+    /// registro ilegível é informado ao usuário em vez de sumir em silêncio.
+    fn print_history(limit: usize) -> i32 {
+        use crate::orchestrator::scan_logger;
+
+        let history = match scan_logger::list_scan_logs_from_dir(&scan_logger::scans_dir()) {
+            Ok(history) => history,
+            Err(error) => {
+                eprintln!("Erro: {error:#}");
+                return EXIT_ERROR;
+            }
+        };
+
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  SmartSec — Histórico de execuções");
+        println!("═══════════════════════════════════════════════════════════");
+
+        if !history.directory_exists {
+            println!("  Nenhuma execução registrada ainda.");
+            println!(
+                "  Diretório do histórico: {}",
+                scan_logger::scans_dir().display()
+            );
+            println!("  Execute uma varredura para criar o primeiro registro.");
+            return EXIT_SUCCESS;
+        }
+
+        if history.records.is_empty() {
+            println!("  O histórico está vazio: nenhuma execução foi registrada.");
+        } else {
+            let shown = history.records.len().min(limit);
+            println!(
+                "  {} de {} execuções (limite {limit})",
+                shown,
+                history.records.len()
+            );
+            println!();
+            for record in &history.records[..shown] {
+                println!("  {}", record.scan_id);
+                println!("    alvo         {}", record.target_url);
+                println!("    concluída em {}", record.completed_at);
+                println!(
+                    "    execução     {} · {}",
+                    record.execution_type,
+                    record.severity_counts.label()
+                );
+            }
+            if shown < history.records.len() {
+                println!();
+                println!("  {shown} execuções ocultas pelo limite; use --limit <N> para ver mais.");
+            }
+        }
+
+        if let Some(warning) = history.unreadable_warning() {
+            println!();
+            println!("  ATENÇÃO: {warning}");
+            for record in &history.unreadable {
+                println!("    - {}: {}", record.file_name, record.reason);
+            }
+        }
+
+        println!();
+        println!("  Detalhe de uma execução: smartsec show <SCAN_ID>");
+        println!("═══════════════════════════════════════════════════════════");
+        EXIT_SUCCESS
+    }
+
+    /// Mostra o detalhe de uma execução a partir do `scan_id` informado.
+    ///
+    /// O `scan_id` é validado contra o padrão `scan_<nanos>` e resolvido dentro
+    /// de `scans_dir()`; um identificador inexistente ou fora do padrão é um erro
+    /// de consulta e retorna `EXIT_ERROR` (código 2), sem expor outros arquivos.
+    fn print_scan_detail(scan_id: &str) -> i32 {
+        use crate::orchestrator::scan_logger;
+
+        let metadata = match scan_logger::load_scan_log_by_id(scan_id) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                eprintln!("Erro: {error:#}");
+                return EXIT_ERROR;
+            }
+        };
+        let counts = scan_logger::ScanSeverityCounts::from_metadata(&metadata);
+
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  SmartSec — Execução {scan_id}");
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  alvo         {}", metadata.target_url);
+        println!("  iniciada em  {}", metadata.started_at);
+        println!("  concluída em {}", metadata.completed_at);
+        println!(
+            "  modo         {} · provedor {}",
+            metadata.execution_type, metadata.llm_provider
+        );
+        println!("  achados      {}", counts.label());
+        println!("  registros    {}", metadata.tools_executed.len());
+
+        println!();
+        println!("  Ferramentas executadas:");
+        if metadata.tools_executed.is_empty() {
+            println!("    (nenhuma ferramenta registrada)");
+        }
+        for execution in &metadata.tools_executed {
+            println!(
+                "    {:<12} {:<10} {} ms",
+                execution.tool_name, execution.status, execution.duration_ms
+            );
+            if let Some(error) = &execution.execution_error {
+                println!("      erro: {error}");
+            }
+        }
+
+        println!();
+        println!("  Achados:");
+        if metadata.findings.is_empty() {
+            println!("    (nenhum achado registrado)");
+        }
+        for finding in &metadata.findings {
+            let title = finding
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("(achado sem título)");
+            let severity = Severity::from_label(
+                finding
+                    .get("severity")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Info"),
+            )
+            .label_pt_br();
+            let tool = finding
+                .get("tool")
+                .and_then(|value| value.as_str())
+                .unwrap_or("-");
+            println!("    {severity:<12} {title} [{tool}]");
+        }
+
+        println!();
+        println!("  Análise da IA:");
+        if metadata.agent_analysis.trim().is_empty() {
+            println!("    (sem análise registrada)");
+        } else {
+            for line in metadata.agent_analysis.lines() {
+                println!("    │ {line}");
+            }
+        }
+
+        if !metadata.decisions.is_empty() {
+            println!();
+            println!("  Decisões ({})", metadata.decisions.len());
+            for decision in &metadata.decisions {
+                println!(
+                    "    [{}] {} — {}",
+                    match decision.source {
+                        crate::orchestrator::decision::DecisionSource::Ai => "IA",
+                        crate::orchestrator::decision::DecisionSource::Fallback => "fallback",
+                    },
+                    decision.model,
+                    decision.justification
+                );
+            }
+        }
+
+        println!("═══════════════════════════════════════════════════════════");
+        EXIT_SUCCESS
     }
 
     pub async fn run_headless(config: config::Configuration) -> Result<i32> {
@@ -368,6 +610,14 @@ impl CommandLineInterface {
         println!("═══════════════════════════════════════════════════════════");
         println!("  OK Relatório exportado: {}", report_path.display());
         println!("  OK Log estruturado: {}", log_path.display());
+        // O scan_id carrega nanos e não é adivinhável: sem esta linha o histórico
+        // seria inútil para quem executou o scan em modo headless.
+        let scan_id = log_path.file_stem().map_or_else(
+            || "desconhecido".to_string(),
+            |stem| stem.to_string_lossy().into_owned(),
+        );
+        println!("  OK ID da execução: {scan_id}");
+        println!("     consulte depois com: smartsec show {scan_id}");
         let exit_code = headless_exit_code(&orchestrator.findings, scan_failure.as_deref());
         if let Some(failure) = scan_failure {
             println!("  FALHA Varredura concluída com erros: {failure}");
