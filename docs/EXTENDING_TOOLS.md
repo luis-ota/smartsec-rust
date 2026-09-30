@@ -32,7 +32,7 @@ Todos os campos são obrigatórios, exceto `enabled` (padrão `true`).
 | `runner` | string | Runner registrado que executa a ferramenta. |
 | `parser` | string | Parser registrado que interpreta a saída. |
 | `command_template` | lista de strings | Comando do container; nenhum item pode ser vazio, o primeiro item é o executável (não pode começar com `-`) e ao menos um argumento deve conter o marcador `{target}`. |
-| `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl`, `json` para `nikto-json`, `text` para `generic-text`. |
+| `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl` e `trufflehog-jsonl`, `json` para `nikto-json`, `text` para `generic-text`. |
 | `enabled` | bool | Opcional. `false` mantém a ferramenta fora do catálogo. |
 
 O alvo informado na CLI substitui exatamente o marcador `{target}`. Nenhum
@@ -45,6 +45,7 @@ shell é usado: cada item da lista vira um argumento literal do container.
 | `nmap` | Execução real do Nmap com `-Pn -sT -sV -oX -`; comportamento e argumentos definidos pelo runner. |
 | `nuclei` | Execução real do Nuclei com o plano validado pelo orquestrador e templates montados em somente leitura. |
 | `generic` | Executa o `command_template` do manifesto no executor Podman rootless, sem privilégios e com rede `pasta`. |
+| `repository` | Alvo **é um repositório**, não um host. Canonicaliza o diretório e o monta em somente leitura; URI remota autorizada é repassada sem mount. Ver [Runner `repository`](#runner-repository). |
 
 ## Parsers registrados
 
@@ -53,6 +54,7 @@ shell é usado: cada item da lista vira um argumento literal do container.
 | `nmap-xml` | Converte o XML do Nmap em achados rastreáveis. |
 | `nuclei-jsonl` | Converte o JSONL do Nuclei em achados rastreáveis. |
 | `nikto-json` | Converte o relatório JSON do Nikto em achados rastreáveis, preservando URL, método HTTP, referência e evidência. |
+| `trufflehog-jsonl` | Converte o JSONL do TruffleHog em achados rastreáveis, preservando detector, arquivo, linha e verificação, **sem o valor do segredo**. |
 | `generic-text` | Extrai achados informativos simples do texto, um por linha não vazia e não diagnóstica. |
 
 ## Ferramentas embutidas
@@ -62,6 +64,7 @@ shell é usado: cada item da lista vira um argumento literal do container.
 | Nmap | `docker.io/instrumentisto/nmap:7.95` (tag) | `nmap` | `nmap-xml` |
 | Nuclei | `docker.io/projectdiscovery/nuclei@sha256:2a11…` (digest) | `nuclei` | `nuclei-jsonl` |
 | Nikto | `docker.io/alpine/nikto:2.2.0@sha256:eb2fe882…` (digest), versão `2.1.6` | `generic` | `nikto-json` |
+| TruffleHog | `docker.io/trufflesecurity/trufflehog@sha256:52e67fef…` (digest), versão `3.97.9` | `repository` | `trufflehog-jsonl` |
 
 ### Nikto
 
@@ -88,6 +91,89 @@ Erros tratados como `failed` com mensagem acionável em pt-BR: JSON inválido,
 stdout vazio, alvo sem servidor web (o Nikto termina com status 0 e reporta o
 código interno `000029`) e exit status diferente de zero. Exit status e timeout
 vêm do executor Podman e são preservados.
+
+### Runner `repository`
+
+O runner `repository` existe porque o alvo de uma ferramenta de segredos **não é
+um host de rede**: é um repositório, e o executor precisa montar um diretório do
+host dentro do container. O runner `generic` não recebe mount algum, então não
+atende a esse caso.
+
+O runner decide entre duas formas, ambas com autorização explícita do usuário:
+
+| Alvo | Resolução | Mount |
+|---|---|---|
+| Caminho absoluto de diretório | Canonicalizado e resolvido com o sandbox de `code_agent::workspace` | `ro` em `/alvo` |
+| URI `https://`/`http://` de repositório autorizado | Repassada ao subcomando `git` do TruffleHog | nenhum |
+
+O alvo entra no comando do scanner apenas como `file:///alvo` (local) ou como a
+URI remota. **O caminho do host nunca aparece no comando**: ele viaja pelo
+`--volume` do executor, que sempre acrescenta `:ro`.
+
+A validação do caminho é deliberadamente estrita, e cada recusa tem motivo
+mensurável:
+
+- caminho relativo é recusado (`Workspace` exige raiz explícita);
+- `..` é recusado explicitamente. Canonicalizar sozinho resolveria
+  `/repo/../..` para `/tmp` e montaria um diretório que o usuário não pediu;
+- diretório inexistente é recusado **antes** do container, porque o
+  `trufflehog git` sobre um alvo que não é repositório git termina com exit 0 e
+  stdout vazio;
+- esquema remoto não suportado (`ssh://`, forma scp-like `git@host:org/repo`) é
+  recusado, porque a validação de alvo da CLI já não os aceita e repassá-los
+  produziria um alvo que não sai da validação.
+
+A canonicalização reaproveita `code_agent::workspace`, que já recusa `..`,
+caminho absoluto fora da raiz e symlink que escapa. Reescrever essa lógica
+seria uma segunda implementação de uma garantia de segurança.
+
+### TruffleHog
+
+O TruffleHog entra no portfólio real com imagem fixada por digest e runner
+`repository`. Sete detalhes do comportamento real do scanner condicionam o
+comando e o parser, todos medidos em container e documentados em
+`docs/evidence/issue-18-trufflehog.md`:
+
+- **`--json` é obrigatório.** Sem ele o TruffleHog imprime o valor completo do
+  segredo em texto legível no stdout (`Found unverified result … Raw result:
+  -----BEGIN RSA PRIVATE KEY----- …`). Não é escolha de formato: é a condição
+  para a integração existir.
+- **`--json` não basta para mascarar.** O registro JSONL carrega o segredo em
+  `Raw`, `RawV2`, `Redacted` e `SecretParts`. O parser é uma **allow-list**:
+  esses campos não existem na estrutura desserializada, então não há como
+  alcançarem um finding, um log ou a evidência versionada. A redaction de
+  `utils::redaction` também os remove, porque o stdout do container é persistido
+  no log estruturado **antes** de qualquer parser rodar.
+- **`--no-update` é obrigatório.** Sem ele o auto-updater tenta gravar o binário
+  novo sob o `--read-only` do executor, falha com `cannot move binary (exit
+  status 1)` e aborta a varredura inteira com stdout vazio — o SmartSec
+  reportaria "nenhum segredo encontrado" para uma varredura que não rodou.
+- **`--fail-on-scan-errors` é obrigatório.** Sem ele, alvo inexistente termina
+  com exit 0 e stdout vazio, e o erro fica só no stderr.
+- **A verificação remota fica desligada.** Ela sai pela rede para o endpoint do
+  provedor de cada detector **enviando o segredo detectado**, e degrada em
+  silêncio quando a rede não responde: medido, 3,58 s e 3 tentativas a mais, com
+  o achado rebaixado para `unverified` e nenhum erro reportado. A decisão está
+  registrada para review.
+- **Não há flag de limitação de profundidade.** `--max-depth=1` e `--max-depth=2`
+  suprimem achados reais de forma reprodutível sobre um repositório de 2
+  commits. O escopo é limitado pelo alvo explícito e pelo mount somente leitura.
+- **O subcomando `git` abre a lista de argumentos.** Repetir `trufflehog` como
+  primeiro item quebra a execução com `expected command but got "trufflehog"`.
+
+O parser `trufflehog-jsonl` preserva detector, arquivo, linha, commit e
+verificação, e reduz o prefixo de montagem (`/alvo/`) para que a evidência
+mostre o caminho relativo ao repositório. O TruffleHog não emite severidade: ela
+vem do estado de verificação publicado pelo scanner (`High` para confirmado,
+`Medium` para detectado e não validado). Um `Verified: false` **não** significa
+segredo inválido — com `--no-verification` é o resultado esperado para todo
+achado, e o texto do relatório diz isso.
+
+Saída vazia com exit status 0 é varredura limpa, não erro: nenhum segredo
+encontrado não emite registro. O que separa alvo inválido de varredura limpa é o
+`--fail-on-scan-errors`, que faz o container encerrar com status 1. Registro
+JSONL malformado, saída diagnóstica (`[ERRO]`) e exit status diferente de zero
+são tratados como `failed` com mensagem acionável em pt-BR.
 
 ## Procedimento para registrar uma ferramenta por configuração
 
@@ -132,7 +218,7 @@ acionável em pt-BR. Exemplos:
 
 - ferramenta duplicada (mesmo nome de uma embutida ou de outra `[[tools]]`);
 - campo obrigatório ausente: `a ferramenta 'ZAP' não define o campo obrigatório 'version' em [[tools]]`;
-- runner desconhecido: `a ferramenta 'ZAP' usa o runner desconhecido 'foo'; runners registrados: nmap, nuclei, generic`;
+- runner desconhecido: `a ferramenta 'ZAP' usa o runner desconhecido 'foo'; runners registrados: nmap, nuclei, generic, repository`;
 - parser desconhecido, com a lista de parsers registrados;
 - `image` inválida: vazia, com espaços/caracteres de controle, iniciada por `-` ou fora do formato de referência;
 - `command_template` com item vazio, primeiro item iniciado por `-` ou sem o marcador `{target}`;
@@ -155,3 +241,9 @@ usar runners e parsers já registrados. Para criar um runner ou parser novo:
 Limites de segurança: nenhuma ferramenta nova deve receber privilégios extras,
 montar o socket do Podman, escrever fora do tmpfs ou ser executada fora do
 container. Segredos nunca entram no manifesto nem no `command_template`.
+
+Uma ferramenta que precise ler um diretório do host deve usar o runner
+`repository`, que monta o alvo em somente leitura. Nenhuma ferramenta pode
+montar o alvo para escrita, receber o resultado da varredura por volume ou
+escrever no repositório analisado: o executor acrescenta `:ro` a todo volume, e
+a regra do `TCC_SPEC.md` §7 é explícita.

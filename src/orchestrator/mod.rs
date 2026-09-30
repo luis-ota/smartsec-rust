@@ -6,5 +6,6 @@ pub mod nuclei_parser;
 pub mod pipeline;
 pub mod sandbox;
 pub mod scan_logger;
+pub mod trufflehog_parser;
 
 pub use pipeline::Orchestrator;

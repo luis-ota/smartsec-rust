@@ -135,6 +135,7 @@ impl Orchestrator {
             RunnerKind::Nmap => self.execute_nmap(&registered, target).await,
             RunnerKind::Nuclei => self.execute_nuclei_with_plan(&registered, target).await,
             RunnerKind::Generic => self.execute_generic(&registered, target).await,
+            RunnerKind::Repository => self.execute_repository(&registered, target).await,
         }
     }
 
@@ -169,6 +170,68 @@ impl Orchestrator {
                 );
                 exec.output = format!("[ERRO] {message}");
                 exec.execution_error = Some(message);
+            }
+        }
+        self.execution_history.push(exec.clone());
+        exec
+    }
+
+    /// Executa um runner `repository`: o alvo é um repositório, não um host.
+    ///
+    /// O repositório local é canonicalizado e montado **somente leitura** em um
+    /// ponto fixo do container; um alvo remoto autorizado é repassado como URI
+    /// e não gera mount algum. Nenhum caminho do host atravessa o comando, e o
+    /// repositório analisado nunca é montado para escrita nem recebe o resultado
+    /// da varredura.
+    async fn execute_repository(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
+        let repository = match crate::tools::repository::resolve(target) {
+            Ok(repository) => repository,
+            Err(message) => {
+                let mut exec = SecurityTool::new(&tool.manifest.name, target);
+                exec.tool_version = Some(tool.manifest.version.clone());
+                exec.image = Some(tool.manifest.image.clone());
+                exec.executed_at = now_iso8601();
+                exec.status = "failed".to_string();
+                exec.output = format!("[ERRO] {message}");
+                exec.execution_error = Some(message);
+                self.execution_history.push(exec.clone());
+                return exec;
+            }
+        };
+        let container_path = repository.container_path().unwrap_or_default();
+        let arguments =
+            crate::tools::trufflehog::container_arguments(&repository.source_uri(), container_path);
+        let mut exec = SecurityTool::new(&tool.manifest.name, &arguments.join(" "));
+        exec.tool_version = Some(tool.manifest.version.clone());
+        exec.image = Some(tool.manifest.image.clone());
+        exec.executed_at = now_iso8601();
+        let executor = self.podman_executor();
+        let mounts = repository.mounts();
+        match executor
+            .execute_with_mounts(&tool.manifest.image, &arguments, &mounts)
+            .await
+        {
+            Ok(result) => {
+                exec.podman_trace = result.trace.clone();
+                exec.status = execution_status(&result.status);
+                exec.duration_ms = result.duration.as_millis();
+                exec.stderr = sanitize(&result.stderr);
+                let output = podman_output(result);
+                if exec.status != "succeeded" {
+                    exec.execution_error = Some(output.clone());
+                }
+                exec.output = output;
+            }
+            Err(error) => {
+                exec.status = "failed".to_string();
+                exec.execution_error = Some(format!(
+                    "Não foi possível iniciar a varredura real de {}: {error:#}",
+                    tool.manifest.name
+                ));
+                exec.output = format!(
+                    "[ERRO] {}",
+                    exec.execution_error.as_deref().unwrap_or_default()
+                );
             }
         }
         self.execution_history.push(exec.clone());
@@ -358,6 +421,18 @@ impl Orchestrator {
                 ParserKind::NiktoJson => {
                     let (parsed, errors) =
                         crate::orchestrator::nikto_parser::parse_nikto_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
+                ParserKind::TruffleHogJsonl => {
+                    let (parsed, errors) =
+                        crate::orchestrator::trufflehog_parser::parse_trufflehog_findings_with_errors(
                             &exec.output,
                             &target,
                         );

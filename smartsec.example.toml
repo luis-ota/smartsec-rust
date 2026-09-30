@@ -36,9 +36,14 @@ model = "llama3.2:1b"
 
 # Ferramentas adicionais registradas por configuração (RNF08).
 # O manifesto é validado no carregamento: campos obrigatórios, duplicidade e
-# runner/parser precisam ser conhecidos. Runners: "nmap", "nuclei", "generic".
-# Parsers: "nmap-xml", "nuclei-jsonl", "nikto-json", "generic-text".
-# Nmap, Nuclei e Nikto ja sao embutidos; use outro nome aqui para nao duplicar.
+# runner/parser precisam ser conhecidos. Runners: "nmap", "nuclei", "generic",
+# "repository". Parsers: "nmap-xml", "nuclei-jsonl", "nikto-json",
+# "trufflehog-jsonl", "generic-text".
+# O runner "repository" monta o alvo (um repositorio) somente leitura dentro do
+# container; o alvo deve ser um caminho absoluto de repositorio ou a URI de um
+# repositorio remoto autorizado.
+# Nmap, Nuclei, Nikto e TruffleHog ja sao embutidos; use outro nome aqui para nao
+# duplicar.
 # Procedimento completo em docs/EXTENDING_TOOLS.md.
 #
 # [[tools]]
