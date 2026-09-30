@@ -158,8 +158,9 @@ fn print_help() {
     println!("SmartSec - Plataforma de análise de segurança");
     println!("Uso: smartsec <scan|tool> --target <ALVO> [OPÇÕES]");
     println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
-    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório e do PDF\n  -h, --help\n  -V, --version");
+    println!("\nRelatórios:\n  O Markdown e o PDF são gravados juntos, com o mesmo nome e a mesma\n  pasta. O PDF é derivado do Markdown já sanitizado, então não pode exibir um\n  segredo que o Markdown removeu.");
+    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração, de execução ou de gravação do relatório");
 }
 
 impl CommandLineInterface {
