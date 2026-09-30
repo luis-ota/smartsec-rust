@@ -186,10 +186,14 @@ impl ScanMetadata {
         self.llm_model = crate::utils::redaction::sanitize_text(&result.model);
         self.llm_provider_effective = crate::utils::redaction::sanitize_text(&result.provider);
         self.llm_fallback_used = result.fallback_used;
+        // O motivo da falha é um diagnóstico do próprio SmartSec: usa a
+        // sanitização de diagnóstico, que preserva a frase e remove apenas a
+        // credencial. A sanitização de texto de scanner a substituiria por
+        // `[REDACTED]`, já que o erro de transporte menciona "request".
         self.llm_failure_reason = result
             .failure_reason
             .as_deref()
-            .map(crate::utils::redaction::sanitize_text);
+            .map(crate::utils::redaction::sanitize_diagnostic);
         self.llm_analyzed_at = crate::utils::redaction::sanitize_text(&result.analyzed_at);
         self.llm_neutralized_snippets = result.neutralized_snippets;
         self
@@ -211,7 +215,10 @@ impl ScanMetadata {
             llm_model: sanitize(&self.llm_model),
             llm_provider_effective: sanitize(&self.llm_provider_effective),
             llm_fallback_used: self.llm_fallback_used,
-            llm_failure_reason: self.llm_failure_reason.as_deref().map(sanitize),
+            llm_failure_reason: self
+                .llm_failure_reason
+                .as_deref()
+                .map(crate::utils::redaction::sanitize_diagnostic),
             llm_analyzed_at: sanitize(&self.llm_analyzed_at),
             llm_neutralized_snippets: self.llm_neutralized_snippets,
             tools_executed: self
@@ -448,6 +455,133 @@ mod tests {
         assert_eq!(loaded.llm_neutralized_snippets, 2);
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// O `serde(default)` precisa estar em **todos** os campos novos, e não só
+    /// em alguns. Este teste serializa um metadado completo e remove os campos
+    /// de proveniência um a um: basta um deles sem `#[serde(default)]` para a
+    /// desserialização de um histórico antigo falhar, e a falha só apareceria em
+    /// produção, ao abrir um scan gravado antes desta issue.
+    /// O motivo da falha precisa sobreviver à redação.
+    ///
+    /// Regressão: a sanitização de texto de scanner substitui a linha inteira
+    /// por `[REDACTED]` quando encontra `request`, e o erro de transporte do
+    /// cliente HTTP sempre menciona "request". O campo `llm_failure_reason`
+    /// virava `[REDACTED]` em toda queda de provedor, ou seja, o registro
+    /// dizia que houve fallback sem dizer por quê.
+    #[test]
+    fn failure_reason_survives_redaction_with_the_reason_intact() {
+        let metadata = ScanMetadata::new(
+            "scan-motivo".to_string(),
+            "http://target.local".to_string(),
+            "2026-09-30T12:00:00Z".to_string(),
+            "2026-09-30T12:05:00Z".to_string(),
+            "Automatico".to_string(),
+            "OpenAI".to_string(),
+            vec![],
+            vec![],
+            "Análise concluída".to_string(),
+        )
+        .with_analysis(&crate::ai::analysis_service::AnalysisResult {
+            text: "Análise concluída".to_string(),
+            model: "llama3.1:8b".to_string(),
+            provider: "Ollama".to_string(),
+            configured_provider: "OpenAI".to_string(),
+            source: crate::ai::analysis_service::AnalysisSource::FallbackProvider,
+            fallback_used: true,
+            failure_reason: Some(
+                "error sending request for url (http://127.0.0.1:8080/v1/chat/completions)"
+                    .to_string(),
+            ),
+            analyzed_at: "2026-09-30T12:04:59Z".to_string(),
+            neutralized_snippets: 0,
+        });
+
+        let reason = metadata
+            .llm_failure_reason
+            .as_deref()
+            .expect("o motivo da falha precisa ser preservado");
+        assert!(
+            reason.contains("error sending request"),
+            "o motivo foi destruído pela redação: {reason}"
+        );
+        assert_ne!(reason, "[REDACTED]");
+    }
+
+    /// A credencial continua removida do motivo da falha: a preservação da
+    /// frase não pode virar um caminho para gravar segredo no log.
+    #[test]
+    fn failure_reason_still_drops_credentials() {
+        let metadata = ScanMetadata::new(
+            "scan-credencial".to_string(),
+            "http://target.local".to_string(),
+            "2026-09-30T12:00:00Z".to_string(),
+            "2026-09-30T12:05:00Z".to_string(),
+            "Automatico".to_string(),
+            "OpenAI".to_string(),
+            vec![],
+            vec![],
+            "Análise concluída".to_string(),
+        )
+        .with_analysis(&crate::ai::analysis_service::AnalysisResult {
+            text: "Análise concluída".to_string(),
+            model: "gpt-4o".to_string(),
+            provider: "OpenAI".to_string(),
+            configured_provider: "OpenAI".to_string(),
+            source: crate::ai::analysis_service::AnalysisSource::Deterministic,
+            fallback_used: false,
+            failure_reason: Some("401 Unauthorized: api_key=sk-secreto-real".to_string()),
+            analyzed_at: "2026-09-30T12:04:59Z".to_string(),
+            neutralized_snippets: 0,
+        });
+
+        let reason = metadata.llm_failure_reason.as_deref().unwrap();
+        assert!(!reason.contains("sk-secreto-real"), "{reason}");
+    }
+
+    #[test]
+    fn every_new_provenance_field_deserializes_when_absent() {
+        let full = ScanMetadata::new(
+            "scan-campos".to_string(),
+            "http://target.local".to_string(),
+            "2026-09-30T12:00:00Z".to_string(),
+            "2026-09-30T12:05:00Z".to_string(),
+            "Automatico".to_string(),
+            "OpenAI".to_string(),
+            vec![],
+            vec![],
+            "Análise concluída".to_string(),
+        )
+        .with_analysis(&crate::ai::analysis_service::AnalysisResult {
+            text: "Análise concluída".to_string(),
+            model: "gpt-4o".to_string(),
+            provider: "OpenAI".to_string(),
+            configured_provider: "OpenAI".to_string(),
+            source: crate::ai::analysis_service::AnalysisSource::PrimaryProvider,
+            fallback_used: false,
+            failure_reason: None,
+            analyzed_at: "2026-09-30T12:04:59Z".to_string(),
+            neutralized_snippets: 0,
+        });
+
+        for field in [
+            "llm_model",
+            "llm_provider_effective",
+            "llm_fallback_used",
+            "llm_failure_reason",
+            "llm_analyzed_at",
+            "llm_neutralized_snippets",
+        ] {
+            let mut legacy = serde_json::to_value(&full).unwrap();
+            legacy
+                .as_object_mut()
+                .expect("metadado serializado")
+                .remove(field);
+
+            let restored: ScanMetadata = serde_json::from_value(legacy)
+                .unwrap_or_else(|error| panic!("sem `serde(default)`, {field} quebra: {error}"));
+            assert_eq!(restored.llm_provider, "OpenAI", "{field}");
+        }
     }
 
     #[test]
