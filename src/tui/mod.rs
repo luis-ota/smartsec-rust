@@ -24,6 +24,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame) {
             AppStep::Execution => screens::execution::render(app, frame, area),
             AppStep::Analysis => screens::analysis::render(app, frame, area),
             AppStep::Results => screens::results::render(app, frame, area),
+            AppStep::History => screens::history::render(app, frame, area),
         }
     }
 

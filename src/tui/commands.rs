@@ -49,6 +49,16 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
         "",
         SemanticAction::OpenSettings,
     ));
+    items.push(
+        CommandItem::new(
+            "Consultar histórico de execuções",
+            "h",
+            SemanticAction::OpenHistory,
+        )
+        // Interromper uma execução em andamento para ler o histórico tiraria o
+        // foco da varredura; por isso a consulta só é oferecida fora dela.
+        .enabled(matches!(app.step, AppStep::Splash | AppStep::Results)),
+    );
 
     match app.step {
         AppStep::Splash => items.extend([
@@ -103,6 +113,15 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
                 ]);
             }
         }
+        AppStep::History => items.extend([
+            CommandItem::new(
+                "Abrir execução selecionada",
+                "enter",
+                SemanticAction::OpenHistoryRecord(app.history_cursor),
+            )
+            .enabled(app.history_detail.is_none() && !app.history.records.is_empty()),
+            CommandItem::new("Voltar", "esc", SemanticAction::Back),
+        ]),
     }
     items
 }
