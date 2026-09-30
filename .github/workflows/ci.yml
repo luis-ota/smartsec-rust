@@ -56,6 +56,15 @@ env:
   # "Package dbus-1 was not found in the pkg-config search path" e exit 101.
   # Descoberto no primeiro run do PR #84; ver docs/evidence/issue-26-github-actions.md.
   SMARTSEC_PACOTE_LIBDBUS: 'libdbus-1-dev'
+  # O `pasta` do runner do Ubuntu não aceita a opção `--map-host-loopback`, que
+  # `src/orchestrator/sandbox.rs:12` fixa para toda execução:
+  #   /usr/bin/pasta: unrecognized option '--map-host-loopback=169.254.1.2'
+  # É o mesmo motivo que reprova `tests/podman_executor.rs` no runner com
+  # `Failed(Some(125))`. O commit abaixo é o mesmo que valida a suíte localmente
+  # (pasta 2026_07_28.f8df3f1) e é conferido com `git rev-parse HEAD`, o que
+  # torna a origem do binário verificável pelo próprio hash do commit.
+  SMARTSEC_PASTA_REPO: 'https://passt.top/passt'
+  SMARTSEC_PASTA_COMMIT: 'f8df3f1b228fe19a74a269334fdfe6cc7d0605ce'
   # Porta do alvo autorizado controlado. O servidor HTTP fica preso a
   # 127.0.0.1 e os scanners o enxergam como 169.254.1.2, que é o endereço que
   # o Podman rootless mapeia para o loopback do host
@@ -92,6 +101,33 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends "$SMARTSEC_PACOTE_LIBDBUS"
+
+      # O Podman 4.9.3 do runner `ubuntu-24.04` chama o `pasta` do sistema, que
+      # não conhece `--map-host-loopback`. Compila-se o `pasta` do commit fixado
+      # e ele passa a ser o primeiro do PATH. Nenhum arquivo de src/ muda: a
+      # exigência é do projeto, o ajuste é do ambiente.
+      - name: Preparar o pasta com suporte a --map-host-loopback
+        run: |
+          set -euo pipefail
+          origem="$RUNNER_TEMP/passt"
+          git clone --quiet "$SMARTSEC_PASTA_REPO" "$origem"
+          git -C "$origem" checkout --quiet "$SMARTSEC_PASTA_COMMIT"
+          obtained="$(git -C "$origem" rev-parse HEAD)"
+          if [ "$obtained" != "$SMARTSEC_PASTA_COMMIT" ]; then
+            echo "::error::pasta obtido em $obtained, esperado $SMARTSEC_PASTA_COMMIT"
+            exit 1
+          fi
+          make --directory "$origem" --silent pasta
+          # `pasta` é o mesmo binário de `passt`; instala-se o binário real.
+          sudo install -m 0755 "$origem/passt" /usr/local/bin/pasta
+          rm -rf "$origem"
+          command -v pasta
+          pasta --version
+          if ! pasta --help 2>&1 | grep -q -- '--map-host-loopback'; then
+            echo "::error::o pasta instalado não suporta --map-host-loopback"
+            exit 1
+          fi
+          echo "pasta com --map-host-loopback disponível em $(command -v pasta)"
 
       # `dtolnay/rust-toolchain` foi escolhido em vez de
       # `actions-rust-lang/setup-rust-toolchain` porque resolve a toolchain a
@@ -139,6 +175,30 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends "$SMARTSEC_PACOTE_LIBDBUS"
+
+      # Mesmo motivo do job `qualidade`: o `pasta` do runner não aceita
+      # `--map-host-loopback`, o que faria o scan headless falhar com exit 2.
+      - name: Preparar o pasta com suporte a --map-host-loopback
+        run: |
+          set -euo pipefail
+          origem="$RUNNER_TEMP/passt"
+          git clone --quiet "$SMARTSEC_PASTA_REPO" "$origem"
+          git -C "$origem" checkout --quiet "$SMARTSEC_PASTA_COMMIT"
+          obtained="$(git -C "$origem" rev-parse HEAD)"
+          if [ "$obtained" != "$SMARTSEC_PASTA_COMMIT" ]; then
+            echo "::error::pasta obtido em $obtained, esperado $SMARTSEC_PASTA_COMMIT"
+            exit 1
+          fi
+          make --directory "$origem" --silent pasta
+          # `pasta` é o mesmo binário de `passt`; instala-se o binário real.
+          sudo install -m 0755 "$origem/passt" /usr/local/bin/pasta
+          rm -rf "$origem"
+          command -v pasta
+          if ! pasta --help 2>&1 | grep -q -- '--map-host-loopback'; then
+            echo "::error::o pasta instalado não suporta --map-host-loopback"
+            exit 1
+          fi
+          echo "pasta com --map-host-loopback disponível em $(command -v pasta)"
 
       - name: Fixar a toolchain Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (2026-09-03)
