@@ -246,7 +246,7 @@ impl CommandLineInterface {
         println!("  Alvo:   {}", config.target_url);
         println!("  Modo:   {}", config.execution_type);
         println!("  Dados:  REAL");
-        println!("  LLM:    {:?} ({})", config.llm.provider, config.llm.model);
+        println!("  LLM:    {} ({})", config.llm.provider.label(), config.llm.model);
         println!("  Scanners: Podman sem privilégios de root");
         println!();
 
@@ -300,19 +300,16 @@ impl CommandLineInterface {
             .iter()
             .find_map(|execution| execution.execution_error.as_deref())
             .map(str::to_owned);
-        let analysis = orchestrator
-            .agent
-            .analyze_logs(&orchestrator.findings)
-            .await;
-        orchestrator.last_log = analysis.clone();
+        let analysis = orchestrator.analyze_findings().await;
 
         println!(
             "[2/3] Análise da IA ({} achados):",
             orchestrator.findings.len()
         );
-        for line in analysis.lines() {
+        for line in analysis.text.lines() {
             println!("  │ {}", line);
         }
+        println!("  │ {}", analysis.provenance());
         println!();
 
         let report = crate::report::ReportGenerator::compile_report(

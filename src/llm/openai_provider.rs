@@ -92,12 +92,14 @@ impl LLMProvider for OpenAIProvider {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    async fn mock_server(
+    /// Servidor HTTP local que responde com o par `(status, corpo)` de cada
+    /// requisição recebida. Reutilizado pelos testes do serviço de análise.
+    pub(crate) async fn mock_server(
         responses: Vec<(&'static str, &'static str)>,
     ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -121,7 +123,7 @@ mod tests {
         (format!("http://{address}/v1"), handle)
     }
 
-    fn provider(base_url: String) -> OpenAIProvider {
+    pub(crate) fn provider(base_url: String) -> OpenAIProvider {
         OpenAIProvider {
             base_url,
             api_key: "test-token".to_string(),

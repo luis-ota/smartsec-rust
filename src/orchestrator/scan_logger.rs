@@ -60,7 +60,31 @@ pub struct ScanMetadata {
     pub started_at: String,
     pub completed_at: String,
     pub execution_type: String,
+    /// Provedor de IA **configurado**, em pt-BR (ex.: `OpenAI`).
     pub llm_provider: String,
+    /// Modelo que produziu as orientações; vazio quando a análise foi
+    /// determinística (nenhuma IA respondeu dentro do contrato).
+    #[serde(default)]
+    pub llm_model: String,
+    /// Provedor que **efetivamente** respondeu, em pt-BR. Difere de
+    /// `llm_provider` quando a alternativa local respondem, e vale `Nenhuma`
+    /// quando a análise foi determinística.
+    #[serde(default)]
+    pub llm_provider_effective: String,
+    /// `true` quando o provedor principal falhou e a alternativa respondeu.
+    #[serde(default)]
+    pub llm_fallback_used: bool,
+    /// Motivo pelo qual as orientações da IA não foram aceitas, quando for o
+    /// caso (timeout, consentimento ausente, resposta fora do contrato).
+    #[serde(default)]
+    pub llm_failure_reason: Option<String>,
+    /// Horário da análise por IA em ISO-8601 (UTC).
+    #[serde(default)]
+    pub llm_analyzed_at: String,
+    /// Quantos trechos do scanner foram neutralizados por tentativa de injeção
+    /// de prompt antes de serem enviados ao modelo.
+    #[serde(default)]
+    pub llm_neutralized_snippets: usize,
     pub tools_executed: Vec<ToolExecutionRecord>,
     pub findings_count: usize,
     pub critical_count: usize,
@@ -128,6 +152,12 @@ impl ScanMetadata {
             completed_at,
             execution_type,
             llm_provider: crate::utils::redaction::sanitize_text(&llm_provider),
+            llm_model: String::new(),
+            llm_provider_effective: String::new(),
+            llm_fallback_used: false,
+            llm_failure_reason: None,
+            llm_analyzed_at: String::new(),
+            llm_neutralized_snippets: 0,
             tools_executed: tools_executed
                 .iter()
                 .map(ToolExecutionRecord::sanitized)
@@ -148,6 +178,23 @@ impl ScanMetadata {
         }
     }
 
+    /// Anexa a proveniência da análise da IA ao log estruturado.
+    ///
+    /// Sem esta chamada os campos novos ficam vazios: um scan cancelado antes
+    /// da análise é persistido assim, deixando explícito que a IA não respondeu.
+    pub fn with_analysis(mut self, result: &crate::ai::analysis_service::AnalysisResult) -> Self {
+        self.llm_model = crate::utils::redaction::sanitize_text(&result.model);
+        self.llm_provider_effective = crate::utils::redaction::sanitize_text(&result.provider);
+        self.llm_fallback_used = result.fallback_used;
+        self.llm_failure_reason = result
+            .failure_reason
+            .as_deref()
+            .map(crate::utils::redaction::sanitize_text);
+        self.llm_analyzed_at = crate::utils::redaction::sanitize_text(&result.analyzed_at);
+        self.llm_neutralized_snippets = result.neutralized_snippets;
+        self
+    }
+
     fn sanitized(&self) -> Self {
         let sanitize = crate::utils::redaction::sanitize_text;
         let mut findings = self.findings.clone();
@@ -161,6 +208,12 @@ impl ScanMetadata {
             completed_at: sanitize(&self.completed_at),
             execution_type: sanitize(&self.execution_type),
             llm_provider: sanitize(&self.llm_provider),
+            llm_model: sanitize(&self.llm_model),
+            llm_provider_effective: sanitize(&self.llm_provider_effective),
+            llm_fallback_used: self.llm_fallback_used,
+            llm_failure_reason: self.llm_failure_reason.as_deref().map(sanitize),
+            llm_analyzed_at: sanitize(&self.llm_analyzed_at),
+            llm_neutralized_snippets: self.llm_neutralized_snippets,
             tools_executed: self
                 .tools_executed
                 .iter()
@@ -347,6 +400,92 @@ mod tests {
         assert_eq!(summaries[0].scan_id, "scan_20260831_120000");
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn persisted_scan_keeps_the_model_provider_fallback_and_time_of_the_analysis() {
+        use crate::ai::analysis_service::{AnalysisResult, AnalysisSource};
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("smartsec_test_proveniencia_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        let metadata = ScanMetadata::new(
+            "scan-proveniencia".to_string(),
+            "http://target.local".to_string(),
+            "2026-09-30T12:00:00Z".to_string(),
+            "2026-09-30T12:05:00Z".to_string(),
+            "Automatico".to_string(),
+            "OpenAI".to_string(),
+            vec![],
+            vec![],
+            "Análise concluída: 1 achados".to_string(),
+        )
+        .with_analysis(&AnalysisResult {
+            text: "Análise concluída: 1 achados".to_string(),
+            model: "llama3.1:8b".to_string(),
+            provider: "Ollama".to_string(),
+            configured_provider: "OpenAI".to_string(),
+            source: AnalysisSource::FallbackProvider,
+            fallback_used: true,
+            failure_reason: Some("a LLM principal falhou".to_string()),
+            analyzed_at: "2026-09-30T12:04:59Z".to_string(),
+            neutralized_snippets: 2,
+        });
+
+        let path = save_scan_log_to_dir(&metadata, &temp_dir).expect("save should succeed");
+        let loaded = load_scan_log_from_file(&path).expect("load should succeed");
+
+        assert_eq!(loaded.llm_provider, "OpenAI");
+        assert_eq!(loaded.llm_model, "llama3.1:8b");
+        assert_eq!(loaded.llm_provider_effective, "Ollama");
+        assert!(loaded.llm_fallback_used);
+        assert_eq!(
+            loaded.llm_failure_reason.as_deref(),
+            Some("a LLM principal falhou")
+        );
+        assert_eq!(loaded.llm_analyzed_at, "2026-09-30T12:04:59Z");
+        assert_eq!(loaded.llm_neutralized_snippets, 2);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn scan_metadata_from_an_earlier_version_without_llm_provenance_still_loads() {
+        let metadata = ScanMetadata::new(
+            "scan-legado".to_string(),
+            "http://target.local".to_string(),
+            "2026-08-31T12:00:00Z".to_string(),
+            "2026-08-31T12:05:00Z".to_string(),
+            "Assistido".to_string(),
+            "Ollama".to_string(),
+            vec![],
+            vec![],
+            "Análise concluída".to_string(),
+        );
+
+        let mut legacy = serde_json::to_value(&metadata).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        for field in [
+            "llm_model",
+            "llm_provider_effective",
+            "llm_fallback_used",
+            "llm_failure_reason",
+            "llm_analyzed_at",
+            "llm_neutralized_snippets",
+        ] {
+            object.remove(field);
+        }
+
+        let restored: ScanMetadata = serde_json::from_value(legacy).expect("histórico antigo");
+
+        assert_eq!(restored.llm_model, "");
+        assert_eq!(restored.llm_provider_effective, "");
+        assert!(!restored.llm_fallback_used);
+        assert!(restored.llm_failure_reason.is_none());
+        assert_eq!(restored.llm_analyzed_at, "");
+        assert_eq!(restored.llm_neutralized_snippets, 0);
+        assert_eq!(restored.llm_provider, "Ollama");
     }
 
     #[test]

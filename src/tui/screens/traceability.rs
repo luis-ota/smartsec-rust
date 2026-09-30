@@ -10,6 +10,7 @@ use ratatui::{
     Frame,
 };
 
+#[derive(Debug)]
 pub struct RequirementRow {
     pub id: &'static str,
     pub title: &'static str,
@@ -133,7 +134,8 @@ fn logs_row(app: &AppState) -> RequirementRow {
 
 fn ai_row(app: &AppState) -> RequirementRow {
     let decision = app.orchestrator.decision_history.last();
-    let evidenced = decision.is_some();
+    let analysis = app.orchestrator.last_analysis_result.as_ref();
+    let evidenced = decision.is_some() || analysis.is_some();
     let detail = match decision {
         Some(record) => {
             let source = match record.source {
@@ -167,13 +169,22 @@ fn ai_row(app: &AppState) -> RequirementRow {
             {
                 detail.push_str(" · orientações da IA aplicadas");
             }
+            if let Some(analysis) = analysis {
+                detail.push_str(&analysis_provenance(analysis));
+            }
             detail
         }
-        None => format!(
-            "provedor {} · {} · decisão pendente",
-            app.config.llm.provider.label(),
-            app.config.llm.model
-        ),
+        None => {
+            let mut detail = format!(
+                "provedor {} · {} · decisão pendente",
+                app.config.llm.provider.label(),
+                app.config.llm.model
+            );
+            if let Some(analysis) = analysis {
+                detail.push_str(&analysis_provenance(analysis));
+            }
+            detail
+        }
     };
     RequirementRow {
         id: "REQ10",
@@ -181,6 +192,26 @@ fn ai_row(app: &AppState) -> RequirementRow {
         detail,
         evidenced,
     }
+}
+
+/// Proveniência da análise exibida na matriz: o resultado precisa dizer modelo,
+/// provedor efetivo e horário, em vez de apresentar a IA como caixa-preta.
+fn analysis_provenance(analysis: &crate::ai::analysis_service::AnalysisResult) -> String {
+    format!(
+        " · análise: {} {} · {}{}",
+        analysis.provider,
+        if analysis.model.is_empty() {
+            "determinística"
+        } else {
+            analysis.model.as_str()
+        },
+        analysis.analyzed_at,
+        if analysis.fallback_used {
+            " · alternativa local"
+        } else {
+            ""
+        }
+    )
 }
 
 fn status_label(status: &str) -> &'static str {
@@ -308,6 +339,32 @@ mod tests {
                 timeout_seconds: 5,
             },
         }
+    }
+
+    #[test]
+    fn analysis_provenance_is_reported_even_without_a_nuclei_decision() {
+        use crate::ai::analysis_service::{AnalysisResult, AnalysisSource};
+
+        let mut app = app();
+        app.orchestrator.last_analysis_result = Some(AnalysisResult {
+            text: "Análise concluída.".to_string(),
+            model: "llama3.1:8b".to_string(),
+            provider: "Ollama".to_string(),
+            configured_provider: "OpenAI".to_string(),
+            source: AnalysisSource::FallbackProvider,
+            fallback_used: true,
+            failure_reason: Some("a LLM principal falhou".to_string()),
+            analyzed_at: "2026-09-30T12:04:59Z".to_string(),
+            neutralized_snippets: 1,
+        });
+
+        let rows = requirement_rows(&app);
+        let ai = rows.iter().find(|row| row.id == "REQ10").unwrap();
+
+        assert!(ai.evidenced);
+        assert!(ai.detail.contains("Ollama llama3.1:8b"), "{ai:?}");
+        assert!(ai.detail.contains("2026-09-30T12:04:59Z"), "{ai:?}");
+        assert!(ai.detail.contains("alternativa local"), "{ai:?}");
     }
 
     #[test]
