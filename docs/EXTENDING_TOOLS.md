@@ -254,6 +254,55 @@ fora das tmpfs: o container continua `--read-only`, `--cap-drop all` e
 `no-new-privileges`, sem shell, sem capacidade nova e sem nada executado no
 host.
 
+### A tmpfs do host é verificada, não presumida
+
+O `TMPDIR` é herdado do ambiente, então "o diretório temporário está em tmpfs"
+não vale como construção do código: basta uma máquina — ou um runner de CI —
+com `TMPDIR` apontando para um diretório comum em disco, e o mesmo código passa
+a montar em bind mount um diretório persistente, gravando o relatório do scanner
+fora da regra de isolamento do `TCC_SPEC.md`, sem nenhum sinal.
+
+Por isso `WritableOutput::new` (e o diretório do plano de automação, que é a
+configuração temporária da execução) **verificam** a condição antes de gravar:
+
+- o tipo do filesystem vem de `/proc/self/mountinfo`, com o ponto de montagem
+  **mais específico** que contém o caminho (`std::fs::metadata` não serve: devolve
+  modo e dono, não o tipo do filesystem, e exigiria `libc`);
+- o caminho é canonicalizado, então um `TMPDIR` que é symlink para disco é
+  avaliado no destino real;
+- só `tmpfs` é aceito. `overlay` **não** é aceito: é a camada copy-on-write do
+  container e o dado gravado nela vive no diretório superior, em disco do host —
+  aceitá-la seria aceitar escrita em disco com outro nome;
+- sem `tmpfs`, sem tabela legível, ou sem conseguir identificar o ponto de
+  montagem, a **execução falha** com mensagem acionável em pt-BR. Não existe
+  caminho de degradação para escrita fora da regra.
+
+A mensagem tem o formato do projeto (caminho, o que foi encontrado, o que era
+esperado, o que fazer):
+
+```
+o diretório de escrita efêmera '/var/lib/smartsec-tmp' está no filesystem 'btrfs',
+e a regra de isolamento do SmartSec exige 'tmpfs'; a execução foi interrompida
+para não gravar a configuração temporária e o relatório do scanner fora da
+tmpfs. Ajuste o ambiente: monte uma tmpfs (por exemplo
+`sudo mount -t tmpfs -o size=512m tmpfs /var/tmp/smartsec`) e aponte a variável
+TMPDIR para ela antes de rodar a varredura. Um 'overlay' não é aceito: a camada
+copy-on-write do container grava em disco do host.
+```
+
+Uma ferramenta nova que grave no host não precisa reimplementar isso: passa por
+`WritableOutput::new` e herda a verificação. O tipo de filesystem é injetável
+(`tmpfs::FilesystemProbe`), o que permite testar o caminho negativo — diretório
+em disco comum precisa falhar — sem depender da máquina de teste.
+
+Limitações conhecidas, documentadas em `src/orchestrator/tmpfs.rs`: a tabela
+lida é a do namespace de montagem do processo (o Podman rootless não cria um
+namespace próprio para o processo do host, e o bind mount referencia o mesmo
+inode do host); um symlink trocado entre a verificação e a criação ficaria fora
+do alcance (TOCTOU que exige escrita concorrente no `TMPDIR`); e kernels sem
+`/proc/self/mountinfo` legível fazem a execução falhar, em vez de assumir
+`tmpfs`.
+
 Duas particularidades da imagem condicionam o comando e só foram descobertas
 executando:
 
