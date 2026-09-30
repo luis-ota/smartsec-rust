@@ -337,8 +337,14 @@ jobs:
         run: |
           set -uo pipefail
           set +e
+          # D-Bus NÃO é desabilitado aqui: o crun do runner usa o systemd como
+          # gerenciador de cgroup e precisa do barramento da sessão. Desabilitá-lo
+          # faz o container falhar com
+          # "crun: sd-bus call: Interactive authentication required" (exit 125),
+          # observado no terceiro run do PR #84. A leitura da chave no keyring
+          # do SmartSec ignora a falha quando não há Secret Service, e o runner
+          # não tem nenhum, então não há prompt nem espera.
           XDG_CONFIG_HOME="$RUNNER_TEMP/xdg" \
-          DBUS_SESSION_BUS_ADDRESS='disabled:' \
           "$PWD/target/debug/smartsec-rust" scan \
             --target "http://169.254.1.2:$SMARTSEC_ALVO_PORTA" \
             --tools "$SMARTSEC_FERRAMENTAS" \
