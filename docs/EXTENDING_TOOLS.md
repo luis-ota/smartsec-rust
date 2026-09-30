@@ -13,7 +13,8 @@ que resolve:
 - o **runner**: como o manifesto vira um comando executado no Podman rootless;
 - o **parser**: como a saída do runner vira achados estruturados.
 
-O catálogo é montado com as ferramentas embutidas (Nmap, Nuclei, Nikto e SQLMap) mais as
+O catálogo é montado com as ferramentas embutidas (Nmap, Nuclei, Nikto, SQLMap, TruffleHog
+e ZAP) mais as
 ferramentas declaradas na chave `[[tools]]` do arquivo de configuração TOML.
 Ferramentas desabilitadas (`enabled = false`) são validadas, mas ficam fora do
 catálogo exibido na CLI/TUI.
@@ -32,8 +33,7 @@ Todos os campos são obrigatórios, exceto `enabled` (padrão `true`).
 | `runner` | string | Runner registrado que executa a ferramenta. |
 | `parser` | string | Parser registrado que interpreta a saída. |
 | `command_template` | lista de strings | Comando do container; nenhum item pode ser vazio, o primeiro item é o executável (não pode começar com `-`) e ao menos um argumento deve conter o marcador `{target}`. |
-| `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl`, `json` para `nikto-json`, `text` para `sqlmap-text` e `generic-text`. |
-| `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl` e `trufflehog-jsonl`, `json` para `nikto-json`, `text` para `generic-text`. |
+| `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl` e `trufflehog-jsonl`, `json` para `nikto-json` e `zap-json`, `text` para `sqlmap-text` e `generic-text`. |
 | `enabled` | bool | Opcional. `false` mantém a ferramenta fora do catálogo. |
 
 O alvo informado na CLI substitui exatamente o marcador `{target}`. Nenhum
@@ -47,6 +47,7 @@ shell é usado: cada item da lista vira um argumento literal do container.
 | `nuclei` | Execução real do Nuclei com o plano validado pelo orquestrador e templates montados em somente leitura. |
 | `generic` | Executa o `command_template` do manifesto no executor Podman rootless, sem privilégios e com rede `pasta`. |
 | `repository` | Alvo **é um repositório**, não um host. Canonicaliza o diretório e o monta em somente leitura; URI remota autorizada é repassada sem mount. Ver [Runner `repository`](#runner-repository). |
+| `zap` | Monta o plano de automação do ZAP em memória, monta-o em somente leitura e coleta o relatório gravado pelo container (ver a seção do ZAP). |
 
 ## Parsers registrados
 
@@ -57,6 +58,7 @@ shell é usado: cada item da lista vira um argumento literal do container.
 | `nikto-json` | Converte o relatório JSON do Nikto em achados rastreáveis, preservando URL, método HTTP, referência e evidência. |
 | `sqlmap-text` | Converte o texto do SQLMap em achados rastreáveis, preservando parâmetro, método HTTP, tipo e título da injeção confirmada. |
 | `trufflehog-jsonl` | Converte o JSONL do TruffleHog em achados rastreáveis, preservando detector, arquivo, linha e verificação, **sem o valor do segredo**. |
+| `zap-json` | Converte o relatório `traditional-json` do ZAP em achados rastreáveis, preservando URL, método HTTP, referência, risco/confiança e evidência. |
 | `generic-text` | Extrai achados informativos simples do texto, um por linha não vazia e não diagnóstica. |
 
 ## Ferramentas embutidas
@@ -68,6 +70,7 @@ shell é usado: cada item da lista vira um argumento literal do container.
 | Nikto | `docker.io/alpine/nikto:2.2.0@sha256:eb2fe882…` (digest), versão `2.1.6` | `generic` | `nikto-json` |
 | SQLMap | `docker.io/parrotsec/sqlmap:7.3@sha256:31bb35cd…` (digest), versão `1.10.4` | `generic` | `sqlmap-text` |
 | TruffleHog | `docker.io/trufflesecurity/trufflehog@sha256:52e67fef…` (digest), versão `3.97.9` | `repository` | `trufflehog-jsonl` |
+| ZAP | `ghcr.io/zaproxy/zaproxy:2.14.0@sha256:3280adc7…` (digest), versão `2.14.0` | `zap` | `zap-json` |
 
 ### Nikto
 
@@ -226,6 +229,57 @@ encontrado não emite registro. O que separa alvo inválido de varredura limpa �
 `--fail-on-scan-errors`, que faz o container encerrar com status 1. Registro
 JSONL malformado, saída diagnóstica (`[ERRO]`) e exit status diferente de zero
 são tratados como `failed` com mensagem acionável em pt-BR.
+### ZAP
+
+O ZAP é executado pelo runner `zap`, com `output_format = "json"`. Ele é o único
+runner que **não** entrega a saída estruturada pelo stdout: o job `report` do
+ZAP sempre acrescenta a extensão do template ao nome do arquivo e não existe
+parâmetro de saída em stdout. Isso foi verificado executando o container contra
+um alvo local; a evidência completa está em `docs/evidence/issue-28-zap.md`.
+
+O runner `zap` portanto:
+
+1. monta o plano de automação YAML **em memória**, com o alvo no contexto
+   `default`, o job `spider`, `passiveScan-wait` e o job `report`;
+2. grava o plano num diretório temporário do host e o monta em
+   `/zap/automation` em **somente leitura**, como os templates do Nuclei;
+3. monta um diretório de saída gravável em `/smartsec-out` e coleta o
+   `zap-report.json` depois da execução e **antes** de remover o container.
+
+O diretório de saída é criado pelo executor, vazio, com modo `0733`, no
+`TMPDIR` do host, e é removido ao final. O modo `0733` é necessário porque, em
+Podman rootless sem `keep-id`, o usuário do container é um *subuid* do host. O
+volume é montado com `rw,noexec,nosuid,nodev` e é o **único** ponto de escrita
+fora das tmpfs: o container continua `--read-only`, `--cap-drop all` e
+`no-new-privileges`, sem shell, sem capacidade nova e sem nada executado no
+host.
+
+Duas particularidades da imagem condicionam o comando e só foram descobertas
+executando:
+
+- a imagem declara `ENTRYPOINT []` e `CMD ["bash"]`, então `podman create
+  IMAGEM zap.sh …` executa `/zap/zap.sh` pelo `PATH`. O `zap.sh` da 2.14 não
+  tem atalhos `-quickstart`/`-baseline`/`-full`;
+- o `zap.sh` **ignora `JAVA_OPTS`**: ele calcula `-Xmx` a partir do
+  `/proc/meminfo` do host e imprimiria `-Xmx3942m` numa máquina de 15 Gi. A
+  única forma de limitar o heap é `-Xmx<N>m` como argumento único, e `-cmd` é
+  obrigatório para o container encerrar.
+
+Além disso, `HOME` precisa ser gravável: sem a tmpfs em `/home/zap`, o ZAP
+aborta com `The home path is not writable: /home/zap/.ZAP/`.
+
+O parser `zap-json` preserva URL, método HTTP, referência (`alertRef`,
+`pluginid` e CWE), rótulo de risco e confiança e evidência mínima sanitizada.
+A **severidade do ZAP é autoritativa** (TCC_SPEC §7) e vem do campo estruturado
+`riskcode` do scanner (`0` informativa, `1` baixa, `2` média, `3` alta), sem
+reinterpretar o texto do alerta. O template `traditional-json` não inclui
+cabeçalhos nem corpos de requisição/resposta, e a sanitização remove query
+strings e credenciais de qualquer campo que sobre.
+
+Erros tratados como `failed` com mensagem acionável em pt-BR: JSON inválido,
+stdout vazio, relatório sem site varrido, site sem alertas, artefato ausente,
+exit status diferente de zero e timeout. Uma saída que não é relatório nunca é
+lida como varredura limpa.
 
 ## Procedimento para registrar uma ferramenta por configuração
 
@@ -236,7 +290,7 @@ são tratados como `failed` com mensagem acionável em pt-BR.
 4. Valide com uma execução controlada:
 
    ```bash
-   smartsec tool ZAP --target 169.254.1.2:3000 --config ./smartsec.toml
+   smartsec tool ScannerWeb --target 169.254.1.2:3000 --config ./smartsec.toml
    ```
 
 5. Confirme no log estruturado e no relatório que a ferramenta, a imagem e a
@@ -251,14 +305,14 @@ target_url = "http://169.254.1.2:3000"
 provider = "Ollama"
 
 [[tools]]
-name = "ZAP"
+name = "ScannerWeb"
 description = "Scanner de servidores web"
 category = "DAST"
-image = "docker.io/zaproxy/zap:2.14.0"
-version = "2.14.0"
+image = "docker.io/exemplo/scanner-web:1.4.0"
+version = "1.4.0"
 runner = "generic"
 parser = "generic-text"
-command_template = ["zap", "-host", "{target}"]
+command_template = ["scanner", "-u", "{target}"]
 output_format = "text"
 enabled = true
 ```
@@ -271,6 +325,8 @@ acionável em pt-BR. Exemplos:
 - ferramenta duplicada (mesmo nome de uma embutida ou de outra `[[tools]]`);
 - campo obrigatório ausente: `a ferramenta 'ZAP' não define o campo obrigatório 'version' em [[tools]]`;
 - runner desconhecido: `a ferramenta 'ZAP' usa o runner desconhecido 'foo'; runners registrados: nmap, nuclei, generic, repository`;
+- campo obrigatório ausente: `a ferramenta 'ScannerWeb' não define o campo obrigatório 'version' em [[tools]]`;
+- runner desconhecido: `a ferramenta 'ScannerWeb' usa o runner desconhecido 'foo'; runners registrados: nmap, nuclei, generic, zap`;
 - parser desconhecido, com a lista de parsers registrados;
 - `image` inválida: vazia, com espaços/caracteres de controle, iniciada por `-` ou fora do formato de referência;
 - `command_template` com item vazio, primeiro item iniciado por `-` ou sem o marcador `{target}`;

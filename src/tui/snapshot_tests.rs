@@ -119,6 +119,25 @@ fn the_nikto_is_selectable_in_the_tool_catalog_of_the_tui() {
 }
 
 #[test]
+fn the_zap_is_selectable_in_the_tool_catalog_of_the_tui() {
+    let mut app = app();
+    app.step = AppStep::ToolSelect;
+    app.tool_detecting = false;
+
+    let names: Vec<&str> = app
+        .tools
+        .iter()
+        .map(|tool| tool.tool.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"ZAP"),
+        "o ZAP deveria estar selecionável na TUI: {names:?}"
+    );
+
+    assert_snapshot(&mut app, &["Ferramentas de segurança", "ZAP", "DAST"]);
+}
+
+#[test]
 fn execution_states_match_80x24_snapshots() {
     let mut app = app();
     app.step = AppStep::Execution;

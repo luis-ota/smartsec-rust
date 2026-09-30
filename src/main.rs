@@ -680,6 +680,7 @@ mod tests {
         std::fs::write(
             &path,
             "target_url = \"http://config.local\"\nactive_tools = [\"ScannerExemplo\"]\n\n[llm]\nprovider = \"Ollama\"\n\n[[tools]]\nname = \"ScannerExemplo\"\ndescription = \"Scanner de servidores web\"\ncategory = \"DAST\"\nimage = \"example/zap:1\"\nversion = \"1.0\"\nrunner = \"generic\"\nparser = \"generic-text\"\ncommand_template = [\"zap\", \"-host\", \"{target}\"]\noutput_format = \"text\"\n",
+            "target_url = \"http://config.local\"\nactive_tools = [\"ScannerExemplo\"]\n\n[llm]\nprovider = \"Ollama\"\n\n[[tools]]\nname = \"ScannerExemplo\"\ndescription = \"Scanner de servidores web\"\ncategory = \"DAST\"\nimage = \"example/scanner:1\"\nversion = \"1.0\"\nrunner = \"generic\"\nparser = \"generic-text\"\ncommand_template = [\"scanner\", \"-host\", \"{target}\"]\noutput_format = \"text\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {

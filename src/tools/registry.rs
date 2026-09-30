@@ -4,6 +4,7 @@ use crate::tools::nmap::{NMAP_IMAGE, NMAP_VERSION};
 use crate::tools::nuclei::{NUCLEI_IMAGE, NUCLEI_VERSION};
 use crate::tools::sqlmap::{SQLMAP_IMAGE, SQLMAP_VERSION};
 use crate::tools::trufflehog::{TRUFFLEHOG_IMAGE, TRUFFLEHOG_VERSION};
+use crate::tools::zap::{ZAP_IMAGE, ZAP_VERSION};
 
 /// Runners registrados: executam o manifesto dentro do executor Podman rootless.
 pub const RUNNER_NMAP: &str = "nmap";
@@ -15,6 +16,8 @@ pub const RUNNER_GENERIC: &str = "generic";
 /// o diretório do repositório e o monta em `:ro`, porque o scanner precisa ler um
 /// repositório que vive no host.
 pub const RUNNER_REPOSITORY: &str = "repository";
+/// Runner do ZAP: monta o plano de automação e coleta o relatório gravado pelo container.
+pub const RUNNER_ZAP: &str = "zap";
 
 /// Parsers registrados: convertem a saída de um runner em achados.
 pub const PARSER_NMAP_XML: &str = "nmap-xml";
@@ -26,6 +29,8 @@ pub const PARSER_NIKTO_JSON: &str = "nikto-json";
 pub const PARSER_SQLMAP_TEXT: &str = "sqlmap-text";
 /// Parser do JSONL emitido pelo TruffleHog.
 pub const PARSER_TRUFFLEHOG_JSONL: &str = "trufflehog-jsonl";
+/// Parser do relatório `traditional-json` do OWASP ZAP.
+pub const PARSER_ZAP_JSON: &str = "zap-json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunnerKind {
@@ -33,6 +38,7 @@ pub enum RunnerKind {
     Nuclei,
     Generic,
     Repository,
+    Zap,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +49,7 @@ pub enum ParserKind {
     NiktoJson,
     SqlmapText,
     TruffleHogJsonl,
+    ZapJson,
 }
 
 fn runner_kind(runner: &str) -> Option<RunnerKind> {
@@ -51,6 +58,7 @@ fn runner_kind(runner: &str) -> Option<RunnerKind> {
         RUNNER_NUCLEI => Some(RunnerKind::Nuclei),
         RUNNER_GENERIC => Some(RunnerKind::Generic),
         RUNNER_REPOSITORY => Some(RunnerKind::Repository),
+        RUNNER_ZAP => Some(RunnerKind::Zap),
         _ => None,
     }
 }
@@ -63,6 +71,7 @@ fn parser_kind(parser: &str) -> Option<ParserKind> {
         PARSER_NIKTO_JSON => Some(ParserKind::NiktoJson),
         PARSER_SQLMAP_TEXT => Some(ParserKind::SqlmapText),
         PARSER_TRUFFLEHOG_JSONL => Some(ParserKind::TruffleHogJsonl),
+        PARSER_ZAP_JSON => Some(ParserKind::ZapJson),
         _ => None,
     }
 }
@@ -75,6 +84,7 @@ fn registered_runners() -> String {
         RUNNER_REPOSITORY,
     ]
     .join(", ")
+    [RUNNER_NMAP, RUNNER_NUCLEI, RUNNER_GENERIC, RUNNER_ZAP].join(", ")
 }
 
 fn registered_parsers() -> String {
@@ -85,6 +95,7 @@ fn registered_parsers() -> String {
         PARSER_NIKTO_JSON,
         PARSER_SQLMAP_TEXT,
         PARSER_TRUFFLEHOG_JSONL,
+        PARSER_ZAP_JSON,
     ]
     .join(", ")
 }
@@ -97,6 +108,7 @@ fn expected_output_format(parser: ParserKind) -> &'static str {
         ParserKind::NiktoJson => "json",
         ParserKind::SqlmapText => "text",
         ParserKind::TruffleHogJsonl => "jsonl",
+        ParserKind::ZapJson => "json",
     }
 }
 
@@ -139,6 +151,7 @@ impl ToolRegistry {
             RunnerKind::Repository,
             ParserKind::TruffleHogJsonl,
         );
+        registry.push_builtin(zap_manifest(), RunnerKind::Zap, ParserKind::ZapJson);
         registry
     }
 
@@ -350,6 +363,24 @@ fn trufflehog_manifest() -> ToolManifest {
         // lista de `container_arguments`, com o marcador no lugar da URI.
         command_template: crate::tools::trufflehog::container_arguments(TARGET_PLACEHOLDER, ""),
         output_format: "jsonl".to_string(),
+/// Manifesto embutido do OWASP ZAP.
+///
+/// O job `report` do ZAP sempre acrescenta a extensão do template ao nome do
+/// arquivo, então o relatório nunca vai para o stdout: o runner `zap` monta o
+/// plano de automação em memória, monta-o em somente leitura e coleta o
+/// relatório gravado no diretório de saída (ver
+/// `docs/evidence/issue-28-zap.md`).
+fn zap_manifest() -> ToolManifest {
+    ToolManifest {
+        name: "ZAP".to_string(),
+        description: "Scanner dinâmico de segurança de aplicações web".to_string(),
+        category: "DAST".to_string(),
+        image: ZAP_IMAGE.to_string(),
+        version: ZAP_VERSION.to_string(),
+        runner: RUNNER_ZAP.to_string(),
+        parser: PARSER_ZAP_JSON.to_string(),
+        command_template: crate::tools::zap::container_arguments(TARGET_PLACEHOLDER),
+        output_format: "json".to_string(),
         enabled: true,
     }
 }
@@ -433,6 +464,107 @@ mod tests {
         }
         // Nenhum placeholder sobrevive à renderização.
         assert!(!command.iter().any(|item| item.contains(TARGET_PLACEHOLDER)));
+    }
+
+    #[test]
+    fn builtin_catalog_exposes_the_zap_with_pinned_image_version_and_own_runner() {
+        let registry = ToolRegistry::builtin();
+
+        let zap = registry
+            .find("zap")
+            .expect("o ZAP deve estar no catálogo embutido");
+
+        assert_eq!(zap.manifest.name, "ZAP");
+        assert_eq!(zap.runner, RunnerKind::Zap);
+        assert_eq!(zap.parser, ParserKind::ZapJson);
+        assert_eq!(zap.manifest.output_format, "json");
+        assert!(zap.manifest.enabled);
+        assert!(
+            zap.manifest.image.contains("@sha256:"),
+            "{}",
+            zap.manifest.image
+        );
+        assert_eq!(zap.manifest.version, "2.14.0");
+    }
+
+    #[test]
+    fn builtin_zap_command_template_avoids_shell_and_targets_the_placeholder() {
+        let registry = ToolRegistry::builtin();
+        let zap = registry.find("zap").unwrap();
+
+        // O manifesto embutido passa pela mesma validação das ferramentas do TOML.
+        assert!(zap.manifest.validate(0).is_ok());
+
+        let command = zap.manifest.render_command("http://169.254.1.2:3000");
+
+        assert_eq!(command.first().map(String::as_str), Some("zap.sh"));
+        assert!(command.iter().any(|item| item == "-Xmx1024m"));
+        assert!(command.iter().any(|item| item == "-cmd"));
+        assert!(command
+            .iter()
+            .any(|item| item == "spider.scope=http://169.254.1.2:3000"));
+        for argument in &command {
+            assert!(
+                !argument.contains(['|', '>', '<', ';', '$', '&', '`']),
+                "{argument}"
+            );
+        }
+        assert!(!command.iter().any(|item| item.contains(TARGET_PLACEHOLDER)));
+    }
+
+    #[test]
+    fn a_configured_tool_cannot_reuse_the_builtin_zap_name() {
+        let mut manifest = generic_manifest("ZAP");
+        manifest.runner = RUNNER_ZAP.to_string();
+        manifest.parser = PARSER_ZAP_JSON.to_string();
+        manifest.output_format = "json".to_string();
+
+        let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("duplicada"), "{message}");
+        assert!(message.contains("ZAP"), "{message}");
+    }
+
+    #[test]
+    fn a_configured_tool_can_use_the_zap_runner_and_parser() {
+        let mut manifest = generic_manifest("ZapLegado");
+        manifest.runner = RUNNER_ZAP.to_string();
+        manifest.parser = PARSER_ZAP_JSON.to_string();
+        manifest.output_format = "json".to_string();
+
+        let registry = ToolRegistry::with_configured(&[manifest]).unwrap();
+
+        assert_eq!(
+            registry.find("ZapLegado").unwrap().parser,
+            ParserKind::ZapJson
+        );
+    }
+
+    #[test]
+    fn the_zap_parser_requires_the_json_output_format() {
+        let mut manifest = generic_manifest("ZapWeb");
+        manifest.parser = PARSER_ZAP_JSON.to_string();
+
+        let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("output_format"), "{message}");
+        assert!(message.contains("'json'"), "{message}");
+    }
+
+    #[test]
+    fn the_zap_runner_is_listed_in_the_actionable_error_message() {
+        let mut manifest = generic_manifest("ZapExterno");
+        manifest.runner = "zap".to_owned();
+        manifest.parser = PARSER_ZAP_JSON.to_string();
+        manifest.output_format = "json".to_string();
+        // Sanidade: o runner registrado é aceito quando o resto é válido.
+        assert!(ToolRegistry::with_configured(&[manifest.clone()]).is_ok());
+
+        manifest.parser = "parser-inexistente".to_string();
+        let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
+        assert!(error.to_string().contains("parser desconhecido"), "{error}");
     }
 
     #[test]
@@ -577,21 +709,21 @@ mod tests {
              name = \"ScannerExemplo\"\n\
              description = \"Scanner de servidores web\"\n\
              category = \"DAST\"\n\
-             image = \"docker.io/zaproxy/zap:2.14.0\"\n\
+             image = \"example/scanner:2.14.0\"\n\
              version = \"2.14.0\"\n\
              runner = \"generic\"\n\
              parser = \"generic-text\"\n\
-             command_template = [\"zap\", \"-host\", \"{target}\"]\n\
+             command_template = [\"scanner\", \"-host\", \"{target}\"]\n\
              output_format = \"text\"\n",
         )
         .unwrap();
         let config = Configuration::from(persisted);
         let registry = ToolRegistry::with_configured(&config.tools).unwrap();
 
-        let zap = registry.find("zap").unwrap();
-        assert_eq!(zap.runner, RunnerKind::Generic);
-        assert_eq!(zap.parser, ParserKind::GenericText);
-        assert_eq!(zap.manifest.version, "2.14.0");
+        let scanner = registry.find("ScannerExemplo").unwrap();
+        assert_eq!(scanner.runner, RunnerKind::Generic);
+        assert_eq!(scanner.parser, ParserKind::GenericText);
+        assert_eq!(scanner.manifest.version, "2.14.0");
     }
 
     #[test]
@@ -608,6 +740,11 @@ mod tests {
         let error =
             ToolRegistry::with_configured(&[generic_manifest("ScannerExemplo"), generic_manifest("zap")])
                 .unwrap_err();
+        let error = ToolRegistry::with_configured(&[
+            generic_manifest("ScannerExemplo"),
+            generic_manifest("zap"),
+        ])
+        .unwrap_err();
 
         assert!(error.to_string().contains("duplicada"), "{error}");
     }
