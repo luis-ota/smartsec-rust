@@ -48,6 +48,14 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Dependência de sistema exigida pelo build. No Linux, `keyring` usa a feature
+  # `sync-secret-service` (Cargo.toml, `cfg(target_os = "linux")`), que puxa
+  # `secret-service` -> `libdbus-sys`. O build script do `libdbus-sys` chama
+  # `pkg-config --libs --cflags 'dbus-1 >= 1.6'`, e o runner do Ubuntu não traz
+  # os headers de desenvolvimento do D-Bus. Sem esta etapa o build morre com
+  # "Package dbus-1 was not found in the pkg-config search path" e exit 101.
+  # Descoberto no primeiro run do PR #84; ver docs/evidence/issue-26-github-actions.md.
+  SMARTSEC_PACOTE_LIBDBUS: 'libdbus-1-dev'
   # Porta do alvo autorizado controlado. O servidor HTTP fica preso a
   # 127.0.0.1 e os scanners o enxergam como 169.254.1.2, que é o endereço que
   # o Podman rootless mapeia para o loopback do host
@@ -76,6 +84,14 @@ jobs:
     steps:
       - name: Obter o código
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pré-requisito de build, não de execução: headers do D-Bus, exigidos pelo
+      # `libdbus-sys` que entra pela feature `sync-secret-service` do `keyring`.
+      - name: Instalar as dependências de sistema do build
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "$SMARTSEC_PACOTE_LIBDBUS"
 
       # `dtolnay/rust-toolchain` foi escolhido em vez de
       # `actions-rust-lang/setup-rust-toolchain` porque resolve a toolchain a
@@ -117,6 +133,12 @@ jobs:
     steps:
       - name: Obter o código
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Instalar as dependências de sistema do build
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "$SMARTSEC_PACOTE_LIBDBUS"
 
       - name: Fixar a toolchain Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (2026-09-03)
