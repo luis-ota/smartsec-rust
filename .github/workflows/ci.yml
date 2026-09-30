@@ -1,0 +1,391 @@
+# Integração do SmartSec com o GitHub Actions — issue #26.
+#
+# Este arquivo é a interface de CI do projeto. As decisões abaixo estão
+# justificadas no README (seção "GitHub Actions") e em
+# docs/evidence/issue-26-github-actions.md. Nenhuma delas pode ser alterada sem
+# atualizar os dois documentos.
+#
+# ── Por que `-j 1` em todos os comandos do cargo ─────────────────────────────
+# O build do SmartSec estoura a memória disponível quando o cargo compila
+# vários crates em paralelo: nas máquinas de desenvolvimento do projeto
+# (15 GiB de RAM, ~4 GiB livres) o `cargo -j 2` é morto pelo kernel com
+# OOM killer. Manter `-j 1` no CI é deliberado: o runner hospedado tem RAM
+# suficiente para `-j 2`, mas a suíte precisa ser reprodutível com a mesma
+# linha de comando homologada localmente, e a evidência do TCC registra os
+# comandos exatos. O custo é tempo de build; o benefício é um resultado
+# determinístico e comparável com a evidência local.
+#
+# ── Ações fixadas por SHA ───────────────────────────────────────────────────
+# Nenhuma ação é referenciada por `@main` ou por tag móvel. Cada `uses` aponta
+# para um SHA imutável e o comentário ao lado registra a tag equivalente, para
+# auditoria. Para atualizar, troque o SHA e o comentário juntos.
+name: SmartSec CI
+
+on:
+  # Configuração dos gatilhos (issue #26):
+  # - `push` apenas em `main`: evita rodar a suíte duas vezes para o mesmo
+  #   commit quando existe pull request aberto.
+  # - `pull_request` contra `main`: é o gate de integração.
+  # - `workflow_dispatch`: execução manual para depurar o runner.
+  # Para validar branches de trabalho também, adicione o nome em `push.branches`
+  # (por exemplo `[main, develop]`). Para disparar em toda tag, acrescente
+  # `tags: ['v*']` no bloco `push`.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Leitura é tudo o que o pipeline precisa. Sem `security-events` e sem
+# `pull_request_target`, secrets de fork nunca chegam ao job.
+permissions:
+  contents: read
+
+# Execuções antigas do mesmo ref são canceladas quando um commit novo chega.
+concurrency:
+  group: smartsec-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Porta do alvo autorizado controlado. O servidor HTTP fica preso a
+  # 127.0.0.1 e os scanners o enxergam como 169.254.1.2, que é o endereço que
+  # o Podman rootless mapeia para o loopback do host
+  # (`--network pasta:--map-host-loopback=169.254.1.2`, fixado em
+  # src/orchestrator/sandbox.rs). Nenhum alvo externo real é escaneado.
+  SMARTSEC_ALVO_PORTA: '38177'
+  # Ferramentas usadas no CI. Nmap é a única que roda sem checkout extra de
+  # templates em disco: o Nuclei exige um repositório de templates validado
+  # (nuclei_templates_path) e o Nikto aumenta o tempo de CI sem acrescentar
+  # cobertura útil contra o alvo de fixture.
+  SMARTSEC_FERRAMENTAS: 'Nmap'
+  # Espelha NMAP_IMAGE de src/tools/nmap.rs. Se a imagem mudar no código, atualize
+  # aqui; o smoke test do passo de pré-requisitos passa a validar a imagem nova.
+  SMARTSEC_IMAGEM_NMAP: 'docker.io/instrumentisto/nmap:7.95'
+  # Provedor usado no CI. `ollama` é loopback: o agente cai no fallback
+  # determinístico local quando não há Ollama no runner, sem alterar o exit code.
+  SMARTSEC_PROVEDOR_IA: 'ollama'
+
+jobs:
+  qualidade:
+    name: Formatação, clippy e testes
+    runs-on: ubuntu-24.04
+    # Imagem fixada, não `ubuntu-latest`: o runner é parte do ambiente de
+    # validação do TCC e não pode mudar de underlie sem registro.
+    timeout-minutes: 60
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `dtolnay/rust-toolchain` foi escolhido em vez de
+      # `actions-rust-lang/setup-rust-toolchain` porque resolve a toolchain a
+      # partir do mesmo manifesto oficial do rust-lang e não exige a lista de
+      # componentes separately: `clippy` e `rustfmt` já vêm habilitados. A
+      # versão é fixada em 1.98.1 — a mesma com que a suíte foi validada
+      # localmente e que atende ao mínimo de Rust 1.80+ declarado no README.
+      - name: Fixar a toolchain Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (2026-09-03)
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+
+      # `Swatinem/rust-cache` foi escolhido em vez de `actions/cache` porque
+      # já deriva a chave do hash de Cargo.toml, Cargo.lock e da toolchain, e
+      # limpa artefatos intermediários antes de salvar. Com `actions/cache` a
+      # chave teria de ser montada à mão e erra fácil quando o lock muda.
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Chave compartilhada entre os jobs `qualidade` e `varredura` para que
+          # o binário já compilado seja reaproveitado.
+          shared-key: smartsec-rust-ci
+          cache-on-failure: true
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -j 1 -- -D warnings
+
+      - name: testes
+        run: cargo test -j 1
+
+  varredura:
+    name: Varredura headless do alvo autorizado
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fixar a toolchain Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (2026-09-03)
+        with:
+          toolchain: '1.98.1'
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: smartsec-rust-ci
+          cache-on-failure: true
+
+      - name: Compilar o binário headless
+        run: cargo build -j 1 --bin smartsec-rust
+
+      # ── Secrets consumidos por este workflow ──────────────────────────────
+      # SMARTSEC_LLM_API_KEY (opcional, GitHub Secret): habilita o provedor de
+      # IA remoto. O valor NUNCA é impresso, nunca vai para o relatório e nunca
+      # é gravado no repositório; o passo abaixo só publica se a chave existe.
+      #
+      # Limitação real e conhecida: hoje o binário carrega a chave apenas do
+      # keyring do sistema operacional (src/config/persistence.rs, `api_key` é
+      # `#[serde(skip)]` no TOML e não existe leitura de variável de ambiente em
+      # src/). O runner hospedado não tem Secret Service, portanto a chave do
+      # secret é inerte e a análise usa o fallback determinístico local
+      # (local_analysis em src/ai/agent.rs). Tornar a chave utilizável no CI
+      # exige alteração em src/, fora do escopo desta issue — registrado como
+      # bloqueio na issue #26.
+      - name: Verificar a disponibilidade da chave de IA
+        id: ia
+        env:
+          SMARTSEC_LLM_API_KEY: ${{ secrets.SMARTSEC_LLM_API_KEY }}
+          EVENTO_E_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          set -euo pipefail
+          # O provedor efetivo é sempre o local: sem chave no keyring, um
+          # provedor remoto reprovaria em `LlmConfig::validate` e o scan
+          # terminaria com 2. Ver a limitação registrada na issue #26.
+          echo "provedor=local" >> "$GITHUB_OUTPUT"
+          if [ "$EVENTO_E_FORK" = "true" ]; then
+            # GitHub não injeta secrets em pull requests de fork. O job continua
+            # com a análise local determinística, que não precisa de credencial.
+            echo "origem=pull request de fork: o GitHub não entrega secrets" >> "$GITHUB_OUTPUT"
+          elif [ -n "${SMARTSEC_LLM_API_KEY:-}" ]; then
+            echo "origem=chave presente, porém inerte: o binário lê do keyring, ausente no runner" >> "$GITHUB_OUTPUT"
+          else
+            echo "origem=secret SMARTSEC_LLM_API_KEY não configurado" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "### Chave de IA"
+            echo ""
+            echo "- Provedor efetivo: local determinístico (\`${{ steps.ia.outputs.provedor }}\`)"
+            echo "- Motivo: ${{ steps.ia.outputs.origem }}"
+            echo "- O valor do secret não é exibido em nenhum log."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # O TCC proíbe rodar scanners no host: o executor só usa Podman rootless
+      # com `--network pasta` e falha se o Podman não estiver em modo rootless.
+      # O runner hospedado do Ubuntu já vem com Podman; o passo abaixo apenas
+      # confirma e dá mensagem acionável quando alguma pré-condição falta.
+      - name: Verificar o Podman rootless e a rede pasta
+        run: |
+          set -euo pipefail
+          if ! command -v podman > /dev/null; then
+            echo "::error::Podman não está instalado neste runner. O SmartSec exige Podman rootless; use uma imagem de runner com Podman ou troque runs-on."
+            exit 1
+          fi
+          podman --version
+          rootless="$(podman info --format '{{.Host.Security.Rootless}}')"
+          if [ "$rootless" != "true" ]; then
+            echo "::error::O Podman deste runner não está em modo rootless; o SmartSec recusa executar."
+            exit 1
+          fi
+          echo "Podman rootless confirmado."
+          # Baixa a imagem antes da varredura: um pull lento ou bloqueado
+          # vira mensagem de rede clara aqui, e não um exit code 2 do scanner.
+          podman pull "$SMARTSEC_IMAGEM_NMAP"
+          # Smoke test da rede pasta com a mesma flag fixa de src/orchestrator/sandbox.rs.
+          podman run --rm --network 'pasta:--map-host-loopback=169.254.1.2' \
+            "$SMARTSEC_IMAGEM_NMAP" -V
+
+      # Prova, no próprio runner, de que o contrato de exit codes usado pelo
+      # veredito abaixo é o do TCC_SPEC.md seção 10. Não usa Podman nem rede.
+      - name: Verificar o contrato de exit codes da CLI
+        run: |
+          set -euo pipefail
+          bin="$PWD/target/debug/smartsec-rust"
+          "$bin" --version
+          "$bin" --help > /dev/null
+          set +e
+          "$bin" scan --target http://127.0.0.1:1 --tools Inexistente > /dev/null 2>&1
+          code="$?"
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "::error::Esperado exit code 2 para ferramenta desconhecida; veio $code."
+            exit 1
+          fi
+          echo "Contrato da CLI confirmado: --help retorna 0 e erro de configuração retorna 2."
+          echo "O exit code 1 (achado crítico) não é reproduzível contra o alvo de fixture do CI, que só produz achados informativos; o veredito o cobre por leitura do código."
+
+      - name: Publicar o alvo autorizado controlado
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/alvo" "$RUNNER_TEMP/artefatos" "$RUNNER_TEMP/xdg"
+          cat > "$RUNNER_TEMP/alvo/index.html" <<'HTML'
+          <!doctype html>
+          <html lang="pt-BR">
+          <head><meta charset="utf-8"><title>Alvo autorizado do CI</title></head>
+          <body><h1>SmartSec</h1><p>Fixture local usada pelo GitHub Actions.</p></body>
+          </html>
+          HTML
+          nohup python3 -m http.server "$SMARTSEC_ALVO_PORTA" --bind 127.0.0.1 \
+            --directory "$RUNNER_TEMP/alvo" > "$RUNNER_TEMP/alvo.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/alvo.pid"
+          for _ in $(seq 1 20); do
+            if curl --fail --silent --max-time 1 "http://127.0.0.1:$SMARTSEC_ALVO_PORTA" > /dev/null; then
+              echo "Alvo autorizado no ar em 127.0.0.1:$SMARTSEC_ALVO_PORTA"
+              exit 0
+            fi
+            sleep 0.25
+          done
+          echo "::error::O alvo local não respondeu na porta $SMARTSEC_ALVO_PORTA."
+          cat "$RUNNER_TEMP/alvo.log"
+          exit 1
+
+      # Passo da varredura. `continue-on-error` é deliberado: o exit code do
+      # SmartSec é um resultado de negócio, não um defeito do pipeline, e este
+      # passo precisa terminar para que o relatório, o log estruturado e o
+      # resumo sejam publicados. O veredito fica no passo seguinte, com um
+      # mapeamento explícito e auditável.
+      - name: Executar a varredura headless
+        id: smartsec
+        continue-on-error: true
+        env:
+          SMARTSEC_LLM_API_KEY: ${{ secrets.SMARTSEC_LLM_API_KEY }}
+        run: |
+          set -uo pipefail
+          set +e
+          XDG_CONFIG_HOME="$RUNNER_TEMP/xdg" \
+          DBUS_SESSION_BUS_ADDRESS='disabled:' \
+          "$PWD/target/debug/smartsec-rust" scan \
+            --target "http://169.254.1.2:$SMARTSEC_ALVO_PORTA" \
+            --tools "$SMARTSEC_FERRAMENTAS" \
+            --llm "$SMARTSEC_PROVEDOR_IA" \
+            --output 'relatorio.md' \
+            --output-dir "$RUNNER_TEMP/artefatos" \
+            2>&1 | tee "$RUNNER_TEMP/smartsec.log"
+          code="${PIPESTATUS[0]}"
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          # O passo nunca falha por conta própria: quem decide é o veredito.
+          exit 0
+
+      # ── A decisão mais importante desta issue ──────────────────────────────
+      # Mapeamento do exit code do SmartSec (TCC_SPEC.md seção 10) para o
+      # resultado do job:
+      #
+      #   0 -> job verde. A varredura rodou e não achou nada crítico.
+      #   1 -> job verde, com alerta. Achado crítico é um RESULTADO VÁLIDO da
+      #        varredura, não defeito do pipeline: o TCC_SPEC seção 10 diz
+      #        explicitamente que "finding crítico não é erro interno". O
+      #        relatório e o log estruturado são preservados e publicados, o
+      #        resumo do job destaca a contagem e o PR não é bloqueado por um
+      #        alvo de fixture que ninguém autorizou a corrigir. Para o modo
+      #        DevSecOps "bloquear o merge", crie a variável de repositório
+      #        SMARTSEC_BLOQUEIA_CRITICO=true (Settings > Secrets and variables
+      #        > Actions > Variables) e o 1 passa a falhar o job.
+      #   2 -> job vermelho. Erro interno, de configuração ou de execução: a
+      #        varredura é inconfiável e o resultado não pode ser aproveitado.
+      #        Falha de execução tem precedência sobre achado crítico no código,
+      #        então um 2 nunca esconde um 1.
+      #   qualquer outro valor (panic, OOM killer, sinal) -> job vermelho. Sem
+      #        isso um 137 seria lido como sucesso.
+      #
+      # Por que um passo separado em vez de confiar no status do passo: com
+      # `continue-on-error` no passo da varredura, o job continua e o passo de
+      # publicação roda com `if: always()`. O mapeamento fica em um único lugar
+      # legível, com o `exit` explícito, em vez de ser implícito no status do
+      # runner.
+      - name: Aplicar o veredito do exit code
+        id: veredito
+        env:
+          SMARTSEC_EXIT_CODE: ${{ steps.smartsec.outputs.exit_code }}
+          SMARTSEC_BLOQUEIA_CRITICO: ${{ vars.SMARTSEC_BLOQUEIA_CRITICO }}
+        run: |
+          set -euo pipefail
+          codigo="${SMARTSEC_EXIT_CODE:-vazio}"
+          case "$codigo" in
+            0)
+              echo "veredito=ok" >> "$GITHUB_OUTPUT"
+              echo "::notice::SmartSec terminou com 0: nenhuma vulnerabilidade crítica."
+              ;;
+            1)
+              echo "veredito=critico" >> "$GITHUB_OUTPUT"
+              echo "::warning::SmartSec terminou com 1: vulnerabilidade crítica encontrada. Relatório e log estruturado publicados."
+              if [ "$SMARTSEC_BLOQUEIA_CRITICO" = "true" ]; then
+                echo "SMARTSEC_BLOQUEIA_CRITICO=true: bloqueando o job por achado crítico."
+                exit 1
+              fi
+              echo "Achado crítico não bloqueia o job (variável SMARTSEC_BLOQUEIA_CRITICO não é 'true')."
+              ;;
+            2)
+              echo "veredito=erro" >> "$GITHUB_OUTPUT"
+              echo "::error::SmartSec terminou com 2: erro interno, de configuração ou de execução. O resultado da varredura não é confiável."
+              exit 1
+              ;;
+            *)
+              echo "veredito=inesperado" >> "$GITHUB_OUTPUT"
+              echo "::error::SmartSec devolveu um exit code inesperado ('$codigo'). Panic, OOM killer ou sinal são tratados como falha."
+              exit 1
+              ;;
+          esac
+
+      - name: Resumir o resultado no job
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## Varredura headless do SmartSec"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| Alvo autorizado | \`http://169.254.1.2:$SMARTSEC_ALVO_PORTA\` (servidor preso a 127.0.0.1 no runner) |"
+            echo "| Ferramentas | \`$SMARTSEC_FERRAMENTAS\` em container Podman rootless |"
+            echo "| Provedor de IA | local determinístico (sem envio de logs para LLM remoto) |"
+            echo "| Exit code | \`${{ steps.smartsec.outputs.exit_code }}\` |"
+            echo "| Veredito | \`${{ steps.veredito.outputs.veredito }}\` |"
+            echo ""
+            echo "Exit codes: \`0\` sem achado crítico, \`1\` achado crítico, \`2\` erro de execução ou configuração."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/artefatos/relatorio.md" ]; then
+            {
+              echo "### Relatório"
+              echo ""
+              cat "$RUNNER_TEMP/artefatos/relatorio.md"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "_Relatório Markdown não foi gerado nesta execução._" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Publica os artefatos mesmo com achado crítico e mesmo com erro de
+      # execução: o TCC exige preservar relatório e log estruturado antes de
+      # qualquer mensagem final, e `if: always()` garante que a evidência saia
+      # da pipeline mesmo quando o veredito terminou em vermelho.
+      - name: Publicar relatório, log estruturado e saída da varredura
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smartsec-varredura-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/artefatos/*.md
+            ${{ runner.temp }}/xdg/smartsec/scans/*.json
+            ${{ runner.temp }}/smartsec.log
+
+      - name: Encerrar o alvo local e os containers do SmartSec
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -f "$RUNNER_TEMP/alvo.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/alvo.pid")" 2> /dev/null || true
+          fi
+          # O executor remove os próprios containers, mas uma execução
+          # interrompida pode deixar um `smartsec-*` para trás.
+          mapfile -t restantes < <(podman ps -a --filter 'name=smartsec-' --format '{{.ID}}' || true)
+          if [ "${#restantes[@]}" -gt 0 ]; then
+            podman rm --force "${restantes[@]}" || true
+          fi
+          podman rmi -f "$SMARTSEC_IMAGEM_NMAP" > /dev/null 2>&1 || true
