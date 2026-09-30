@@ -893,6 +893,9 @@ mod tests {
             target: "https://exemplo.local".to_string(),
             evidence: "evidência".to_string(),
             detected_at: "2026-09-04T14:00:00Z".to_string(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
         }
     }
 

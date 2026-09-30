@@ -59,6 +59,9 @@ pub fn parse_generic_findings_with_errors(
             target: target.to_string(),
             evidence: format!("{tool} linha={}", truncate(trimmed, EVIDENCE_LIMIT)),
             detected_at: now_iso8601(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
         });
     }
     (findings, Vec::new())

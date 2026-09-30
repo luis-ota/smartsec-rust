@@ -200,6 +200,9 @@ fn build_vuln_for_port(
         target: target.to_string(),
         evidence,
         detected_at: now_iso8601(),
+        origins: Vec::new(),
+        enrichment: None,
+        severity_conflict: None,
     })
 }
 

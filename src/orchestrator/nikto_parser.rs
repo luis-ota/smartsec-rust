@@ -261,6 +261,9 @@ pub fn parse_nikto_findings_with_errors(
                 "nikto referência: {safe_reference} | método: {safe_method} | url: {safe_url} | host: {safe_host} | banner: {safe_banner} | msg: {safe_message}"
             ),
             detected_at: detected_at.clone(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
         });
     }
 
