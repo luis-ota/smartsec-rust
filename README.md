@@ -38,6 +38,7 @@ previstas no TCC ainda nao fazem parte do catalogo executavel.
 - **Nuclei real** — imagem fixada por digest, templates montados somente-leitura e plano Nmap/IA aplicado aos argumentos
 - **Nikto real** — imagem fixada por digest e relatorio JSON escrito no stdout sem shell e sem arquivo
 - **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM
+- **Servico unico de analise** — TUI e modo headless chamam o mesmo servico; o resultado identifica modelo, provedor efetivo, uso da alternativa local, motivo da falha e horario, e isso vai para o log estruturado
 - **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes e explicacoes didaticas
 - **Evidencia segura** — preserva template, matcher, endpoint, host, URL e tags, sem corpos HTTP, credenciais ou query strings
 
@@ -157,7 +158,7 @@ src/
   tui/                 Interface de terminal (telas, estado, eventos, mouse)
   orchestrator/        Pipeline de execucao, sandbox, parsers
   tools/               Runners reais das ferramentas (Nmap, Nuclei e Nikto)
-  ai/                  Agente IA (prompt LLM + analise)
+  ai/                  Agente IA e servico unico de analise (TUI e headless)
   llm/                 Provedores LLM (openai, ollama, nvidia-nim)
   domain/              Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/              Persistencia de configuracao (~/.config/smartsec/)
