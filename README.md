@@ -38,7 +38,7 @@ previstas no TCC ainda nao fazem parte do catalogo executavel.
 - **Nuclei real** — imagem fixada por digest, templates montados somente-leitura e plano Nmap/IA aplicado aos argumentos
 - **Nikto real** — imagem fixada por digest e relatorio JSON escrito no stdout sem shell e sem arquivo
 - **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM
-- **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes e explicacoes didaticas
+- **Exportacao de relatorio** — gera `smartsec-report.md` e `smartsec-report.pdf` com findings, recomendacoes, explicacoes didaticas, analise da IA e execucoes com falha
 - **Evidencia segura** — preserva template, matcher, endpoint, host, URL e tags, sem corpos HTTP, credenciais ou query strings
 
 ## Requisitos
@@ -86,13 +86,43 @@ cargo run -- scan --target https://example.com --output relatorio.md --output-di
 # Na TUI em modo assistido, marque ou desmarque ferramentas com Espaco
 ```
 
+### Relatórios Markdown e PDF
+
+Cada execução gera **dois** arquivos, com o mesmo nome e na mesma pasta: o
+Markdown e o PDF.
+
+```text
+saida/relatorio.md
+saida/relatorio.pdf
+```
+
+- O destino vem de `--output`/`--output-dir` na CLI ou de
+  `output_file`/`output_dir` no TOML, e vale para os dois modos. A CLI tem
+  precedência sobre o arquivo. O PDF recebe o mesmo nome com a extensão trocada.
+- O diretório é criado automaticamente quando não existe.
+- O PDF é montado a partir da **mesma** string Markdown já sanitizada que vai
+  para o `.md`. Por isso os dois não podem divergir: um segredo, uma credencial
+  ou uma query string removido do Markdown não aparece no PDF.
+- O texto vindo dos scanners é escapado antes de entrar no relatório, então um
+  título com `##`, um link ou uma tag HTML não vira uma seção nem um link
+  clicável no Markdown.
+- O PDF usa a Noto Sans, embutida no binário, para renderizar os acentos em
+  português. Não é preciso ter fonte instalada no sistema.
+- O relatório inclui a análise da IA e as execuções que terminaram em erro
+  (ferramenta, status, duração e mensagem), para que uma varredura incompleta
+  fique explícita em vez de parecer limpa.
+
+Cada PDF tem cerca de 290 KB porque a fonte completa é embutida a cada
+execução; o motivo está registrado em
+[`docs/evidence/issue-22-relatorio-pdf.md`](docs/evidence/issue-22-relatorio-pdf.md).
+
 ### Exit codes do modo headless
 
 | Código | Significado |
 |---:|---|
 | 0 | nenhuma vulnerabilidade crítica |
 | 1 | vulnerabilidade crítica encontrada |
-| 2 | erro de configuração ou de execução |
+| 2 | erro de configuração, de execução ou de gravação do relatório |
 
 O relatório e o log estruturado são gravados antes da mensagem final. Falha de
 scanner retorna `2` mesmo que o relatório preserve achados; achado crítico
@@ -113,8 +143,9 @@ schema mínimo: `target_url`, `active_tools`, `execution_type` e a tabela
   `execution_type` ausente assume `Assisted`.
 - `scan` headless sempre opera como Automático, independente de
   `execution_type`.
-- `output_file` e `output_dir` definem o destino do relatório Markdown; as
-  flags `--output`/`--output-dir` têm precedência sobre o arquivo.
+- `output_file` e `output_dir` definem o destino do relatório Markdown e do PDF
+  (o PDF sai ao lado, com a extensão trocada); as flags
+  `--output`/`--output-dir` têm precedência sobre o arquivo.
 
 ### Configuracao da IA na TUI
 
@@ -161,7 +192,7 @@ src/
   llm/                 Provedores LLM (openai, ollama, nvidia-nim)
   domain/              Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/              Persistencia de configuracao (~/.config/smartsec/)
-  report/              Gerador de relatorio Markdown
+  report/              Gerador de relatorio Markdown e PDF
   utils/               Auxiliares de texto
 ```
 ## Navegacao
@@ -181,3 +212,6 @@ src/
 ## Licenca
 
 Prototipo academico (TCC).
+
+A fonte Noto Sans usada no relatorio PDF e distribuida sob a SIL Open Font
+License 1.1, em `assets/fonts/LICENSE`.
