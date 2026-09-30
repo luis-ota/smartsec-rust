@@ -13,7 +13,7 @@ que resolve:
 - o **runner**: como o manifesto vira um comando executado no Podman rootless;
 - o **parser**: como a saída do runner vira achados estruturados.
 
-O catálogo é montado com as ferramentas embutidas (Nmap, Nuclei e Nikto) mais as
+O catálogo é montado com as ferramentas embutidas (Nmap, Nuclei, Nikto e SQLMap) mais as
 ferramentas declaradas na chave `[[tools]]` do arquivo de configuração TOML.
 Ferramentas desabilitadas (`enabled = false`) são validadas, mas ficam fora do
 catálogo exibido na CLI/TUI.
@@ -32,7 +32,7 @@ Todos os campos são obrigatórios, exceto `enabled` (padrão `true`).
 | `runner` | string | Runner registrado que executa a ferramenta. |
 | `parser` | string | Parser registrado que interpreta a saída. |
 | `command_template` | lista de strings | Comando do container; nenhum item pode ser vazio, o primeiro item é o executável (não pode começar com `-`) e ao menos um argumento deve conter o marcador `{target}`. |
-| `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl`, `json` para `nikto-json`, `text` para `generic-text`. |
+| `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl`, `json` para `nikto-json`, `text` para `sqlmap-text` e `generic-text`. |
 | `enabled` | bool | Opcional. `false` mantém a ferramenta fora do catálogo. |
 
 O alvo informado na CLI substitui exatamente o marcador `{target}`. Nenhum
@@ -53,6 +53,7 @@ shell é usado: cada item da lista vira um argumento literal do container.
 | `nmap-xml` | Converte o XML do Nmap em achados rastreáveis. |
 | `nuclei-jsonl` | Converte o JSONL do Nuclei em achados rastreáveis. |
 | `nikto-json` | Converte o relatório JSON do Nikto em achados rastreáveis, preservando URL, método HTTP, referência e evidência. |
+| `sqlmap-text` | Converte o texto do SQLMap em achados rastreáveis, preservando parâmetro, método HTTP, tipo e título da injeção confirmada. |
 | `generic-text` | Extrai achados informativos simples do texto, um por linha não vazia e não diagnóstica. |
 
 ## Ferramentas embutidas
@@ -62,6 +63,7 @@ shell é usado: cada item da lista vira um argumento literal do container.
 | Nmap | `docker.io/instrumentisto/nmap:7.95` (tag) | `nmap` | `nmap-xml` |
 | Nuclei | `docker.io/projectdiscovery/nuclei@sha256:2a11…` (digest) | `nuclei` | `nuclei-jsonl` |
 | Nikto | `docker.io/alpine/nikto:2.2.0@sha256:eb2fe882…` (digest), versão `2.1.6` | `generic` | `nikto-json` |
+| SQLMap | `docker.io/parrotsec/sqlmap:7.3@sha256:31bb35cd…` (digest), versão `1.10.4` | `generic` | `sqlmap-text` |
 
 ### Nikto
 
@@ -88,6 +90,56 @@ Erros tratados como `failed` com mensagem acionável em pt-BR: JSON inválido,
 stdout vazio, alvo sem servidor web (o Nikto termina com status 0 e reporta o
 código interno `000029`) e exit status diferente de zero. Exit status e timeout
 vêm do executor Podman e são preservados.
+
+### SQLMap
+
+O SQLMap é executado pelo runner `generic` a partir do `command_template`
+embutido, com `output_format = "text"`. O SQLMap não tem modo JSON, e três
+comportamentos seus, medidos em container, condicionam o comando. Todos estão
+documentados com evidência em `docs/evidence/issue-15-sqlmap.md`.
+
+- `--batch` é obrigatório. Sem ele o SQLMap bloqueia em `_input()` esperando o
+  prompt "Do you want to reduce the number of requests? [Y/n]" (medido: 45 s
+  sem término contra 3 s com a flag). Quando o stdin não é um terminal o
+  scanner adivinha o default, mas isso é acidental e não determinístico.
+- `--answers=exploit=N,...` é o que impede o *takeover*. Em `--batch` o default
+  de "do you want to exploit this SQL injection?" é `Y`, e o `Y` faz o scanner
+  sair do escopo da varredura e enumerar banco, tabelas e colunas do alvo.
+- `--technique=BEUT` limita a agressividade: o default `BEUSTQ` inclui `S`
+  (stacked queries) e `Q` (inline queries), que executam statements
+  adicionais no banco do alvo. `--level=2`, `--risk=2`, `--threads=1`,
+  `--timeout=10`, `--retries=1` e `--time-sec=3` limitam carga e tempo
+  (medido: 43–47 s sem limites contra 5–12 s com eles, dentro do timeout de
+  15 min do executor).
+
+O resultado útil vem do **stdout**, e não do arquivo `--output-dir`: verificado
+que o arquivo `log` do SQLMap contém exatamente o mesmo bloco `Parameter:` /
+`Type:` / `Title:` que o stdout. O tmpfs `/tmp` do container é destruído no fim
+da execução, e o `PodmanExecutor` só captura stdout, então ler o arquivo exigiria
+montar volume — que é justamente onde o `target.txt` do SQLMap gravaria a query
+string crua do alvo. `--output-dir=/tmp` mantém o log e a sessão no tmpfs
+efêmero; sem a flag o scanner tenta `$HOME/.local/share/sqlmap`, que é somente
+leitura.
+
+O parser `sqlmap-text` preserva parâmetro, método HTTP, `Type` e `Title`, que é
+a taxonomia do próprio scanner sobre a injeção confirmada, e descarta o
+`Payload:` — um fragmento com forma de query string, escrito incondicionalmente
+pelo scanner e que a regra de sanitização do projeto proíbe em finding. A
+severidade vem dessa mesma taxonomia de tipos (`error-based` e `UNION query`
+em ALTA, `stacked queries` em CRÍTICA, o restante em MÉDIA).
+
+Duas particularidades do formato condicionam a leitura e foram encontradas
+executando: um `Parameter:` abre um **grupo de técnicas**, e cada `Type:` dentro
+do grupo é um ponto de injeção distinto; e o SQLMap termina com status `0` em
+**todos** os cenários, inclusive alvo inalcançável e URL inválida, com o `stderr`
+vazio. Por isso o parser lê os diagnósticos do stdout.
+
+Erros tratados como `failed` com mensagem acionável em pt-BR: alvo inalcançável,
+URL inválida, bloco de injeção sem `Type:`, stdout vazio, saída não reconhecida
+e exit status diferente de zero. Não encontrar parâmetros injetáveis é resultado
+legítimo e vira varredura limpa, não erro — ainda que o SQLMap não distinga
+"sem parâmetro" de "sem injeção". Exit status e timeout vêm do executor Podman e
+são preservados.
 
 ## Procedimento para registrar uma ferramenta por configuração
 

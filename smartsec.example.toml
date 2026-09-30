@@ -37,8 +37,8 @@ model = "llama3.2:1b"
 # Ferramentas adicionais registradas por configuração (RNF08).
 # O manifesto é validado no carregamento: campos obrigatórios, duplicidade e
 # runner/parser precisam ser conhecidos. Runners: "nmap", "nuclei", "generic".
-# Parsers: "nmap-xml", "nuclei-jsonl", "nikto-json", "generic-text".
-# Nmap, Nuclei e Nikto ja sao embutidos; use outro nome aqui para nao duplicar.
+# Parsers: "nmap-xml", "nuclei-jsonl", "nikto-json", "sqlmap-text", "generic-text".
+# Nmap, Nuclei, Nikto e SQLMap ja sao embutidos; use outro nome aqui para nao duplicar.
 # Procedimento completo em docs/EXTENDING_TOOLS.md.
 #
 # [[tools]]
