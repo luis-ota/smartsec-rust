@@ -2,6 +2,7 @@ use crate::tools::manifest::{ToolManifest, TARGET_PLACEHOLDER};
 use crate::tools::nikto::{NIKTO_IMAGE, NIKTO_VERSION};
 use crate::tools::nmap::{NMAP_IMAGE, NMAP_VERSION};
 use crate::tools::nuclei::{NUCLEI_IMAGE, NUCLEI_VERSION};
+use crate::tools::sqlmap::{SQLMAP_IMAGE, SQLMAP_VERSION};
 
 /// Runners registrados: executam o manifesto dentro do executor Podman rootless.
 pub const RUNNER_NMAP: &str = "nmap";
@@ -14,6 +15,8 @@ pub const PARSER_NUCLEI_JSONL: &str = "nuclei-jsonl";
 pub const PARSER_GENERIC_TEXT: &str = "generic-text";
 /// Parser do relatório JSON do Nikto.
 pub const PARSER_NIKTO_JSON: &str = "nikto-json";
+/// Parser do texto do SQLMap.
+pub const PARSER_SQLMAP_TEXT: &str = "sqlmap-text";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunnerKind {
@@ -28,6 +31,7 @@ pub enum ParserKind {
     NucleiJsonl,
     GenericText,
     NiktoJson,
+    SqlmapText,
 }
 
 fn runner_kind(runner: &str) -> Option<RunnerKind> {
@@ -45,6 +49,7 @@ fn parser_kind(parser: &str) -> Option<ParserKind> {
         PARSER_NUCLEI_JSONL => Some(ParserKind::NucleiJsonl),
         PARSER_GENERIC_TEXT => Some(ParserKind::GenericText),
         PARSER_NIKTO_JSON => Some(ParserKind::NiktoJson),
+        PARSER_SQLMAP_TEXT => Some(ParserKind::SqlmapText),
         _ => None,
     }
 }
@@ -59,6 +64,7 @@ fn registered_parsers() -> String {
         PARSER_NUCLEI_JSONL,
         PARSER_GENERIC_TEXT,
         PARSER_NIKTO_JSON,
+        PARSER_SQLMAP_TEXT,
     ]
     .join(", ")
 }
@@ -69,6 +75,7 @@ fn expected_output_format(parser: ParserKind) -> &'static str {
         ParserKind::NucleiJsonl => "jsonl",
         ParserKind::GenericText => "text",
         ParserKind::NiktoJson => "json",
+        ParserKind::SqlmapText => "text",
     }
 }
 
@@ -103,6 +110,11 @@ impl ToolRegistry {
             ParserKind::NucleiJsonl,
         );
         registry.push_builtin(nikto_manifest(), RunnerKind::Generic, ParserKind::NiktoJson);
+        registry.push_builtin(
+            sqlmap_manifest(),
+            RunnerKind::Generic,
+            ParserKind::SqlmapText,
+        );
         registry
     }
 
@@ -273,6 +285,27 @@ fn nikto_manifest() -> ToolManifest {
     }
 }
 
+/// Manifesto embutido do SQLMap.
+///
+/// Usa o runner `generic`: o `command_template` abaixo é o comando validado
+/// empiricamente no container (ver `docs/evidence/issue-15-sqlmap.md`), sem
+/// shell e sem arquivo. O SQLMap não tem modo JSON, então o `output_format` é
+/// `text` e o resultado é lido do stdout.
+fn sqlmap_manifest() -> ToolManifest {
+    ToolManifest {
+        name: "SQLMap".to_string(),
+        description: "Scanner de injeção SQL em aplicações web".to_string(),
+        category: "DAST".to_string(),
+        image: SQLMAP_IMAGE.to_string(),
+        version: SQLMAP_VERSION.to_string(),
+        runner: RUNNER_GENERIC.to_string(),
+        parser: PARSER_SQLMAP_TEXT.to_string(),
+        command_template: crate::tools::sqlmap::container_arguments(TARGET_PLACEHOLDER),
+        output_format: "text".to_string(),
+        enabled: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +425,98 @@ mod tests {
         assert_eq!(
             registry.find("NiktoLegado").unwrap().parser,
             ParserKind::NiktoJson
+        );
+    }
+
+    #[test]
+    fn builtin_catalog_exposes_sqlmap_with_pinned_image_and_version() {
+        let registry = ToolRegistry::builtin();
+
+        let sqlmap = registry
+            .find("sqlmap")
+            .expect("o SQLMap deve estar no catálogo embutido");
+
+        assert_eq!(sqlmap.manifest.name, "SQLMap");
+        assert_eq!(sqlmap.parser, ParserKind::SqlmapText);
+        assert_eq!(sqlmap.runner, RunnerKind::Generic);
+        assert_eq!(sqlmap.manifest.output_format, "text");
+        assert!(sqlmap.manifest.enabled);
+
+        // Imagem fixada por digest e versão registrada para o log estruturado.
+        assert!(
+            sqlmap.manifest.image.contains("@sha256:"),
+            "{}",
+            sqlmap.manifest.image
+        );
+        assert_eq!(sqlmap.manifest.version, "1.10.4");
+    }
+
+    #[test]
+    fn builtin_sqlmap_command_template_is_non_interactive_and_avoids_shell() {
+        let registry = ToolRegistry::builtin();
+        let sqlmap = registry.find("sqlmap").unwrap();
+
+        // O manifesto embutido passa pela mesma validação das ferramentas do TOML.
+        assert!(sqlmap.manifest.validate(0).is_ok());
+
+        let command = sqlmap
+            .manifest
+            .render_command("http://169.254.1.2:3100/item?id=1");
+
+        assert_eq!(command.first().map(String::as_str), Some("sqlmap"));
+        // O alvo só pode aparecer como valor de `-u`, nunca como flag.
+        let position = command
+            .iter()
+            .position(|item| item == "-u")
+            .expect("o alvo deve ser informado com -u");
+        assert_eq!(command[position + 1], "http://169.254.1.2:3100/item?id=1");
+        // Nenhum item do comando introduz metacaractere de shell.
+        for argument in &command {
+            assert!(
+                !argument.contains(['|', '>', '<', ';', '$', '&', '`']),
+                "{argument}"
+            );
+        }
+        // Nenhum placeholder sobrevive à renderização.
+        assert!(!command.iter().any(|item| item.contains(TARGET_PLACEHOLDER)));
+    }
+
+    #[test]
+    fn sqlmap_is_rejected_when_a_configured_tool_reuses_its_name() {
+        let mut manifest = generic_manifest("SQLMap");
+        manifest.parser = PARSER_SQLMAP_TEXT.to_string();
+
+        let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("duplicada"), "{message}");
+        assert!(message.contains("SQLMap"), "{message}");
+    }
+
+    #[test]
+    fn rejects_a_configured_tool_declaring_the_sqlmap_parser_with_the_wrong_format() {
+        let mut manifest = generic_manifest("SQLMapLegado");
+        manifest.parser = PARSER_SQLMAP_TEXT.to_string();
+        manifest.output_format = "json".to_string();
+
+        let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("output_format"), "{message}");
+        assert!(message.contains("'text'"), "{message}");
+        assert!(message.contains(PARSER_SQLMAP_TEXT), "{message}");
+    }
+
+    #[test]
+    fn a_configured_tool_can_use_the_sqlmap_parser() {
+        let mut manifest = generic_manifest("SQLMapLegado");
+        manifest.parser = PARSER_SQLMAP_TEXT.to_string();
+
+        let registry = ToolRegistry::with_configured(&[manifest]).unwrap();
+
+        assert_eq!(
+            registry.find("SQLMapLegado").unwrap().parser,
+            ParserKind::SqlmapText
         );
     }
 
