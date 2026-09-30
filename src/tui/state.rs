@@ -140,6 +140,8 @@ pub struct AppState {
     pub detail_max_scroll: usize,
     pub md_exported: bool,
     pub exported_report_path: Option<PathBuf>,
+    /// Caminho do PDF gerado junto com o Markdown (REQ18).
+    pub exported_pdf_path: Option<PathBuf>,
     pub show_report_viewer: bool,
     pub report_content: String,
     pub report_scroll: usize,
@@ -259,6 +261,7 @@ impl AppState {
             detail_max_scroll: 0,
             md_exported: false,
             exported_report_path: None,
+            exported_pdf_path: None,
             show_report_viewer: false,
             report_content: String::new(),
             report_scroll: 0,
@@ -776,7 +779,19 @@ impl AppState {
             &self.config,
             &self.vulnerabilities(),
             &self.orchestrator.decision_history,
+            &self.orchestrator.last_log,
+            &self.failed_executions(),
         )
+    }
+
+    /// Execuções que terminaram em erro, para a seção de falhas do relatório.
+    pub fn failed_executions(&self) -> Vec<SecurityTool> {
+        self.orchestrator
+            .execution_history
+            .iter()
+            .filter(|execution| execution.execution_error.is_some())
+            .cloned()
+            .collect()
     }
 
     pub fn visible_settings_fields(&self) -> Vec<SettingsField> {

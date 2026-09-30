@@ -691,21 +691,38 @@ fn cancel_execution(app: &mut AppState) {
     }
 }
 
+/// Exporta o relatório nos caminhos pedidos por `output_file`/`output_dir`.
+///
+/// A TUI usava antes um `smartsec-report.md` fixo no diretório atual e ignorava
+/// a configuração; agora ela compartilha `report::resolve_report_path` com o
+/// modo headless, para que os dois modos gravem onde o usuário pediu.
 fn export_markdown(app: &mut AppState) {
     if app.step == AppStep::Results {
-        match std::fs::write("smartsec-report.md", app.export_md()) {
-            Ok(()) => {
+        let report = app.export_md();
+        let exported = (|| -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+            let markdown = crate::report::resolve_report_path(&app.config)?;
+            let pdf = crate::report::resolve_pdf_path(&markdown);
+            crate::report::ReportGenerator::export_to_markdown(
+                &report,
+                &markdown.to_string_lossy(),
+            )?;
+            crate::report::ReportGenerator::export_to_pdf(&report, &pdf.to_string_lossy())?;
+            Ok((markdown, pdf))
+        })();
+        match exported {
+            Ok((markdown, pdf)) => {
                 app.md_exported = true;
-                app.exported_report_path = Some(
-                    std::env::current_dir()
-                        .map(|dir| dir.join("smartsec-report.md"))
-                        .unwrap_or_else(|_| std::path::PathBuf::from("smartsec-report.md")),
-                );
+                app.exported_pdf_path = Some(pdf);
+                let absolute = std::env::current_dir()
+                    .map(|dir| dir.join(&markdown))
+                    .unwrap_or(markdown);
+                app.exported_report_path = Some(absolute);
             }
             Err(error) => {
                 app.md_exported = false;
                 app.exported_report_path = None;
-                app.run_error = Some(format!("Falha ao exportar relatório: {error}"));
+                app.exported_pdf_path = None;
+                app.run_error = Some(format!("Falha ao exportar relatório: {error:#}"));
             }
         }
         app.focus = FocusTarget::ResultsExport;
@@ -720,6 +737,7 @@ fn new_scan(app: &mut AppState) {
     app.show_didactic = false;
     app.md_exported = false;
     app.exported_report_path = None;
+    app.exported_pdf_path = None;
     app.show_report_viewer = false;
     app.report_content = String::new();
     app.report_scroll = 0;

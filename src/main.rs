@@ -16,6 +16,7 @@ mod tui;
 mod utils;
 
 use crate::config::execution_type::ExecutionType;
+use crate::domain::security_tool::SecurityTool;
 use crate::domain::vulnerability::Vulnerability;
 use crate::domain::Severity;
 use crate::orchestrator::Orchestrator;
@@ -315,10 +316,18 @@ impl CommandLineInterface {
         }
         println!();
 
+        let failed_executions: Vec<SecurityTool> = orchestrator
+            .execution_history
+            .iter()
+            .filter(|execution| execution.execution_error.is_some())
+            .cloned()
+            .collect();
         let report = crate::report::ReportGenerator::compile_report(
             &config,
             &orchestrator.findings,
             &orchestrator.decision_history,
+            &analysis,
+            &failed_executions,
         );
         let crit = orchestrator
             .findings
@@ -357,7 +366,12 @@ impl CommandLineInterface {
         println!("  Próximo passo: {}", orchestrator.determine_next_step());
         println!("  Contêiner: {}", orchestrator.container_id());
         println!();
-        let report_path = resolve_report_path(&config)?;
+        let report_path = crate::report::resolve_report_path(&config)?;
+        let pdf_file = crate::report::resolve_pdf_path(&report_path);
+        // Markdown e log estruturado são gravados antes do PDF e da mensagem
+        // final (TCC_SPEC.md, seção 10): se a geração do PDF falhar, os dois
+        // artefatos que sustentam a auditoria já estão no disco e o operador
+        // recebe a falha com caminho e causa.
         let log_result = orchestrator.persist_scan_log();
         let report_result = crate::report::ReportGenerator::export_to_markdown(
             &report,
@@ -365,8 +379,10 @@ impl CommandLineInterface {
         );
         let log_path = log_result?;
         report_result?;
+        crate::report::ReportGenerator::export_to_pdf(&report, &pdf_file.to_string_lossy())?;
         println!("═══════════════════════════════════════════════════════════");
-        println!("  OK Relatório exportado: {}", report_path.display());
+        println!("  OK Relatório Markdown: {}", report_path.display());
+        println!("  OK Relatório PDF: {}", pdf_file.display());
         println!("  OK Log estruturado: {}", log_path.display());
         let exit_code = headless_exit_code(&orchestrator.findings, scan_failure.as_deref());
         if let Some(failure) = scan_failure {
@@ -395,32 +411,6 @@ pub fn headless_exit_code(findings: &[Vulnerability], scan_failure: Option<&str>
         return EXIT_CRITICAL;
     }
     EXIT_SUCCESS
-}
-
-/// Resolve o caminho do relatório e cria o diretório de saída quando definido.
-fn resolve_report_path(config: &config::Configuration) -> Result<std::path::PathBuf> {
-    let file = config
-        .output_file
-        .as_deref()
-        .unwrap_or("smartsec-report.md");
-    let path = match config.output_dir.as_deref().filter(|dir| !dir.is_empty()) {
-        Some(dir) => {
-            let file_name = std::path::Path::new(file)
-                .file_name()
-                .map(std::ffi::OsStr::to_os_string)
-                .unwrap_or_else(|| "smartsec-report.md".into());
-            let directory = std::path::PathBuf::from(dir);
-            std::fs::create_dir_all(&directory).map_err(|error| {
-                anyhow::anyhow!(
-                    "não foi possível criar o diretório de saída '{}': {error}",
-                    directory.display()
-                )
-            })?;
-            directory.join(file_name)
-        }
-        None => std::path::PathBuf::from(file),
-    };
-    Ok(path)
 }
 
 fn build_config(
@@ -594,10 +584,14 @@ mod tests {
             ..config::Configuration::default()
         };
 
-        let path = resolve_report_path(&config).unwrap();
-
+        let path = crate::report::resolve_report_path(&config).unwrap();
         assert_eq!(path, dir.join("relatorio.md"));
+        // O diretório é criado na gravação, não na resolução do caminho.
+        assert!(!dir.is_dir());
+        crate::report::ReportGenerator::export_to_markdown("conteúdo", &path.to_string_lossy())
+            .unwrap();
         assert!(dir.is_dir(), "o diretório de saída deve ser criado");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "conteúdo");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
