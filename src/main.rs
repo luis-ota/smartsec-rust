@@ -679,12 +679,12 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "target_url = \"http://config.local\"\nactive_tools = [\"ZAP\"]\n\n[llm]\nprovider = \"Ollama\"\n\n[[tools]]\nname = \"ZAP\"\ndescription = \"Scanner de servidores web\"\ncategory = \"DAST\"\nimage = \"example/zap:1\"\nversion = \"1.0\"\nrunner = \"generic\"\nparser = \"generic-text\"\ncommand_template = [\"zap\", \"-host\", \"{target}\"]\noutput_format = \"text\"\n",
+            "target_url = \"http://config.local\"\nactive_tools = [\"ScannerExemplo\"]\n\n[llm]\nprovider = \"Ollama\"\n\n[[tools]]\nname = \"ScannerExemplo\"\ndescription = \"Scanner de servidores web\"\ncategory = \"DAST\"\nimage = \"example/scanner:1\"\nversion = \"1.0\"\nrunner = \"generic\"\nparser = \"generic-text\"\ncommand_template = [\"scanner\", \"-host\", \"{target}\"]\noutput_format = \"text\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {
             config: Some(path.clone()),
-            tools: Some("ZAP".to_owned()),
+            tools: Some("ScannerExemplo".to_owned()),
             llm: None,
             model: None,
             ..ExecutionArgs::default()
@@ -692,7 +692,7 @@ mod tests {
 
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
 
-        assert_eq!(configured.active_tools, vec!["ZAP"]);
+        assert_eq!(configured.active_tools, vec!["ScannerExemplo"]);
         std::fs::remove_file(&path).ok();
     }
 

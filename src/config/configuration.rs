@@ -270,10 +270,10 @@ mod tests {
             "target_url = \"http://test.local\"\n\
              [llm]\nprovider = \"ollama\"\n\
              [[tools]]\n\
-             name = \"ZAP\"\n\
+             name = \"ScannerExemplo\"\n\
              description = \"Scanner de servidores web\"\n\
              category = \"DAST\"\n\
-             image = \"example/zap:1\"\n\
+             image = \"example/scanner:1\"\n\
              version = \"1.0\"\n\
              runner = \"generic\"\n\
              parser = \"generic-text\"\n\
@@ -285,7 +285,7 @@ mod tests {
         let config = Configuration::load_from_path(&path).unwrap();
 
         assert_eq!(config.tools.len(), 1);
-        assert_eq!(config.tools[0].name, "ZAP");
+        assert_eq!(config.tools[0].name, "ScannerExemplo");
         std::fs::remove_file(&path).ok();
     }
 
@@ -300,7 +300,7 @@ mod tests {
             "target_url = \"http://test.local\"\n\
              [llm]\nprovider = \"ollama\"\n\
              [[tools]]\n\
-             name = \"ZAP\n\
+             name = \"ScannerExemplo\n\
              runner = \"generic\"\n",
         )
         .unwrap();
