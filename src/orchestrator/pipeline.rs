@@ -4,6 +4,7 @@ use crate::domain::security_tool::{SecurityTool, SecurityToolRunner};
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
 use crate::orchestrator::sandbox::{self, ExecutionResult, ExecutionStatus, PodmanExecutor};
+use crate::orchestrator::tmpfs;
 use crate::tools::nmap::NmapTool;
 use crate::tools::nuclei::{NucleiTool, NUCLEI_TEMPLATES_COMMIT};
 use crate::tools::registry::{ParserKind, RegisteredTool, RunnerKind, ToolRegistry};
@@ -156,6 +157,12 @@ impl Orchestrator {
         exec.executed_at = now_iso8601();
 
         let plan = zap_plan_dir();
+        // O plano de automação é a configuração temporária da execução: a regra
+        // do TCC a restringe a tmpfs, então a condição é verificada e não
+        // presumida a partir do TMPDIR do ambiente.
+        if let Err(error) = tmpfs::ensure_tmpfs(&plan) {
+            return self.fail_zap(&mut exec, error.to_string());
+        }
         if let Err(error) = std::fs::create_dir(&plan) {
             return self.fail_zap(
                 &mut exec,
@@ -185,12 +192,8 @@ impl Orchestrator {
                 .with_memory(crate::tools::zap::ZAP_MEMORY_LIMIT)
                 .with_tmpfs(crate::tools::zap::ZAP_HOME_TMPFS),
             Err(error) => {
-                return self.fail_zap(
-                    &mut exec,
-                    format!(
-                        "Não foi possível criar o diretório de saída do relatório do ZAP: {error}"
-                    ),
-                );
+                // A mensagem do erro já é acionável e nomeia a regra violada.
+                return self.fail_zap(&mut exec, error.to_string());
             }
         };
 

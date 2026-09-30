@@ -7,6 +7,7 @@ pub mod pipeline;
 pub mod sandbox;
 pub mod scan_logger;
 pub mod sqlmap_parser;
+pub mod tmpfs;
 pub mod trufflehog_parser;
 pub mod zap_parser;
 

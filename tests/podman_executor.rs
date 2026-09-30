@@ -6,6 +6,17 @@ pub mod utils {
 }
 
 #[allow(dead_code)]
+#[path = "../src/orchestrator/tmpfs.rs"]
+pub mod tmpfs;
+
+// O executor verifica a tmpfs do diretório de saída antes de montá-lo, então o
+// módulo de verificação entra no mesmo grafo deste teste de integração, no
+// mesmo caminho que ele ocupa no crate.
+pub mod orchestrator {
+    pub use crate::tmpfs;
+}
+
+#[allow(dead_code)]
 #[path = "../src/orchestrator/sandbox.rs"]
 mod sandbox;
 
