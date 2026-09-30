@@ -687,7 +687,7 @@ mod tests {
     fn build_findings_dispatches_the_parser_registered_for_the_tool() {
         let mut config = make_config();
         config.tools.push(ToolManifest {
-            name: "ZAP".to_string(),
+            name: "ScannerExemplo".to_string(),
             description: "Scanner de servidores web".to_string(),
             category: "DAST".to_string(),
             image: "example/zap:1".to_string(),
@@ -703,14 +703,14 @@ mod tests {
             enabled: true,
         });
         let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
-        let mut execution = SecurityTool::new("ZAP", "zap -host http://test.local");
+        let mut execution = SecurityTool::new("ScannerExemplo", "zap -host http://test.local");
         execution.output = "Servidor expõe /admin sem autenticação\n".to_string();
         orch.execution_history.push(execution);
 
         orch.build_findings();
 
         assert_eq!(orch.findings.len(), 1);
-        assert_eq!(orch.findings[0].tool, "ZAP");
+        assert_eq!(orch.findings[0].tool, "ScannerExemplo");
         assert_eq!(orch.findings[0].severity, crate::domain::Severity::Info);
     }
 
