@@ -314,6 +314,154 @@ fn settings_help_and_palette_match_80x24_snapshots() {
     );
 }
 
+/// Semeia um histórico real em disco e devolve o diretório isolado do teste.
+fn seed_history(label: &str, count: usize) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "smartsec_historico_tui_{label}_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("diretório de histórico de teste");
+    for index in 0..count {
+        let metadata = crate::orchestrator::scan_logger::ScanMetadata {
+            scan_id: format!("scan_17570000000000000{index:02}"),
+            target_url: format!("http://alvo{index}.local"),
+            started_at: "2026-09-06T10:00:00Z".to_string(),
+            completed_at: format!("2026-09-0{}T10:05:00Z", 6 + index),
+            execution_type: "Auto".to_string(),
+            llm_provider: "Ollama".to_string(),
+            tools_executed: vec![crate::orchestrator::scan_logger::ToolExecutionRecord {
+                tool_name: "Nmap".to_string(),
+                arguments: vec!["-sT".to_string()],
+                executed_at: "2026-09-06T10:01:00Z".to_string(),
+                output_bytes: 42,
+                output_sample: String::new(),
+                stdout: String::new(),
+                stderr: String::new(),
+                status: "succeeded".to_string(),
+                duration_ms: 1500,
+                tool_version: Some("7.94".to_string()),
+                image: Some("docker.io/library/nmap:7.94".to_string()),
+                execution_error: None,
+                podman_trace: Vec::new(),
+            }],
+            findings_count: 2,
+            critical_count: 0,
+            high_count: 1,
+            medium_count: 0,
+            low_count: 0,
+            info_count: 1,
+            findings: vec![serde_json::json!({
+                "title": "Versão desatualizada",
+                "severity": "High",
+                "tool": "Nmap",
+            })],
+            agent_analysis: "A superfície web expõe serviços antigos.".to_string(),
+            enrichment: Default::default(),
+            decisions: Vec::new(),
+        };
+        crate::orchestrator::scan_logger::save_scan_log_to_dir(&metadata, &dir)
+            .expect("gravação do registro de teste");
+    }
+    dir
+}
+
+#[test]
+fn history_list_and_detail_match_80x24_snapshots() {
+    let dir = seed_history("snapshots", 2);
+    let mut app = app();
+    app.history_dir = dir.clone();
+    app.step = AppStep::Results;
+    app.focus = FocusTarget::ResultsList;
+    super::event::dispatch_action(&mut app, SemanticAction::OpenHistory);
+    assert_eq!(app.step, AppStep::History);
+
+    assert_snapshot(
+        &mut app,
+        &[
+            "Histórico",
+            "Execuções anteriores",
+            "scan_1757000000000000001",
+            "C0 A1 M0 B0 I1",
+            "Abrir",
+        ],
+    );
+
+    super::event::dispatch_action(&mut app, SemanticAction::OpenHistoryRecord(0));
+    assert_snapshot(
+        &mut app,
+        &[
+            "Detalhe da execução",
+            "Ferramentas executadas",
+            "Nmap",
+            "Achados",
+            "Versão desatualizada",
+            "Análise da IA",
+        ],
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn history_without_records_explains_how_to_create_the_first_one() {
+    let root = std::env::temp_dir().join(format!(
+        "smartsec_historico_tui_vazio_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("vazio");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Diretório inexistente: a tela orienta a criar o primeiro registro.
+    let mut app = app();
+    app.history_dir = root.join("inexistente");
+    app.step = AppStep::History;
+    app.focus = FocusTarget::HistoryList;
+    app.load_history();
+    let (snapshot, _) = render_80x24(&mut app);
+    assert!(snapshot.contains("Execuções anteriores"), "{snapshot}");
+    assert!(
+        snapshot.contains("Nenhuma execução registrada"),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains("Execute uma análise"), "{snapshot}");
+
+    // Diretório existente e vazio: a tela distingue "vazio" de "inexistente".
+    app.history_dir = dir;
+    app.load_history();
+    let (snapshot, _) = render_80x24(&mut app);
+    assert!(
+        snapshot.contains("O histórico está vazio"),
+        "diretório vazio deve ser distinto de inexistente: {snapshot}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn history_reports_unreadable_records_in_80x24() {
+    let dir = seed_history("ilegivel", 1);
+    std::fs::write(dir.join("scan_1757000000000000009.json"), "{quebrado").unwrap();
+
+    let mut app = app();
+    app.history_dir = dir.clone();
+    app.step = AppStep::History;
+    app.focus = FocusTarget::HistoryList;
+    app.load_history();
+
+    let snapshot = assert_snapshot(&mut app, &["Execuções anteriores", "1 registro ilegível"]);
+
+    assert!(
+        snapshot.contains("scan_1757000000000000009.json"),
+        "{snapshot}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn wrapped_log_lines_expand_the_scroll_limit() {
     let mut app = app();

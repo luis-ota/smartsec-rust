@@ -24,6 +24,7 @@ pub enum AppStep {
     Execution,
     Analysis,
     Results,
+    History,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -166,6 +167,15 @@ pub struct AppState {
     pub settings_error: Option<String>,
     pub llm_warning: Option<String>,
     pub audit_log_path: Option<PathBuf>,
+    pub history: crate::orchestrator::scan_logger::ScanHistory,
+    pub history_dir: PathBuf,
+    pub history_cursor: usize,
+    pub history_scroll: usize,
+    pub history_detail: Option<crate::orchestrator::scan_logger::ScanMetadata>,
+    pub history_detail_scroll: usize,
+    pub history_detail_max_scroll: usize,
+    pub history_error: Option<String>,
+    pub history_return_step: AppStep,
     pub run_error: Option<String>,
     /// Aviso de indisponibilidade do enriquecimento CVE/NVD, exibido na TUI.
     pub enrichment_warning: Option<String>,
@@ -287,6 +297,15 @@ impl AppState {
             settings_error: None,
             llm_warning: None,
             audit_log_path: None,
+            history: crate::orchestrator::scan_logger::ScanHistory::default(),
+            history_dir: crate::orchestrator::scan_logger::scans_dir(),
+            history_cursor: 0,
+            history_scroll: 0,
+            history_detail: None,
+            history_detail_scroll: 0,
+            history_detail_max_scroll: 0,
+            history_error: None,
+            history_return_step: AppStep::Splash,
             run_error: None,
             enrichment_warning: None,
             exec_cancelled: false,
@@ -605,6 +624,7 @@ impl AppState {
                 self.advance_analysis();
             }
             AppStep::Results => {}
+            AppStep::History => {}
         }
     }
 
@@ -951,6 +971,66 @@ impl AppState {
 
     pub fn sync_agent_from_orchestrator(&mut self) {
         self.agent.last_analysis = self.orchestrator.last_log.clone();
+    }
+
+    /// Carrega o histórico de execuções gravados em disco.
+    ///
+    /// A leitura não altera nenhum artefato original; registros ilegíveis ficam
+    /// em [`ScanHistory::unreadable`](crate::orchestrator::scan_logger::ScanHistory)
+    /// e são exibidos ao usuário em vez de sumirem.
+    pub fn load_history(&mut self) {
+        match crate::orchestrator::scan_logger::list_scan_logs_from_dir(&self.history_dir) {
+            Ok(history) => {
+                self.history = history;
+                self.history_error = None;
+            }
+            Err(error) => {
+                self.history = crate::orchestrator::scan_logger::ScanHistory::default();
+                self.history_error = Some(format!("{error:#}"));
+            }
+        }
+        self.history_cursor = self
+            .history_cursor
+            .min(self.history.records.len().saturating_sub(1));
+        self.history_scroll = 0;
+    }
+
+    /// Abre o histórico a partir da tela atual, preservando a tela de retorno.
+    pub fn open_history(&mut self) {
+        self.load_history();
+        self.history_return_step = self.step;
+        self.history_detail = None;
+        self.history_detail_scroll = 0;
+        self.history_detail_max_scroll = 0;
+        self.step = AppStep::History;
+        self.focus = FocusTarget::HistoryList;
+    }
+
+    /// Abre o detalhe da execução selecionada, somente leitura.
+    pub fn open_history_record(&mut self, index: usize) {
+        let Some(record) = self.history.records.get(index).cloned() else {
+            self.history_error =
+                Some("A execução selecionada não está mais disponível.".to_string());
+            return;
+        };
+        match crate::orchestrator::scan_logger::load_scan_log_from_file(&record.file_path) {
+            Ok(metadata) => {
+                self.history_error = None;
+                self.history_cursor = index;
+                self.history_detail = Some(metadata);
+                self.history_detail_scroll = 0;
+                self.history_detail_max_scroll = 0;
+                self.focus = FocusTarget::HistoryDetail;
+            }
+            Err(error) => {
+                self.history_detail = None;
+                self.history_error = Some(format!(
+                    "Não foi possível abrir {}: {error:#}",
+                    record.scan_id
+                ));
+                self.focus = FocusTarget::HistoryList;
+            }
+        }
     }
 }
 

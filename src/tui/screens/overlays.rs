@@ -32,6 +32,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
             AppStep::Execution => "Acompanhe o progresso, pause ou cancele a execução.",
             AppStep::Analysis => "Aguarde a correlação dos achados e a geração das recomendações.",
             AppStep::Results => "Revise os achados, abra detalhes e exporte o relatório.",
+            AppStep::History => "Consulte execuções anteriores e abra o detalhe de cada uma.",
         }
     };
     let lines = vec![
@@ -44,6 +45,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
         shortcut("esc", "fechar ou voltar"),
         shortcut("f1", "abrir ajuda em qualquer contexto"),
         shortcut("f2", "rastreabilidade da Sprint 1"),
+        shortcut("h", "consultar o histórico de execuções"),
         shortcut("ctrl+p", "abrir a paleta de comandos"),
         Line::from(""),
         Line::styled(
