@@ -11,10 +11,14 @@ use std::fmt;
 use std::process::Stdio;
 use std::time::Duration;
 
-const LIST_DIR: &str = "list_dir";
-const READ_FILE: &str = "read_file";
-const SEARCH_CODE: &str = "search_code";
-const RUN_COMMAND: &str = "run_command";
+/// Nome de `list_dir` no protocolo de tool calling.
+pub const LIST_DIR: &str = "list_dir";
+/// Nome de `read_file` no protocolo de tool calling.
+pub const READ_FILE: &str = "read_file";
+/// Nome de `search_code` no protocolo de tool calling.
+pub const SEARCH_CODE: &str = "search_code";
+/// Nome de `run_command` no protocolo de tool calling.
+pub const RUN_COMMAND: &str = "run_command";
 
 /// Descrição de uma ferramenta no formato aceito por provedores com tool
 /// calling (schema estilo OpenAI).

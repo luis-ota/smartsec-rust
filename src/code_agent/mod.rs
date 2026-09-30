@@ -1,11 +1,12 @@
-//! Ferramentas locais read-only e sandbox de workspace do agente de código.
+//! Agente de código: sandbox read-only, ferramentas locais e o laço de
+//! tool calling que localiza a origem dos achados no projeto analisado.
 //!
-//! Esta fatia entrega apenas as ferramentas e o sandbox, consumidos pelo loop
-//! de tool calling da fatia seguinte; por isso os itens públicos ainda não têm
-//! uso no binário fora dos testes.
+//! O módulo é a única superfície pela qual o SmartSec lê o código do alvo.
+//! Toda leitura passa pelo sandbox de `workspace`, que canonicaliza o caminho e
+//! exige contenção na raiz, e pelas ferramentas de `tools`, que nunca escrevem
+//! no projeto analisado.
 
-#![allow(dead_code)]
-
+pub mod agent;
 pub mod tools;
 pub mod workspace;
 
