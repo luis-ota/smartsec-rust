@@ -246,7 +246,11 @@ impl CommandLineInterface {
         println!("  Alvo:   {}", config.target_url);
         println!("  Modo:   {}", config.execution_type);
         println!("  Dados:  REAL");
-        println!("  LLM:    {} ({})", config.llm.provider.label(), config.llm.model);
+        println!(
+            "  LLM:    {} ({})",
+            config.llm.provider.label(),
+            config.llm.model
+        );
         println!("  Scanners: Podman sem privilégios de root");
         println!();
 
