@@ -367,6 +367,18 @@ impl Orchestrator {
                         exec.status = "failed".to_string();
                     }
                 }
+                ParserKind::SqlmapText => {
+                    let (parsed, errors) =
+                        crate::orchestrator::sqlmap_parser::parse_sqlmap_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
             }
         }
         self.findings = real_findings;
