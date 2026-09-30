@@ -2,11 +2,18 @@ use crate::tools::manifest::{ToolManifest, TARGET_PLACEHOLDER};
 use crate::tools::nikto::{NIKTO_IMAGE, NIKTO_VERSION};
 use crate::tools::nmap::{NMAP_IMAGE, NMAP_VERSION};
 use crate::tools::nuclei::{NUCLEI_IMAGE, NUCLEI_VERSION};
+use crate::tools::trufflehog::{TRUFFLEHOG_IMAGE, TRUFFLEHOG_VERSION};
 
 /// Runners registrados: executam o manifesto dentro do executor Podman rootless.
 pub const RUNNER_NMAP: &str = "nmap";
 pub const RUNNER_NUCLEI: &str = "nuclei";
 pub const RUNNER_GENERIC: &str = "generic";
+/// Runner que monta o alvo dentro do container, em modo somente leitura.
+///
+/// Diferente do `generic`, que não recebe mount algum, o `repository` canonicaliza
+/// o diretório do repositório e o monta em `:ro`, porque o scanner precisa ler um
+/// repositório que vive no host.
+pub const RUNNER_REPOSITORY: &str = "repository";
 
 /// Parsers registrados: convertem a saída de um runner em achados.
 pub const PARSER_NMAP_XML: &str = "nmap-xml";
@@ -14,12 +21,15 @@ pub const PARSER_NUCLEI_JSONL: &str = "nuclei-jsonl";
 pub const PARSER_GENERIC_TEXT: &str = "generic-text";
 /// Parser do relatório JSON do Nikto.
 pub const PARSER_NIKTO_JSON: &str = "nikto-json";
+/// Parser do JSONL emitido pelo TruffleHog.
+pub const PARSER_TRUFFLEHOG_JSONL: &str = "trufflehog-jsonl";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunnerKind {
     Nmap,
     Nuclei,
     Generic,
+    Repository,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +38,7 @@ pub enum ParserKind {
     NucleiJsonl,
     GenericText,
     NiktoJson,
+    TruffleHogJsonl,
 }
 
 fn runner_kind(runner: &str) -> Option<RunnerKind> {
@@ -35,6 +46,7 @@ fn runner_kind(runner: &str) -> Option<RunnerKind> {
         RUNNER_NMAP => Some(RunnerKind::Nmap),
         RUNNER_NUCLEI => Some(RunnerKind::Nuclei),
         RUNNER_GENERIC => Some(RunnerKind::Generic),
+        RUNNER_REPOSITORY => Some(RunnerKind::Repository),
         _ => None,
     }
 }
@@ -45,12 +57,19 @@ fn parser_kind(parser: &str) -> Option<ParserKind> {
         PARSER_NUCLEI_JSONL => Some(ParserKind::NucleiJsonl),
         PARSER_GENERIC_TEXT => Some(ParserKind::GenericText),
         PARSER_NIKTO_JSON => Some(ParserKind::NiktoJson),
+        PARSER_TRUFFLEHOG_JSONL => Some(ParserKind::TruffleHogJsonl),
         _ => None,
     }
 }
 
 fn registered_runners() -> String {
-    [RUNNER_NMAP, RUNNER_NUCLEI, RUNNER_GENERIC].join(", ")
+    [
+        RUNNER_NMAP,
+        RUNNER_NUCLEI,
+        RUNNER_GENERIC,
+        RUNNER_REPOSITORY,
+    ]
+    .join(", ")
 }
 
 fn registered_parsers() -> String {
@@ -59,6 +78,7 @@ fn registered_parsers() -> String {
         PARSER_NUCLEI_JSONL,
         PARSER_GENERIC_TEXT,
         PARSER_NIKTO_JSON,
+        PARSER_TRUFFLEHOG_JSONL,
     ]
     .join(", ")
 }
@@ -69,6 +89,7 @@ fn expected_output_format(parser: ParserKind) -> &'static str {
         ParserKind::NucleiJsonl => "jsonl",
         ParserKind::GenericText => "text",
         ParserKind::NiktoJson => "json",
+        ParserKind::TruffleHogJsonl => "jsonl",
     }
 }
 
@@ -103,6 +124,11 @@ impl ToolRegistry {
             ParserKind::NucleiJsonl,
         );
         registry.push_builtin(nikto_manifest(), RunnerKind::Generic, ParserKind::NiktoJson);
+        registry.push_builtin(
+            trufflehog_manifest(),
+            RunnerKind::Repository,
+            ParserKind::TruffleHogJsonl,
+        );
         registry
     }
 
@@ -269,6 +295,34 @@ fn nikto_manifest() -> ToolManifest {
         parser: PARSER_NIKTO_JSON.to_string(),
         command_template: crate::tools::nikto::container_arguments(TARGET_PLACEHOLDER),
         output_format: "json".to_string(),
+        enabled: true,
+    }
+}
+
+/// Manifesto embutido do TruffleHog.
+///
+/// Usa o runner `repository`: o `command_template` abaixo é o comando validado
+/// empiricamente no container (ver `docs/evidence/issue-18-trufflehog.md`), sem
+/// shell, com `--json` porque sem ele o TruffleHog imprime o valor do segredo em
+/// claro no stdout. O `{target}` é substituído pela URI resolvida pelo runner:
+/// `file:///alvo` para repositório local montado em somente leitura, ou a URI
+/// remota autorizada.
+fn trufflehog_manifest() -> ToolManifest {
+    ToolManifest {
+        name: "TruffleHog".to_string(),
+        description: "Detecção de segredos expostos em repositórios".to_string(),
+        category: "SECRETS".to_string(),
+        image: TRUFFLEHOG_IMAGE.to_string(),
+        version: TRUFFLEHOG_VERSION.to_string(),
+        runner: RUNNER_REPOSITORY.to_string(),
+        parser: PARSER_TRUFFLEHOG_JSONL.to_string(),
+        // O `{target}` é a URI resolvida pelo runner: `file:///alvo` para
+        // repositório local montado em somente leitura, ou a URI remota
+        // autorizada. O mount em si é aplicado pelo executor, fora do comando.
+        // Passar o placeholder com montagem vazia devolve exatamente a mesma
+        // lista de `container_arguments`, com o marcador no lugar da URI.
+        command_template: crate::tools::trufflehog::container_arguments(TARGET_PLACEHOLDER, ""),
+        output_format: "jsonl".to_string(),
         enabled: true,
     }
 }
