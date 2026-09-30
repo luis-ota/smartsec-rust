@@ -1,0 +1,32 @@
+        ___
+       __H__
+ ___ ___[']_____ ___ ___  {1.10.4#stable}
+|_ -| . [)]     | .'| . |
+|___|_  [,]_|_|_|__,|  _|
+      |_|V...       |_|   https://sqlmap.org
+
+[*] starting @ 19:17:04 /2026-09-30/
+
+[19:17:04] [WARNING] using '/tmp' as the output directory
+[19:17:04] [WARNING] unable to create history directory '/root/.local/share/sqlmap/history' ([Errno 30] Read-only file system: '/root/.local/share/sqlmap'). Using temporary directory '/tmp/sqlmaphistory2c1d8ef0' instead
+[1/1] URL:
+GET http://169.254.1.2:3000/index.html?id=1
+do you want to test this URL? [Y/n/q]
+> Y
+[19:17:04] [INFO] testing URL 'http://169.254.1.2:3000/index.html?id=1'
+[19:17:04] [INFO] testing connection to the target URL
+[19:17:04] [WARNING] turning off pre-connect mechanism because of incompatible server ('SimpleHTTP/0.6 Python/3.14.7')
+[19:17:04] [INFO] testing if the target URL content is stable
+[19:17:04] [INFO] target URL content is stable
+[19:17:04] [INFO] testing if GET parameter 'id' is dynamic
+[19:17:04] [WARNING] GET parameter 'id' does not appear to be dynamic
+[19:17:04] [WARNING] heuristic (basic) test shows that GET parameter 'id' might not be injectable
+[19:17:04] [INFO] testing for SQL injection on GET parameter 'id'
+[19:17:04] [INFO] testing 'AND boolean-based blind - WHERE or HAVING clause'
+[19:17:04] [INFO] testing 'SQLite > 2.0 AND time-based blind (heavy query)'
+[19:17:04] [INFO] testing 'Generic UNION query (NULL) - 1 to 20 columns'
+[19:17:04] [WARNING] GET parameter 'id' does not seem to be injectable
+[19:17:04] [ERROR] all tested parameters do not appear to be injectable. Try to increase values for '--level'/'--risk' options if you wish to perform more tests. Rerun without providing the option '--technique'. If you suspect that there is some kind of protection mechanism involved (e.g. WAF) maybe you could try to use option '--tamper' (e.g. '--tamper=space2comment') and/or switch '--random-agent', skipping to the next target
+[19:17:04] [INFO] you can find results of scanning in multiple targets mode inside the CSV file '/tmp/results-09302026_0717pm.csv'
+
+[*] ending @ 19:17:04 /2026-09-30/
