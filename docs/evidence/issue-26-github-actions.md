@@ -1,16 +1,21 @@
 # Evidencia da integracao com o GitHub Actions — issue #26
 
-Data da execucao local: 30/09/2026.
+Data: 30/09/2026.
 Branch: `feat/issue-26-github-actions`, derivada da `main` no commit `14943cb`.
-Plataforma da validacao: Arch Linux, `rustc 1.98.1`, Podman 6.1.1 rootless,
-8 vCPU, 15 GiB de RAM.
+PR: <https://github.com/luis-ota/smartsec-rust/pull/84>.
+Run final verde: <https://github.com/luis-ota/smartsec-rust/actions/runs/36769923560>.
 
-> **O que esta evidencia NAO prova.** O workflow **nao foi executado no GitHub
-> Actions** no momento em que esta evidencia foi escrita. Tudo abaixo foi
-> verificado localmente, executando os mesmos scripts de shell que o YAML
-> invoca e o mesmo binário que o job compila. A secao "O que ainda precisa de
-> verificacao no primeiro run" lista o que so o runner hospedado pode
-> confirmar.
+Validacao local: Arch Linux, `rustc 1.98.1`, Podman 6.1.1 rootless, 8 vCPU,
+15 GiB de RAM.
+Validacao no CI: runner hospedado `ubuntu-24.04`, Podman 4.9.3, crun com
+systemd como gerenciador de cgroup, Rust 1.98.1.
+
+> **O workflow foi executado no GitHub Actions.** Esta evidencia tem duas
+> partes: o que foi verificado localmente antes do primeiro push (secoes 2 a 7) e
+> o que so o runner hospedado mostrou (secao 8). Os quatro runs do PR #84
+> encontraram tres defeitos reais de ambiente que a leitura do codigo nao
+> antecipou; todos estao registrados com a causa e a correcao. A secao 9 lista o
+> que continua sem verificacao.
 
 ---
 
@@ -552,48 +557,228 @@ OK  varredura :: Encerrar o alvo local e os containers do SmartSec
 
 ---
 
-## 9. O que ainda precisa de verificacao no primeiro run
+## 9. O que o GitHub Actions mostrou: quatro runs, tres defeitos reais
 
-Tudo abaixo **nao** foi verificado: exige o runner hospedado do GitHub.
+Esta e a parte da evidencia que so o runner hospedado produziu. Nenhum dos tres
+defeitos seria previsivel lendo o codigo: todos sao do **ambiente** do runner,
+nenhum exigiu alteracao em `src/`.
 
-1. **Existencia e versao do Podman no `ubuntu-24.04`.** O passo *Verificar o
-   Podman rootless e a rede pasta* falha com mensagem acionavel se o Podman nao
-   estiver instalado ou nao estiver rootless. Se a imagem do runner mudar, o
-   job inteiro cai aqui — e a primeira coisa a olhar.
-2. **Disponibilidade do backend `pasta` com a flag
-   `--map-host-loopback=169.254.1.2`.** O smoke test
-   `podman run --rm --network 'pasta:--map-host-loopback=169.254.1.2' <imagem> -V`
-   cobre isso antes da varredura. Localmente o Podman 6.1.1 fornece o backend;
-   a versao do runner pode ser outra.
-3. **Limites de cgroup do runner.** O executor pede `--memory 512m --cpus 1
-   --pids-limit 256 --cap-drop all`. O runnerhospedado atende; um
-   `podman create` que falhe por cgroup aparece como exit code `2` do SmartSec.
-4. **Egresso de rede para o registro.** O `podman pull` de
-   `docker.io/instrumentisto/nmap:7.95` depende de acesso ao Docker Hub. Falha de
-   rede aparece no smoke test, antes da varredura.
-5. **Resolucao das actions por SHA.** Os quatro SHA foram obtidos por `gh api`
-   em 30/09/2026 e apontam para commits que existem, mas nenhuma execucao
-   comprovou que eles rodam neste workflow. Se alguma action major nova
-   (`checkout` v7, `upload-artifact` v7) tiver mudado entrada ou comportamento,
-   o primeiro run acusa.
-6. **Tempo de build com `-j 1`.** O timeout do job `qualidade` e de 60 minutos.
-   O build completo com `-j 1` nao foi cronometrado de ponta a ponta; o cache
-   compartilhado deve tornar o segundo run bem mais rapido.
-7. **Exit code `1` em execucao real.** O alvo de fixture com `--tools Nmap` so
-   produz achados informativos, entao o `1` **nao foi observado** em execucao.
-   O mapeamento dele foi validado pela simulacao do veredito (secao 4), nao por
-   um scan que estourou em severidade critica. Se a politica
-   `SMARTSEC_BLOQUEIA_CRITICO` for exercitada, ela precisa de um alvo que
-   gere achado critico de verdade.
-8. **Injecao de secret.** Nao ha como verificar o consumo do secret ate existir
-   um caminho de leitura em `src/` (secao 6). O que se verifica no primeiro run
-   e apenas a ausencia de vazamento: o secret nao pode aparecer em nenhum log
-   nem no artifact.
-9. **Leitura do resumo do job.** O `job summary` recebe a tabela de veredito e o
-   relatorio Markdown; a renderizacao no PR so pode ser conferida no primeiro
-   run.
+| Run | Conclusao | Achado |
+|---:|---|---|
+| [36767374941](https://github.com/luis-ota/smartsec-rust/actions/runs/36767374941) | falha | build: `libdbus-sys` sem headers do D-Bus |
+| [36767703567](https://github.com/luis-ota/smartsec-rust/actions/runs/36767703567) | falha | `pasta` do runner nao aceita `--map-host-loopback` |
+| [36768804809](https://github.com/luis-ota/smartsec-rust/actions/runs/36768804809) | falha | crun precisa do barramento D-Bus da sessao |
+| [36769923560](https://github.com/luis-ota/smartsec-rust/actions/runs/36769923560) | **verde** | — |
 
-## 10. Bloqueio registrado
+### 9.1 `libdbus-sys` sem os headers do D-Bus (run 1)
+
+```text
+error: failed to run custom build command for `libdbus-sys v0.2.7`
+  pkg_config failed:
+  > pkg-config --libs --cflags dbus-1 'dbus-1 >= 1.6'
+  Package dbus-1 was not found in the pkg-config search path.
+Process completed with exit code 101.
+```
+
+Causa: `keyring` usa a feature `sync-secret-service` no Linux
+(`Cargo.toml`, `cfg(target_os = "linux")`), que puxa `secret-service` e
+`libdbus-sys`. O build script do `libdbus-sys` chama `pkg-config` para
+`dbus-1 >= 1.6`, e o runner do Ubuntu nao traz os headers de desenvolvimento.
+
+Correcao: `sudo apt-get install --yes --no-install-recommends
+libdbus-1-dev`. Nao e dependencia nova do projeto — e um pre-requisito de
+sistema do crate que ja estava no `Cargo.lock`.
+
+### 9.2 `pasta` do runner nao aceita `--map-host-loopback` (run 2)
+
+```text
+podman version 4.9.3
+Error: pasta failed with exit code 1:
+/usr/bin/pasta: unrecognized option '--map-host-loopback=169.254.1.2'
+Process completed with exit code 126.
+```
+
+Causa: `src/orchestrator/sandbox.rs:12` fixa
+`pasta:--map-host-loopback=169.254.1.2` para toda execucao. O `pasta` empacotado
+no runner nao conhece a opcao. A **mesma causa** reprovou um teste da suite no
+job `qualidade`:
+
+```text
+thread 'isolates_process_captures_io_and_removes_container' panicked at
+  tests/podman_executor.rs:71:5:
+assertion `left == right` failed
+  left: Failed(Some(125))
+ right: Succeeded
+test result: FAILED. 11 passed; 1 failed
+```
+
+O `125` e o codigo de "container nao subiu" do Podman. Ou seja: **`cargo test`
+ja falhava no runner hospedado antes desta issue**, por uma razão de ambiente
+que ninguem tinha registrado. Nao ha bug em `src/`: o executor usa a flag
+correta, e o runner nao tinha o backend correspondente.
+
+Correcao: o workflow compila o `pasta` do commit
+`f8df3f1b228fe19a74a269334fdfe6cc7d0605ce` — o mesmo que valida a suite
+localmente — e o instala em `/usr/local/bin`, que precede `/usr/bin` no PATH.
+O commit e conferido com `git rev-parse HEAD` antes do build, entao a origem do
+binario e verificavel pelo hash do proprio commit. Verificado localmente antes
+do push: com esse `pasta`, o smoke test e o scan completo do SmartSec passam
+(`OK (2026-09-30T19:49:37Z, 1379 bytes de saida)`, exit code 0).
+
+Descartado antes: apontar o scan para o endereco do gateway em vez de
+`169.254.1.2`. Testado localmente com um container em `--network pasta`:
+
+```console
+$ ip route | awk '/^default/ {print $3}'
+192.168.0.1
+$ podman run --rm --network pasta alpine:3.20 sh -c "nc -z -w 5 192.168.0.1 38177 ..."
+FALHOU_GATEWAY
+$ podman run --rm --network pasta alpine:3.20 sh -c "nc -z -w 5 127.0.0.1 38177 ..."
+FALHOU_LOOPBACK
+```
+
+Nao ha caminho alternativo sem `--map-host-loopback`: o loopback do container
+e o proprio container, e o gateway do host nao responde pelo servico local.
+
+### 9.3 crun precisa do barramento D-Bus da sessao (run 3)
+
+Este run e o que valida o desenho do exit code. **A infraestrutura inteira
+passou** — `pasta` instalado, Podman rootless confirmado, contrato da CLI
+verificado, alvo autorizado no ar, scan executado — e o SmartSec devolveu `2`:
+
+```text
+FALHA ([ERRO] O container 2e47c1cbb... encerrou com status 125: Error: unable to
+start container 2e47c1cbb...: crun: sd-bus call: Interactive authentication
+required.: Permission denied: OCI permission denied)
+FALHA Varredura concluída com erros: [ERRO] O container ... status 125 ...
+```
+
+E o job se comportou exatamente como projetado:
+
+```text
+  ✓ Executar a varredura headless
+  X Aplicar o veredito do exit code
+  ✓ Resumir o resultado no job
+  ✓ Publicar relatório, log estruturado e saída da varredura
+X SmartSec terminou com 2: erro interno, de configuração ou de execução.
+  O resultado da varredura não é confiável.
+ARTIFACTS
+  smartsec-varredura-36768804809
+```
+
+Os tres artefatos foram baixados desse run que **falhou**:
+
+```console
+$ gh run download 36768804809 -n smartsec-varredura-36768804809
+/tmp/.../smartsec.log
+/tmp/.../xdg/smartsec/scans/scan_1790798229453182510.json
+/tmp/.../artefatos/relatorio.md
+```
+
+Ou seja: o `if: always()` e o passo de veredito separado nao sao teoricos — os dois
+foram exercitados por um caso real de falha de execucao, com o job vermelho e
+a evidencia preservada.
+
+Causa do `125`: o passo desabilitava `DBUS_SESSION_BUS_ADDRESS='disabled:'`
+para impedir que a leitura da chave no keyring disparasse algo, mas o crun do
+runner usa o **systemd** como gerenciador de cgroup e precisa do barramento da
+sessao para subir o container. Correcao: remover a desativacao. A leitura da
+chave ja ignora a falha quando nao ha Secret Service
+(`if let Ok(key) = load_api_key()`), e o runner nao tem nenhum, portanto nao ha
+espera nem prompt. O job `qualidade`, que roda sem essa variavel e com
+`tests/podman_executor.rs` de pe, ja provava que os containers sobem no runner.
+
+### 9.4 Run verde (run 4)
+
+```text
+✓ Varredura headless do alvo autorizado in 2m29s
+✓ Formatação, clippy e testes in 2m50s
+- SmartSec terminou com 0: nenhuma vulnerabilidade crítica.
+ARTIFACTS
+  smartsec-varredura-36769923560
+```
+
+Trechos do log do job `varredura`:
+
+```text
+pasta com --map-host-loopback disponível em /usr/local/bin/pasta
+Nmap version 7.95 ( https://nmap.org )
+Contrato da CLI confirmado: --help retorna 0 e erro de configuração retorna 2.
+Alvo autorizado no ar em 127.0.0.1:38177
+  OK (2026-09-30T20:05:38Z, 1324 bytes de saída)
+  Total de achados: 1
+  CRÍTICAS: 0   ALTAS: 0   MÉDIAS: 0   BAIXAS: 0   INFORMATIVAS: 1
+  OK Relatório exportado: /home/runner/work/_temp/artefatos/relatorio.md
+  OK Log estruturado: /home/runner/work/_temp/xdg/smartsec/scans/scan_1790798745594965294.json
+```
+
+Conteudo do `relatorio.md` baixado do artifact:
+
+```text
+# SmartSec - Relatório de Análise de Segurança
+
+**URL Alvo:** http://169.254.1.2:38177/
+**Modo:** Automático
+**Dados:** REAL
+
+## Resumo
+- Total de vulnerabilidades: 1
+- Críticas: 0
+- Altas: 0
+- Médias: 0
+- Baixas: 0
+- Informativas: 1
+
+## Todas as Vulnerabilidades
+- [INFORMATIVA] Porta 38177 — SimpleHTTPServer 0.6 exposto - Nmap
+```
+
+Os tres artefatos foram baixados:
+
+```console
+$ gh run download 36769923560 -n smartsec-varredura-36769923560
+/tmp/.../smartsec.log
+/tmp/.../xdg/smartsec/scans/scan_1790798745594965294.json
+/tmp/.../artefatos/relatorio.md
+```
+
+O job `qualidade` tambem passou com os tres comandos, e o cache compartilhado
+funcionou: `cargo build` do job `varredura` rodou com o `target/` ja aquecido
+pelo job `qualidade`.
+
+### 9.5 Resposta as perguntas que a versao anterior desta evidencia deixava em aberto
+
+| Pergunta | Resposta real |
+|---|---|
+| Existe Podman no `ubuntu-24.04`? | Sim, **4.9.3**, rootless confirmado. |
+| O `pasta` do runner aceita a flag do projeto? | **Nao.** Compilado do commit fixado. |
+| Os limites de cgroup sao atendidos? | Sim com `--memory 512m --cpus 1`; o `125` do run 3 foi D-Bus, nao cgroup. |
+| Ha egresso para o registro? | Sim, `docker.io/instrumentisto/nmap:7.95` baixado. |
+| Os quatro SHA fixados rodam? | Sim, os quatro actions executaram. |
+| Quanto tempo leva com `-j 1`? | `qualidade` 2m50s e `varredura` 2m29s, com cache quente. Timeout de 60 min folgado. |
+| O `job summary` renderiza? | A anotacao `SmartSec terminou com 0` aparece no job; a tabela e o relatorio no resumo sao visiveis na pagina do PR. |
+
+## 10. O que continua sem verificacao
+
+1. **Exit code `1` em execucao real.** O alvo de fixture com `--tools Nmap` so
+   produz achados informativos — confirmado no run verde. O `1` **nao foi
+   observado** em execucao. O mapeamento dele foi validado pela simulacao do
+   veredito (secao 4), nao por um scan que estourou em severidade critica. Para
+   exercitar `SMARTSEC_BLOQUEIA_CRITICO` de verdade seria preciso um alvo CI que
+   gere achado critico, o que exige aplicacao autorizada no runner.
+2. **Consumo efetivo do secret.** Nao ha como verificar o uso da chave ate
+   existir um caminho de leitura em `src/` (secao 6). O que se verifica e
+   apenas a ausencia de vazamento: nenhum log nem artifact contem o valor.
+3. **Comportamento em fork.** O caminho de fork foi implementado e documentado,
+   mas nao exercitado — este PR nao vem de fork. Precisa de um PR de teste de
+   um fork para confirmar que o passo degrada e nao usa credencial.
+4. **Runner self-hosted.** A documentacao cobre a limitacao de cgroup v2, mas
+   nenhum runner self-hosted foi testado.
+5. **Estabilidade do `pasta` compilado.** O commit fixado nao muda sozinho, mas
+   o runner pode mudar o `podman` e parar de aceitar o backend `pasta` de
+   qualquer forma. O passo de smoke test falha com mensagem clara nesse caso.
+
+## 11. Bloqueio registrado
 
 Ver secao 6: a chave de IA do secret nao alcanca o binario porque
 `src/config/persistence.rs` so le o keyring do sistema operacional e nao existe

@@ -108,6 +108,11 @@ GitHub Actions. Ele tem dois jobs:
 | `qualidade` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` e `cargo test` | sempre que o código estiver fora do padrão |
 | `varredura` | executa o SmartSec em modo headless contra um alvo autorizado local e publica os artefatos | conforme o [mapeamento de exit code](#exit-code-do-smartsec-e-o-resultado-do-job) |
 
+No runner `ubuntu-24.04`, `qualidade` leva 2m50s e `varredura` 2m29s. A evidência
+completa, incluindo o que o runner mostrou e o que ainda não foi verificado,
+está em
+[`docs/evidence/issue-26-github-actions.md`](docs/evidence/issue-26-github-actions.md).
+
 ### Quando o workflow dispara
 
 ```yaml
@@ -175,6 +180,12 @@ execução, o relatório Markdown e o log estruturado sejam gravados **antes** d
 veredito. O passo de publicação roda com `if: always()`, então os artefatos saem
 da pipeline mesmo com achado crítico e mesmo com erro de execução.
 
+Esse desenho já foi exercitado por um caso real: em um run do
+[PR #84](https://github.com/luis-ota/smartsec-rust/pull/84) o SmartSec devolveu
+`2` porque o crun do runner não conseguiu subir o container, o job ficou
+vermelho **e** os três artefatos foram publicados e baixados normalmente. É a
+evidência de que `2` reprova e de que a evidência não se perde.
+
 ### Artifacts
 
 Sempre que existirem, com retenção de 30 dias:
@@ -232,8 +243,47 @@ normalmente. As permissões do workflow são somente `contents: read`.
 
 ### Limitações no runner hospedado
 
-Estas limitações são reais e foram verificadas por leitura de código, não
-presumidas:
+Estas limitações são reais e foram **medidas** no runner `ubuntu-24.04` do
+GitHub, não presumidas. Três pré-requisitos de ambiente precisam ser atendidos
+pelo workflow, e nenhum deles era previsível lendo o código:
+
+- **`pasta` compilado pelo workflow.** O Podman do runner é o 4.9.3, e o `pasta`
+  dele **não aceita** a opção `--map-host-loopback=169.254.1.2` que
+  `src/orchestrator/sandbox.rs` fixa para toda execução:
+
+  ```text
+  /usr/bin/pasta: unrecognized option '--map-host-loopback=169.254.1.2'
+  Error: pasta failed with exit code 1
+  ```
+
+  Sem essa opção não existe caminho para o container alcançar um serviço preso
+  ao loopback do host: o loopback do container é o próprio container, e o
+  endereço do gateway não responde pelo serviço. O workflow compila o `pasta`
+  de um commit fixado e o instala em `/usr/local/bin`, que precede `/usr/bin` no
+  `PATH`. O commit é conferido com `git rev-parse HEAD` antes do build, então a
+  origem do binário é verificável pelo hash do próprio commit. Isso é ajuste de
+  ambiente, não de código: a exigência é do projeto.
+
+  A mesma causa já fazia **`cargo test` falhar no runner hospedado**, em
+  `tests/podman_executor.rs::isolates_process_captures_io_and_removes_container`
+  (`Failed(Some(125))`), porque o executor usa a mesma flag de rede. É um bug de
+  ambiente pré-existente a esta issue, agora resolvido no CI.
+
+- **Headers do D-Bus.** O `keyring` usa a feature `sync-secret-service` no
+  Linux, que puxa `libdbus-sys`; o build script dele chama
+  `pkg-config --libs --cflags 'dbus-1 >= 1.6'`. O runner não traz os headers de
+  desenvolvimento, então sem `libdbus-1-dev` o build morre com exit `101` antes
+  de chegar ao clippy.
+
+- **Barramento D-Bus disponível durante o scan.** O crun do runner usa o systemd
+  como gerenciador de cgroup e precisa do barramento da sessão para subir o
+  container. Desabilitar `DBUS_SESSION_BUS_ADDRESS` para evitar a leitura da
+  chave no keyring faz o scan falhar com
+  `crun: sd-bus call: Interactive authentication required` e exit `125`. A
+  leitura da chave já é tolerante: sem Secret Service ela falha e o código
+  segue, sem prompt e sem espera.
+
+Outras limitações que continuam valendo:
 
 - **Rede de saída.** O runner hospedado tem acesso à internet. O `podman pull`
   da imagem do Nmap e a rede `pasta` dependem disso; sem acesso ao registro, o
@@ -255,6 +305,8 @@ presumidas:
   OOM killer nas máquinas de desenvolvimento (15 GiB de RAM, ~4 GiB livres). O
   CI mantém `-j 1` para executar exatamente a linha de comando homologada
   localmente e produzir evidência comparável, ao custo de tempo de build.
+  Medido no runner: `qualidade` leva 2m50s e `varredura` 2m29s, com o cache
+  compartilhado já aquecido.
 - **Cache.** `Swatinem/rust-cache` é usado no lugar de `actions/cache` porque
   já deriva a chave do hash de `Cargo.toml`, `Cargo.lock` e da toolchain e
   limpa artefatos intermediários antes de salvar; com `actions/cache` a chave
