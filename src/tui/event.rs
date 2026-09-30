@@ -80,6 +80,10 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return dispatch_action(app, SemanticAction::OpenHelp);
     }
 
+    if key.code == KeyCode::Char('h') && !accepts_text(app) && app.step != AppStep::Execution {
+        return dispatch_action(app, SemanticAction::OpenHistory);
+    }
+
     key_action(app, key).is_some_and(|action| dispatch_action(app, action))
 }
 
@@ -229,6 +233,8 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::DeleteBackward => delete_backward(app),
         SemanticAction::ClearText => clear_text(app),
         SemanticAction::OpenHelp => open_help(app),
+        SemanticAction::OpenHistory => app.open_history(),
+        SemanticAction::OpenHistoryRecord(index) => app.open_history_record(index),
         SemanticAction::OpenReportViewer => open_report_viewer(app),
         SemanticAction::OpenTraceability => open_traceability(app),
         SemanticAction::OpenCommandPalette => open_command_palette(app),
@@ -297,6 +303,13 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
             FocusTarget::ResultsExport,
             FocusTarget::ResultsDidactic,
         ],
+        AppStep::History => {
+            if app.history_detail.is_some() {
+                vec![FocusTarget::HistoryDetail, FocusTarget::HistoryBack]
+            } else {
+                vec![FocusTarget::HistoryList, FocusTarget::HistoryBack]
+            }
+        }
     }
 }
 
@@ -321,6 +334,8 @@ fn move_vertical(app: &mut AppState, down: bool) {
             move_result_cursor(app, down)
         }
         FocusTarget::ResultsDetail => scroll_detail(app, down, 1),
+        FocusTarget::HistoryList => move_history_cursor(app, down),
+        FocusTarget::HistoryDetail => scroll_history_detail(app, down, 1),
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent | FocusTarget::ReportClose => {
             scroll(app, down, 1)
         }
@@ -355,12 +370,16 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::ToolBack
         | FocusTarget::AnalysisCancel
         | FocusTarget::ResultsBack
-        | FocusTarget::DidacticBack => SemanticAction::Back,
+        | FocusTarget::DidacticBack
+        | FocusTarget::HistoryBack => SemanticAction::Back,
         FocusTarget::ToolRun => SemanticAction::RunTools,
         FocusTarget::ExecutionCancel if !app.exec_cancelled => SemanticAction::CancelRun,
         FocusTarget::ExecutionCancel => return,
-        FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => return,
+        FocusTarget::ExecutionLogs | FocusTarget::DidacticContent | FocusTarget::HistoryDetail => {
+            return
+        }
         FocusTarget::ResultsList => SemanticAction::OpenVulnerability(app.result_cursor),
+        FocusTarget::HistoryList => SemanticAction::OpenHistoryRecord(app.history_cursor),
         FocusTarget::ResultsDetail => return,
         FocusTarget::ResultsNewScan => SemanticAction::NewScan,
         FocusTarget::ResultsExport => SemanticAction::ExportMarkdown,
@@ -419,7 +438,6 @@ fn go_back(app: &mut AppState) -> bool {
         app.focus = FocusTarget::ResultsList;
         return false;
     }
-
     match app.step {
         AppStep::Splash => return true,
         AppStep::ToolSelect => new_scan(app),
@@ -435,6 +453,21 @@ fn go_back(app: &mut AppState) -> bool {
             app.focus = FocusTarget::ToolList;
         }
         AppStep::Results => new_scan(app),
+        AppStep::History => {
+            if app.history_detail.is_some() {
+                app.history_detail = None;
+                app.history_detail_scroll = 0;
+                app.history_detail_max_scroll = 0;
+                app.focus = FocusTarget::HistoryList;
+            } else {
+                app.step = app.history_return_step;
+                app.focus = if app.step == AppStep::Results {
+                    FocusTarget::ResultsList
+                } else {
+                    FocusTarget::SplashTarget
+                };
+            }
+        }
     }
     false
 }
@@ -565,6 +598,16 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
                 move_tool_cursor(app, down);
             }
         }
+        AppStep::History => {
+            if app.history_detail.is_some() {
+                scroll_history_detail(app, down, amount);
+            } else {
+                for _ in 0..amount {
+                    move_history_cursor(app, down);
+                }
+                app.focus = FocusTarget::HistoryList;
+            }
+        }
         AppStep::Execution => {
             app.focus = FocusTarget::ExecutionLogs;
             let max_scroll = app.log_max_scroll();
@@ -596,6 +639,30 @@ fn scroll_detail(app: &mut AppState, down: bool, amount: usize) {
             .min(app.detail_max_scroll)
     } else {
         app.detail_scroll.saturating_sub(amount)
+    };
+}
+
+fn move_history_cursor(app: &mut AppState, down: bool) {
+    let count = app.history.records.len();
+    if count == 0 {
+        app.history_cursor = 0;
+        app.history_scroll = 0;
+        return;
+    }
+    if down {
+        app.history_cursor = (app.history_cursor + 1).min(count - 1);
+    } else {
+        app.history_cursor = app.history_cursor.saturating_sub(1);
+    }
+}
+
+fn scroll_history_detail(app: &mut AppState, down: bool, amount: usize) {
+    app.history_detail_scroll = if down {
+        app.history_detail_scroll
+            .saturating_add(amount)
+            .min(app.history_detail_max_scroll)
+    } else {
+        app.history_detail_scroll.saturating_sub(amount)
     };
 }
 
@@ -1425,6 +1492,187 @@ mod tests {
         app.focus = FocusTarget::ExecutionCancel;
         dispatch_action(&mut app, SemanticAction::Activate);
         assert!(app.exec_cancelled);
+    }
+
+    #[test]
+    fn history_opens_with_h_outside_text_input_and_lists_recorded_runs() {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec_historico_eventos_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::orchestrator::scan_logger::save_scan_log_to_dir(
+            &crate::orchestrator::scan_logger::ScanMetadata {
+                scan_id: "scan_1757000000000000001".to_string(),
+                target_url: "http://alvo.local".to_string(),
+                started_at: "2026-09-06T10:00:00Z".to_string(),
+                completed_at: "2026-09-06T10:05:00Z".to_string(),
+                execution_type: "Auto".to_string(),
+                llm_provider: "Ollama".to_string(),
+                tools_executed: Vec::new(),
+                findings_count: 0,
+                critical_count: 0,
+                high_count: 0,
+                medium_count: 0,
+                low_count: 0,
+                info_count: 0,
+                findings: Vec::new(),
+                agent_analysis: "Análise".to_string(),
+                decisions: Vec::new(),
+                enrichment: Default::default(),
+            },
+            &dir,
+        )
+        .expect("gravação do registro de teste");
+
+        let mut app = app();
+        app.history_dir = dir.clone();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsList;
+
+        assert!(!press(&mut app, KeyCode::Char('h')));
+        assert_eq!(app.step, AppStep::History);
+        assert_eq!(app.focus, FocusTarget::HistoryList);
+        assert_eq!(app.history.records.len(), 1);
+        assert_eq!(app.history_cursor, 0);
+
+        // Enter abre o detalhe e Esc volta para a tela de origem.
+        assert!(!press(&mut app, KeyCode::Enter));
+        assert!(app.history_detail.is_some());
+        assert_eq!(app.focus, FocusTarget::HistoryDetail);
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(app.history_detail.is_none());
+        assert_eq!(app.focus, FocusTarget::HistoryList);
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert_eq!(app.step, AppStep::Results, "Esc devolve à tela de origem");
+        assert_eq!(app.focus, FocusTarget::ResultsList);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn typing_h_on_the_splash_fills_the_target_instead_of_opening_history() {
+        let mut app = app();
+        app.config.target_url = "https://".to_string();
+        app.focus = FocusTarget::SplashTarget;
+
+        press(&mut app, KeyCode::Char('h'));
+
+        assert_eq!(app.config.target_url, "https://h");
+        assert_eq!(app.step, AppStep::Splash);
+    }
+
+    #[test]
+    fn history_list_navigates_and_the_mouse_opens_the_row_under_the_pointer() {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec_historico_mouse_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (index, completed_at) in ["2026-09-06T10:05:00Z", "2026-09-07T10:05:00Z"]
+            .iter()
+            .enumerate()
+        {
+            crate::orchestrator::scan_logger::save_scan_log_to_dir(
+                &crate::orchestrator::scan_logger::ScanMetadata {
+                    scan_id: format!("scan_175700000000000000{index}"),
+                    target_url: "http://alvo.local".to_string(),
+                    started_at: "2026-09-06T10:00:00Z".to_string(),
+                    completed_at: completed_at.to_string(),
+                    execution_type: "Auto".to_string(),
+                    llm_provider: "Ollama".to_string(),
+                    tools_executed: Vec::new(),
+                    findings_count: 0,
+                    critical_count: 0,
+                    high_count: 0,
+                    medium_count: 0,
+                    low_count: 0,
+                    info_count: 0,
+                    findings: Vec::new(),
+                    agent_analysis: "Análise".to_string(),
+                    decisions: Vec::new(),
+                    enrichment: Default::default(),
+                },
+                &dir,
+            )
+            .expect("gravação do registro de teste");
+        }
+
+        let mut app = app();
+        app.history_dir = dir.clone();
+        app.step = AppStep::History;
+        app.focus = FocusTarget::HistoryList;
+        app.load_history();
+        assert_eq!(app.history.records.len(), 2);
+
+        // A ordem é da mais recente para a mais antiga, então o índice 1 é a mais antiga.
+        assert_eq!(app.history.records[0].scan_id, "scan_1757000000000000001");
+        assert_eq!(app.history.records[1].scan_id, "scan_1757000000000000000");
+
+        dispatch_action(&mut app, SemanticAction::MoveDown);
+        assert_eq!(app.history_cursor, 1);
+        for _ in 0..5 {
+            dispatch_action(&mut app, SemanticAction::MoveDown);
+        }
+        assert_eq!(
+            app.history_cursor, 1,
+            "a navegação satura no último registro"
+        );
+        dispatch_action(&mut app, SemanticAction::MoveUp);
+        assert_eq!(app.history_cursor, 0);
+
+        render_app(&mut app, 80, 24);
+        assert!(
+            !click_action(&mut app, &SemanticAction::OpenHistoryRecord(0)),
+            "o clique não deve encerrar o ciclo de eventos"
+        );
+        assert_eq!(app.focus, FocusTarget::HistoryDetail);
+        assert_eq!(
+            app.history_detail
+                .as_ref()
+                .map(|meta| meta.scan_id.as_str()),
+            Some("scan_1757000000000000001"),
+            "o clique precisa abrir a execução da linha apontada"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_a_corrupted_record_keeps_the_list_with_an_actionable_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec_historico_corrompido_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("scan_1757000000000000001.json"), "{quebrado").unwrap();
+
+        let mut app = app();
+        app.history_dir = dir.clone();
+        app.step = AppStep::History;
+        app.focus = FocusTarget::HistoryList;
+        app.load_history();
+
+        assert!(
+            app.history.records.is_empty(),
+            "registro corrompido não lista"
+        );
+        assert_eq!(app.history.unreadable.len(), 1);
+
+        app.open_history_record(0);
+        assert!(
+            app.history_detail.is_none(),
+            "não há registro selecionável quando a leitura falha"
+        );
+        assert_eq!(app.focus, FocusTarget::HistoryList);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
