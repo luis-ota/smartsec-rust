@@ -39,6 +39,7 @@ previstas no TCC ainda nao fazem parte do catalogo executavel.
 - **Nikto real** — imagem fixada por digest e relatorio JSON escrito no stdout sem shell e sem arquivo
 - **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM
 - **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes e explicacoes didaticas
+- **Historico consultavel** — `smartsec history` lista as execucoes e `smartsec show <SCAN_ID>` abre uma delas, tambem pela tela de historico da TUI
 - **Evidencia segura** — preserva template, matcher, endpoint, host, URL e tags, sem corpos HTTP, credenciais ou query strings
 
 ## Requisitos
@@ -83,7 +84,52 @@ cargo run -- scan --target example.com --config ./smartsec.toml --llm ollama --m
 # Escolher arquivo e diretório do relatório
 cargo run -- scan --target https://example.com --output relatorio.md --output-dir ./saida
 
+# Consultar o historico de execucoes
+cargo run -- history
+cargo run -- history --limit 5
+cargo run -- show scan_1757000000000000000
+
 # Na TUI em modo assistido, marque ou desmarque ferramentas com Espaco
+```
+
+### Historico de execucoes (REQ19)
+
+Cada execucao grava um registro JSON em `~/.config/smartsec/scans/<scan_id>.json`
+com os metadados, as ferramentas executadas (incluindo o trace do Podman), os
+achados, as contagens por severidade, a analise da IA e as decisoes. O registro
+e sanitizado antes de ser gravado.
+
+O `scan_id` tem o formato `scan_<nanos>` e nao e adivinhavel. Por isso o modo
+headless imprime o identificador ao final da execucao:
+
+```text
+  OK Log estruturado: /home/user/.config/smartsec/scans/scan_1757000000000000000.json
+  OK ID da execução: scan_1757000000000000000
+     consulte depois com: smartsec show scan_1757000000000000000
+```
+
+Na TUI, a tecla `h` (ou a paleta de comandos com `Ctrl+P`) abre a tela
+`Histórico`. `Enter` abre o detalhe da execução selecionada, `Esc` volta para a
+lista e `Esc` de novo retorna à tela de origem. A navegação funciona igualmente
+por teclado e por mouse.
+
+Regras de seguranca e de robustez:
+
+- A consulta é **somente leitura**: nenhum artefato original é criado, reescrito
+  ou removido ao listar ou abrir uma execução.
+- Um `scan_id` fora do padrão `scan_<nanos>` é recusado antes de tocar o disco.
+  Como o padrão não aceita `/` nem `.`, o identificador nunca resolve para fora
+  de `~/.config/smartsec/scans/` (path traversal).
+- Diretório inexistente e diretório vazio são mensagens diferentes.
+- Registros corrompidos ou incompletos aparecem como aviso na listagem em vez de
+  sumirem em silêncio; abrirlos falha com mensagem acionável em português.
+- Registros gravados por versões anteriores do formato, sem os campos mais
+  novos, continuam legíveis.
+
+```bash
+# Listagem com um registro corrompido semeado de propósito
+printf '{quebrado' > ~/.config/smartsec/scans/scan_1757000000000000009.json
+cargo run -- history
 ```
 
 ### Exit codes do modo headless
@@ -92,11 +138,16 @@ cargo run -- scan --target https://example.com --output relatorio.md --output-di
 |---:|---|
 | 0 | nenhuma vulnerabilidade crítica |
 | 1 | vulnerabilidade crítica encontrada |
-| 2 | erro de configuração ou de execução |
+| 2 | erro de configuração, de execução ou de consulta ao histórico |
 
 O relatório e o log estruturado são gravados antes da mensagem final. Falha de
 scanner retorna `2` mesmo que o relatório preserve achados; achado crítico
 retorna `1` e não é tratado como erro interno.
+
+Na consulta ao histórico, `history` retorna `0` mesmo vazio (a listagem foi
+executada) e `show <SCAN_ID>` retorna `2` para identificador inválido ou
+inexistente — um id errado em automação é erro de uso, não varredura limpa.
+Registros ilegíveis entre registros legíveis geram aviso, não erro.
 
 ### Arquivo de configuração TOML
 
@@ -155,7 +206,7 @@ checkout Git no commit esperado. A imagem usada e
 src/
   main.rs              Ponto de entrada (CLI + TUI + headless)
   tui/                 Interface de terminal (telas, estado, eventos, mouse)
-  orchestrator/        Pipeline de execucao, sandbox, parsers
+  orchestrator/        Pipeline de execucao, sandbox, parsers, historico de scans
   tools/               Runners reais das ferramentas (Nmap, Nuclei e Nikto)
   ai/                  Agente IA (prompt LLM + analise)
   llm/                 Provedores LLM (openai, ollama, nvidia-nim)
@@ -176,6 +227,7 @@ src/
 | Ctrl+P    | Abrir paleta de comandos  |
 | Ctrl+V    | Colar do clipboard       |
 | Ctrl+U    | Limpar o campo atual na configuracao |
+| H         | Abrir o historico de execucoes (fora de campos de texto) |
 | Mouse     | Clicar botoes, selecionar ferramentas, rolar listas |
 
 ## Licenca
