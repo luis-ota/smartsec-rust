@@ -25,7 +25,7 @@ Video completo da demonstracao: [`docs/demo-completo.mp4`](docs/demo-completo.mp
 ## Aviso
 
 Este e um **prototipo / prova de conceito**. O catalogo atual oferece Nmap,
-Nuclei e Nikto reais, executados somente em containers Podman rootless; os
+Nuclei, Nikto e SQLMap reais, executados somente em containers Podman rootless; os
 binarios dos scanners nunca sao chamados diretamente no host. As demais ferramentas
 previstas no TCC ainda nao fazem parte do catalogo executavel.
 
@@ -156,7 +156,7 @@ src/
   main.rs              Ponto de entrada (CLI + TUI + headless)
   tui/                 Interface de terminal (telas, estado, eventos, mouse)
   orchestrator/        Pipeline de execucao, sandbox, parsers
-  tools/               Runners reais das ferramentas (Nmap, Nuclei e Nikto)
+  tools/               Runners reais das ferramentas (Nmap, Nuclei, Nikto e SQLMap)
   ai/                  Agente IA (prompt LLM + analise)
   llm/                 Provedores LLM (openai, ollama, nvidia-nim)
   domain/              Modelos de dados (vulnerabilidade, severidade, ferramentas)
