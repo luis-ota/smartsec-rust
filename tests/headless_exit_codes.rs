@@ -26,6 +26,7 @@ fn help_exits_with_code_0_and_documents_the_contract() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Códigos de saída"), "{stdout}");
     assert!(stdout.contains("--output-dir"), "{stdout}");
+    assert!(stdout.contains("PDF"), "{stdout}");
 }
 
 #[test]

@@ -8,8 +8,13 @@
 //! A fonte é a Noto Sans (SIL OFL 1.1), embutida no repositório. O relatório é
 //! escrito em português brasileiro com acentos, e as 14 fontes padrão do PDF
 //! não têm `cmap` Unicode: sem fonte própria os caracteres saem quebrados.
-//! `printpdf` embute subconjunto por padrão (`PdfSaveOptions::subset_fonts`),
-//! então só os glifos realmente usados entram no arquivo.
+//!
+//! Limitação medida: com `default-features = false` o `printpdf` 0.12.8 **não**
+//! subdefine a fonte — `font::subset_font` só monta o subconjunto na
+//! configuração `text_layout` e, sem ela, devolve os bytes originais inteiros.
+//! Como `text_layout` é a feature que traria `azul-layout` e `rust-fontconfig`,
+//! cada PDF embute a Noto Sans completa (~290 KB comprimidos, quase tudo do
+//! arquivo). O texto continua correto e extraível; o custo é só de tamanho.
 
 use anyhow::{anyhow, Result};
 use printpdf::{
@@ -39,6 +44,8 @@ const LEADING_BODY: f32 = 12.5;
 const BULLET_INDENT: f32 = 12.0;
 /// Fração da altura útil que um bloco de cabeçalho reserva acima do título.
 const HEADING_SPACE_BELOW: f32 = 4.0;
+/// Espessura do traço que substitui o peso Bold da Noto Sans.
+const BOLD_STROKE_PT: f32 = 0.32;
 
 const COLOR_TEXT: Rgb = Rgb {
     r: 0.10,
@@ -103,8 +110,8 @@ pub fn render(markdown: &str) -> Result<Vec<u8>> {
     let mut warnings = Vec::new();
     let bytes = writer.document.with_pages(writer.pages).save(
         &PdfSaveOptions {
-            // Subconjunto: só os glifos do relatório entram no arquivo, em vez
-            // dos 2.840 da Noto Sans completa.
+            // Pedido explicitamente; só tem efeito na configuração `text_layout`.
+            // Ver a nota de limitação no topo do módulo.
             subset_fonts: true,
             ..PdfSaveOptions::default()
         },
@@ -136,7 +143,7 @@ enum Block {
 fn parse_markdown(markdown: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     for line in markdown.lines() {
-        let trimmed = line.trim_end();
+        let trimmed = line.trim();
         if trimmed.trim().is_empty() {
             blocks.push(Block::Spacer);
         } else if let Some(title) = trimmed.strip_prefix("### ") {
@@ -224,15 +231,36 @@ impl Writer<'_> {
             2 => (SIZE_HEADING, COLOR_HEADING),
             _ => (SIZE_SUBHEADING, COLOR_HEADING),
         };
-        // Título de nível 1 no topo da página não precisa do espaço acima.
-        if !(level == 1 && self.is_page_start()) {
-            self.cursor_y += size * 0.55;
-        }
+        let lines = self.wrap(text, CONTENT_WIDTH);
         let leading = size * 1.32;
-        for line in self.wrap(text, CONTENT_WIDTH) {
-            self.write_line(&line, MARGIN, size, &color, true);
-            self.cursor_y += leading;
+        // Título de nível 1 no topo da página não precisa do espaço acima.
+        let space_above = if level == 1 && self.is_page_start() {
+            0.0
+        } else {
+            size * 0.55
+        };
+        let rule_height = if level <= 2 { 8.0 } else { 0.0 };
+
+        // Um título não pode ficar sozinho no pé da página: se o bloco inteiro
+        // não couber, a página é quebrada antes dele.
+        let needed = space_above
+            + (leading * lines.len() as f32)
+            + rule_height
+            + HEADING_SPACE_BELOW
+            + LEADING_BODY;
+        if !self.is_page_start() && !self.fits(needed) {
+            self.next_page();
         }
+
+        let top = self.cursor_y + space_above;
+        // A linha escreve na linha de base e já avança o cursor; o entrelinhado
+        // do título é maior que o do corpo, então o advance é corrigido aqui.
+        let mut offset = 0.0;
+        for line in &lines {
+            self.write_line_at(line, MARGIN, size, &color, true, top + offset);
+            offset += leading;
+        }
+        self.cursor_y = top + offset;
         if level <= 2 {
             self.rule();
         }
@@ -240,8 +268,18 @@ impl Writer<'_> {
     }
 
     /// Linha da tabela de severidades: rótulo na esquerda, valor na direita.
+    ///
+    /// Rótulo e valor quebram dentro da própria coluna: um erro de execução
+    /// longo (`Ferramenta | Status | Duração`) não pode vazar para fora da
+    /// margem e sumir da página.
     fn table_row(&mut self, label: &str, value: &str) {
-        let row_height = LEADING_BODY + 5.0;
+        let label_width = TABLE_LABEL_WIDTH - 12.0;
+        let value_width = CONTENT_WIDTH - TABLE_LABEL_WIDTH - 6.0;
+        let label_lines = self.wrap(label, label_width);
+        let value_lines = self.wrap(value, value_width);
+        let line_count = label_lines.len().max(value_lines.len()).max(1);
+        let row_height = (LEADING_BODY * line_count as f32) + 5.0;
+
         if !self.fits(row_height) {
             self.next_page();
         }
@@ -250,22 +288,27 @@ impl Writer<'_> {
             self.fill_rect(MARGIN, top, CONTENT_WIDTH, row_height, &COLOR_TABLE_ZEBRA);
         }
         self.table_row_index += 1;
-        self.write_line_at(
-            &plain(label),
-            MARGIN + 6.0,
-            SIZE_BODY,
-            &COLOR_TEXT,
-            true,
-            top + LEADING_BODY - 2.0,
-        );
-        self.write_line_at(
-            &plain(value),
-            MARGIN + TABLE_LABEL_WIDTH,
-            SIZE_BODY,
-            &COLOR_TEXT,
-            false,
-            top + LEADING_BODY - 2.0,
-        );
+
+        for (offset, line) in label_lines.iter().enumerate() {
+            self.write_line_at(
+                line,
+                MARGIN + 6.0,
+                SIZE_BODY,
+                &COLOR_TEXT,
+                true,
+                top + LEADING_BODY + (offset as f32 * LEADING_BODY) - 2.0,
+            );
+        }
+        for (offset, line) in value_lines.iter().enumerate() {
+            self.write_line_at(
+                line,
+                MARGIN + TABLE_LABEL_WIDTH,
+                SIZE_BODY,
+                &COLOR_TEXT,
+                false,
+                top + LEADING_BODY + (offset as f32 * LEADING_BODY) - 2.0,
+            );
+        }
         self.cursor_y = top + row_height;
     }
 
@@ -308,17 +351,25 @@ impl Writer<'_> {
         self.ops.push(Op::SetFillColor {
             col: Color::Rgb(color.clone()),
         });
-        if bold {
-            // Negrito real exigiria embutir a segunda fonte; traçar o glifo com
-            // uma espessura fina tem o mesmo efeito visual e custa 1 KB a menos.
-            self.ops.push(Op::SetTextRenderingMode {
-                mode: TextRenderingMode::FillStroke,
-            });
-            self.ops.push(Op::SetOutlineColor {
-                col: Color::Rgb(color.clone()),
-            });
-            self.ops.push(Op::SetOutlineThickness { pt: Pt(0.32) });
-        }
+        // Cor de traço, modo de renderização e espessura são sempre emitidos: o
+        // modo de renderização e a cor de traço pertencem ao estado de texto do
+        // PDF e sobrevivem ao fim de cada seção. Sem isso, um corpo de texto
+        // logo depois de um título herdaria o traço da cor do título.
+        self.ops.push(Op::SetOutlineColor {
+            col: Color::Rgb(color.clone()),
+        });
+        // Negrito real exigiria embutir a segunda fonte; traçar o glifo com uma
+        // espessura fina tem o mesmo efeito visual e custa 1 KB a menos.
+        self.ops.push(Op::SetTextRenderingMode {
+            mode: if bold {
+                TextRenderingMode::FillStroke
+            } else {
+                TextRenderingMode::Fill
+            },
+        });
+        self.ops.push(Op::SetOutlineThickness {
+            pt: Pt(BOLD_STROKE_PT),
+        });
         self.ops.push(Op::ShowText {
             items: vec![TextItem::Text(text.to_string())],
         });
@@ -631,14 +682,18 @@ mod tests {
     }
 
     #[test]
-    fn font_is_subset_instead_of_embedded_whole() {
+    fn font_is_embedded_whole_because_subset_needs_the_text_layout_feature() {
+        // Documenta a limitação medida: sem `text_layout` o `subset_font` do
+        // printpdf devolve a fonte inteira, então o PDF não cresce com o texto.
+        // Ver `src/report/golden.rs` para o teste que trava esse comportamento.
         let short = render("# Ok\n").unwrap();
-        let long = render(&format!("# Ok\n\n{}\n", "palavra ".repeat(2000))).unwrap();
+        let long = render(&format!("# Ok\n\n{}\n", "palavra ".repeat(4000))).unwrap();
         assert!(
-            long.len() < short.len() * 12,
-            "o subconjunto não fica evidente: {} vs {}",
+            long.len() < short.len() * 2,
+            "{} vs {}",
             short.len(),
             long.len()
         );
+        assert!(short.windows(10).any(|janela| janela == b"/FontFile2"));
     }
 }
