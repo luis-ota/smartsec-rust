@@ -1,0 +1,23 @@
+#!/bin/sh
+# Podman falso para os testes de pausa, retomada e cancelamento (issue #21).
+#
+# Diferente de `fake_podman`, este registra e responde também a `pause`,
+# `unpause` e `stop`, que são justamente os comandos que o controle manual
+# precisa emitir. Não altera o fake existente, usado por outros testes.
+#
+# O comportamento de `pause` e `unpause` é controlado pelos scripts do
+# diretório: `control.sh` recebe o subcomando como argumento e pode falhar de
+# propósito, simulando um Podman que recusa a ordem.
+
+directory=$(dirname "$0")
+printf '%s\n' "$*" >> "$directory/calls.log"
+
+case "$1" in
+  info) printf 'true\n' ;;
+  create) exec sh "$directory/create.sh" ;;
+  start) exec sh "$directory/start.sh" ;;
+  kill) exit 0 ;;
+  stop) exit 0 ;;
+  rm) exec sh "$directory/cleanup.sh" ;;
+  pause | unpause) exec sh "$directory/control.sh" "$1" ;;
+esac
