@@ -264,12 +264,13 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .as_ref()
         .filter(|_| app.md_exported)
     {
+        let mut saved = format!("salvo em {}", path.display());
+        if let Some(pdf) = app.exported_pdf_path.as_ref() {
+            saved.push_str(&format!(" (+ {})", pdf.display()));
+        }
         frame.render_widget(
-            Paragraph::new(chrome::truncate_width(
-                &format!("salvo em {}", path.display()),
-                columns[1].width as usize,
-            ))
-            .style(Style::default().fg(MUTED)),
+            Paragraph::new(chrome::truncate_width(&saved, columns[1].width as usize))
+                .style(Style::default().fg(MUTED)),
             columns[1],
         );
     }
