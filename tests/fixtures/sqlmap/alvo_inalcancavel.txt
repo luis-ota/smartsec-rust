@@ -1,0 +1,13 @@
+        ___
+       __H__
+ ___ ___[']_____ ___ ___  {1.10.4#stable}
+
+[*] starting @ 19:17:14 /2026-09-30/
+
+[19:17:14] [INFO] testing URL 'http://169.254.1.2:9999/item?id=1'
+[19:17:14] [CRITICAL] unable to connect to the target URL ('Connection refused'). sqlmap is going to retry the request(s)
+[19:17:14] [WARNING] if the problem persists please check that the provided target URL is reachable. In case that it is, you can try to rerun with switch '--random-agent' and/or proxy switches ('--proxy', '--proxy-file'...)
+[19:17:14] [ERROR] unable to connect to the target URL ('Connection refused'), skipping to the next target
+[19:17:14] [INFO] you can find results of scanning in multiple targets mode inside the CSV file '/tmp/results-09302026_0717pm.csv'
+
+[*] ending @ 19:17:14 /2026-09-30/
