@@ -18,6 +18,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 async-trait = "0.1"
 arboard = "3"
 quick-xml = { version = "0.38", features = ["serialize"] }
+# Geração de PDF (REQ18). `default-features = false` é obrigatório: as features
+# padrão ligam o motor de layout HTML/CSS (azul-layout, azul-css, xmlparser) e um
+# binding de fontconfig do sistema (rust-fontconfig), o que violaria a política de
+# zero dependência de sistema de docs/PLANO_DE_DISTRIBUICAO.md.
+printpdf = { version = "0.12", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
