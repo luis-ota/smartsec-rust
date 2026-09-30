@@ -82,9 +82,9 @@ fn registered_runners() -> String {
         RUNNER_NUCLEI,
         RUNNER_GENERIC,
         RUNNER_REPOSITORY,
+        RUNNER_ZAP,
     ]
     .join(", ")
-    [RUNNER_NMAP, RUNNER_NUCLEI, RUNNER_GENERIC, RUNNER_ZAP].join(", ")
 }
 
 fn registered_parsers() -> String {
@@ -147,6 +147,8 @@ impl ToolRegistry {
             sqlmap_manifest(),
             RunnerKind::Generic,
             ParserKind::SqlmapText,
+        );
+        registry.push_builtin(
             trufflehog_manifest(),
             RunnerKind::Repository,
             ParserKind::TruffleHogJsonl,
@@ -339,6 +341,9 @@ fn sqlmap_manifest() -> ToolManifest {
         parser: PARSER_SQLMAP_TEXT.to_string(),
         command_template: crate::tools::sqlmap::container_arguments(TARGET_PLACEHOLDER),
         output_format: "text".to_string(),
+        enabled: true,
+    }
+}
 /// Manifesto embutido do TruffleHog.
 ///
 /// Usa o runner `repository`: o `command_template` abaixo é o comando validado
@@ -363,6 +368,9 @@ fn trufflehog_manifest() -> ToolManifest {
         // lista de `container_arguments`, com o marcador no lugar da URI.
         command_template: crate::tools::trufflehog::container_arguments(TARGET_PLACEHOLDER, ""),
         output_format: "jsonl".to_string(),
+        enabled: true,
+    }
+}
 /// Manifesto embutido do OWASP ZAP.
 ///
 /// O job `report` do ZAP sempre acrescenta a extensão do template ao nome do
@@ -737,12 +745,9 @@ mod tests {
 
     #[test]
     fn rejects_duplicated_configured_tools() {
-        let error =
-            ToolRegistry::with_configured(&[generic_manifest("ScannerExemplo"), generic_manifest("zap")])
-                .unwrap_err();
         let error = ToolRegistry::with_configured(&[
             generic_manifest("ScannerExemplo"),
-            generic_manifest("zap"),
+            generic_manifest("ScannerExemplo"),
         ])
         .unwrap_err();
 

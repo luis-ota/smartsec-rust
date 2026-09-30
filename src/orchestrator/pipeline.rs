@@ -551,9 +551,27 @@ impl Orchestrator {
                 ParserKind::SqlmapText => {
                     let (parsed, errors) =
                         crate::orchestrator::sqlmap_parser::parse_sqlmap_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
                 ParserKind::TruffleHogJsonl => {
                     let (parsed, errors) =
                         crate::orchestrator::trufflehog_parser::parse_trufflehog_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
                 ParserKind::ZapJson => {
                     let (parsed, errors) =
                         crate::orchestrator::zap_parser::parse_zap_findings_with_errors(
@@ -850,7 +868,6 @@ mod tests {
             enabled: true,
         });
         let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
-        let mut execution = SecurityTool::new("ScannerExemplo", "zap -host http://test.local");
         let mut execution = SecurityTool::new("ScannerExemplo", "scanner -host http://test.local");
         execution.output = "Servidor expõe /admin sem autenticação\n".to_string();
         orch.execution_history.push(execution);
