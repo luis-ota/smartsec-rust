@@ -73,6 +73,12 @@ pub struct ScanMetadata {
     pub agent_analysis: String,
     #[serde(default)]
     pub decisions: Vec<DecisionRecord>,
+    /// Resumo da correlação e do enriquecimento CVE/NVD (issue #19).
+    ///
+    /// `#[serde(default)]` porque logs gravados antes da issue #19 não têm
+    /// esta chave e precisam continuar carregando.
+    #[serde(default)]
+    pub enrichment: crate::orchestrator::enrichment::EnrichmentSummary,
 }
 
 /// Resumo compacto para listagem de scans históricos.
@@ -145,6 +151,7 @@ impl ScanMetadata {
                 .collect(),
             agent_analysis: crate::utils::redaction::sanitize_text(&agent_analysis),
             decisions: Vec::new(),
+            enrichment: crate::orchestrator::enrichment::EnrichmentSummary::default(),
         }
     }
 
@@ -179,6 +186,22 @@ impl ScanMetadata {
                 .iter()
                 .map(DecisionRecord::sanitized)
                 .collect(),
+            enrichment: crate::orchestrator::enrichment::EnrichmentSummary {
+                correlation: self.enrichment.correlation.clone(),
+                nvd: crate::orchestrator::nvd::NvdReport {
+                    consulted: self.enrichment.nvd.consulted,
+                    enriched: self.enrichment.nvd.enriched,
+                    cached: self.enrichment.nvd.cached,
+                    not_found: self.enrichment.nvd.not_found,
+                    unavailable_reasons: self
+                        .enrichment
+                        .nvd
+                        .unavailable_reasons
+                        .iter()
+                        .map(|reason| crate::utils::redaction::sanitize_text(reason))
+                        .collect(),
+                },
+            },
         }
     }
 }
@@ -301,6 +324,9 @@ mod tests {
                     target: "http://target.local".to_string(),
                     evidence: "test evidence".to_string(),
                     detected_at: "2026-08-31T12:01:00Z".to_string(),
+                    origins: Vec::new(),
+                    enrichment: None,
+                    severity_conflict: None,
                 },
                 Vulnerability {
                     title: "Informational finding".to_string(),
@@ -313,6 +339,9 @@ mod tests {
                     target: "http://target.local".to_string(),
                     evidence: "port open".to_string(),
                     detected_at: "2026-08-31T12:01:00Z".to_string(),
+                    origins: Vec::new(),
+                    enrichment: None,
+                    severity_conflict: None,
                 },
             ],
             "AI Analysis text".to_string(),
@@ -389,6 +418,9 @@ mod tests {
                 target: "https://target.local/path?token=secret".to_string(),
                 evidence: "request: secret".to_string(),
                 detected_at: "2026-09-06T12:00:01Z".to_string(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
             }],
             "Authorization: Bearer secret".to_string(),
         );

@@ -52,8 +52,15 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_overview(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    // Uma linha extra é reservada quando o enriquecimento CVE/NVD degradou, para
+    // que a indisponibilidade da NVD fique visível sem cortar o painel de 80x24.
+    let summary_height: u16 = if app.enrichment_warning.is_some() {
+        7
+    } else {
+        6
+    };
     let rows = Layout::vertical([
-        Constraint::Length(6),
+        Constraint::Length(summary_height),
         Constraint::Min(1),
         Constraint::Length(2),
     ])
@@ -158,6 +165,15 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
             ),
         ]
     };
+    let mut lines = lines;
+    if let Some(warning) = &app.enrichment_warning {
+        // A indisponibilidade da NVD é um aviso, não uma falha da varredura:
+        // aparece em destaque, sem virar `run_error` nem alterar o exit code.
+        lines.push(Line::styled(
+            chrome::truncate_width(warning, inner.width as usize),
+            Style::default().fg(WARNING),
+        ));
+    }
     frame.render_widget(
         Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
         inner,
@@ -296,6 +312,70 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
     );
 }
 
+/// Acrescenta o contexto CVE/NVD e a multi-origem ao detalhe do achado.
+///
+/// O contexto da NVD é informativo: ele **não** reclassifica a severidade, e a
+/// eventual divergência entre scanner e NVD aparece como nota explícita.
+fn append_enrichment<'a>(
+    lines: &mut Vec<Line<'a>>,
+    item: &crate::domain::vulnerability::Vulnerability,
+    width: usize,
+) {
+    if let Some(enrichment) = item.enrichment.as_ref() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Contexto NVD",
+            Style::default().fg(TEXT).bold(),
+        ));
+        push_wrapped_owned(lines, enrichment.summary_pt_br(), width, MUTED);
+        if let Some(vector) = enrichment.cvss_vector.as_deref() {
+            push_wrapped_owned(lines, format!("vetor CVSS: {vector}"), width, MUTED);
+        }
+        if let Some(reference) = enrichment.reference.as_deref() {
+            push_wrapped_owned(lines, format!("referência: {reference}"), width, MUTED);
+        }
+    }
+    if let Some(conflict) = item.severity_conflict.as_ref() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Divergência de severidade",
+            Style::default().fg(WARNING).bold(),
+        ));
+        push_wrapped_owned(lines, conflict.detail.clone(), width, WARNING);
+    }
+    if item.origins.len() > 1 {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Origens do mesmo problema",
+            Style::default().fg(TEXT).bold(),
+        ));
+        for origin in &item.origins {
+            push_wrapped_owned(
+                lines,
+                format!(
+                    "{} · {} · {}",
+                    origin.tool,
+                    origin.severity.label_pt_br(),
+                    origin.evidence
+                ),
+                width,
+                MUTED,
+            );
+        }
+    }
+}
+
+/// Quebra um texto **possuído** em linhas do terminal.
+///
+/// `append_wrapped` aceita qualquer referência, mas o detalhe do resultado é
+/// montado com `Line<'static>`, então o texto precisa ser propriedade do
+/// próprio `Line` em vez de apontar para o `Vulnerability`.
+fn push_wrapped_owned<'a>(lines: &mut Vec<Line<'a>>, value: String, width: usize, color: Color) {
+    for line in wrap_text(&value, width.max(1)) {
+        lines.push(Line::styled(line, Style::default().fg(color)));
+    }
+}
+
 fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize) {
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(area);
     let focused = app.focus == FocusTarget::ResultsDetail;
@@ -331,6 +411,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
             inner.width as usize,
             SUCCESS,
         );
+        append_enrichment(&mut lines, item, inner.width as usize);
         let has_scroll = lines.len() > inner.height as usize;
         let indicator_height = u16::from(has_scroll);
         let viewport = Rect::new(
