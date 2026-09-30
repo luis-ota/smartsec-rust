@@ -196,22 +196,13 @@ fn ai_row(app: &AppState) -> RequirementRow {
 
 /// Proveniência da análise exibida na matriz: o resultado precisa dizer modelo,
 /// provedor efetivo e horário, em vez de apresentar a IA como caixa-preta.
+///
+/// Reaproveita `AnalysisResult::provenance`, o mesmo texto que o modo headless
+/// imprime e que vai para o log estruturado. A matriz montava a frase por
+/// conta própria e já mostrava menos que o headless — que é exatamente a
+/// divergência que a issue #23 elimina.
 fn analysis_provenance(analysis: &crate::ai::analysis_service::AnalysisResult) -> String {
-    format!(
-        " · análise: {} {} · {}{}",
-        analysis.provider,
-        if analysis.model.is_empty() {
-            "determinística"
-        } else {
-            analysis.model.as_str()
-        },
-        analysis.analyzed_at,
-        if analysis.fallback_used {
-            " · alternativa local"
-        } else {
-            ""
-        }
-    )
+    format!(" · análise: {}", analysis.provenance())
 }
 
 fn status_label(status: &str) -> &'static str {
@@ -362,9 +353,49 @@ mod tests {
         let ai = rows.iter().find(|row| row.id == "REQ10").unwrap();
 
         assert!(ai.evidenced);
-        assert!(ai.detail.contains("Ollama llama3.1:8b"), "{ai:?}");
+        assert!(ai.detail.contains("provedor efetivo Ollama"), "{ai:?}");
+        assert!(ai.detail.contains("modelo llama3.1:8b"), "{ai:?}");
         assert!(ai.detail.contains("2026-09-30T12:04:59Z"), "{ai:?}");
         assert!(ai.detail.contains("alternativa local"), "{ai:?}");
+        // A causa da queda também aparece na TUI: um fallback sem motivo na
+        // interface seria o mesmo mascaramento que o log estruturado evita.
+        assert!(ai.detail.contains("motivo:"), "{ai:?}");
+    }
+
+    /// A TUI e o modo headless precisam descrever a análise com o mesmo texto.
+    ///
+    /// A matriz de rastreabilidade já montava a frase por conta própria e
+    /// mostrava menos que o headless. Este teste trava as duas pontas no mesmo
+    /// `AnalysisResult` para que a divergência não volte a aparecer.
+    #[test]
+    fn traceability_shows_the_same_provenance_line_as_the_headless_mode() {
+        use crate::ai::analysis_service::{AnalysisResult, AnalysisSource};
+
+        let analysis = AnalysisResult {
+            text: "Análise concluída.".to_string(),
+            model: "llama3.1:8b".to_string(),
+            provider: "Ollama".to_string(),
+            configured_provider: "OpenAI".to_string(),
+            source: AnalysisSource::FallbackProvider,
+            fallback_used: true,
+            failure_reason: Some("a LLM principal falhou".to_string()),
+            analyzed_at: "2026-09-30T12:04:59Z".to_string(),
+            neutralized_snippets: 1,
+        };
+
+        let mut app = app();
+        app.orchestrator.last_analysis_result = Some(analysis.clone());
+        let rows = requirement_rows(&app);
+        let ai = rows.iter().find(|row| row.id == "REQ10").unwrap();
+
+        // A linha exibida é a do próprio resultado, que é a que o headless
+        // imprime e a que o log estruturado registra.
+        assert!(
+            ai.detail.contains(&analysis.provenance()),
+            "TUI: {}\nheadless: {}",
+            ai.detail,
+            analysis.provenance()
+        );
     }
 
     #[test]

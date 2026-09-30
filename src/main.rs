@@ -314,6 +314,8 @@ impl CommandLineInterface {
             println!("  │ {}", line);
         }
         println!("  │ {}", analysis.provenance());
+        // A mesma linha de proveniência vai para o log estruturado; o headless
+        // não pode prometer uma proveniência que a auditoria não registra.
         println!();
 
         let report = crate::report::ReportGenerator::compile_report(
