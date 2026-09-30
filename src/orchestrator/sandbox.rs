@@ -480,8 +480,14 @@ where
             Ok(0) => break,
             Ok(_) => {
                 bytes.extend_from_slice(&chunk);
-                let display = String::from_utf8_lossy(&chunk);
-                let display = display.trim_end_matches(['\r', '\n']);
+                let lossy = String::from_utf8_lossy(&chunk);
+                let raw_line = lossy.trim_end_matches(['\r', '\n']);
+                // O trace vai para o sink da TUI e do modo headless ao vivo, e
+                // também para o log estruturado. Sanitizar aqui é obrigatório:
+                // o stdout do TruffleHog carrega o valor do segredo em `Raw`,
+                // `RawV2`, `Redacted` e `SecretParts`, e sem esta etapa o
+                // segredo apareceria em tela em tempo real.
+                let display = crate::utils::redaction::sanitize_text(raw_line);
                 let line = format!("[{}] {display}", timestamp());
                 if let Some(sink) = &sink {
                     let _ = sink.send(line.clone());
