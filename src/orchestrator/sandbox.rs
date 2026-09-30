@@ -1,3 +1,4 @@
+use crate::orchestrator::tmpfs;
 use anyhow::{anyhow, Context};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -38,9 +39,45 @@ impl WritableOutput {
     /// *subuid* do host e não consegue gravar em um diretório `0755` do usuário
     /// do host. O diretório pai é o `TMPDIR` do próprio processo do SmartSec, de
     /// modo que só o processo e o container o alcançam.
+    ///
+    /// O `TMPDIR` é **verificado** como `tmpfs` antes de o diretório ser criado,
+    /// conforme a regra de isolamento do TCC. A condição não é presumida: um
+    /// `TMPDIR` que aponte para um diretório comum em disco — o caso de um
+    /// runner de CI, por exemplo — faria o executor montar em bind mount um
+    /// diretório persistente e gravaria o relatório do scanner fora da regra,
+    /// em silêncio. Por isso a criação falha nesse caso; não há degradação para
+    /// escrita fora da regra. Ver [`crate::orchestrator::tmpfs`] para o método de
+    /// verificação e suas limitações.
     pub fn new(container_dir: &str, file_name: &str) -> std::io::Result<Self> {
+        Self::new_in(
+            &std::env::temp_dir(),
+            container_dir,
+            file_name,
+            &tmpfs::ProcMounts::process(),
+        )
+    }
+
+    /// Igual a [`WritableOutput::new`], com o diretório base e a fonte do tipo de
+    /// filesystem injetados.
+    ///
+    /// Existe para que o caminho negativo da verificação (diretório em disco
+    /// comum) seja testável sem depender da máquina de teste: o teste aponta o
+    /// diretório base para um diretório próprio e afirma que nada é criado
+    /// dentro dele quando a regra é violada. O fluxo real sempre usa o `TMPDIR`
+    /// do processo e `/proc/self/mountinfo`.
+    fn new_in(
+        base_dir: &Path,
+        container_dir: &str,
+        file_name: &str,
+        probe: &dyn tmpfs::FilesystemProbe,
+    ) -> std::io::Result<Self> {
         use std::os::unix::fs::PermissionsExt;
-        let host_dir = std::env::temp_dir().join(format!(
+        // O caminho é canonicalizado para que um `TMPDIR` que é symlink para um
+        // diretório em disco seja avaliado no destino real, e não no nome.
+        let verified_dir =
+            std::fs::canonicalize(base_dir).unwrap_or_else(|_| base_dir.to_path_buf());
+        tmpfs::require_tmpfs(&verified_dir, probe)?;
+        let host_dir = base_dir.join(format!(
             "smartsec-saida-{}-{}",
             std::process::id(),
             CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -711,6 +748,61 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
     use std::path::Path;
+    use tmpfs::FilesystemProbe;
+
+    /// Fonte de filesystem com tipo fixo, para exercitar a verificação de `tmpfs`
+    /// sem depender da máquina de teste.
+    struct FixedFilesystem(&'static str);
+
+    impl tmpfs::FilesystemProbe for FixedFilesystem {
+        fn filesystem(&self, _path: &Path) -> std::io::Result<Option<String>> {
+            Ok(Some(self.0.to_owned()))
+        }
+    }
+
+    /// Diretório base descartável, para que as asserções sobre o que foi criado
+    /// não dependam do `TMPDIR` compartilhado com os demais testes.
+    struct PrivateBase(PathBuf);
+
+    impl PrivateBase {
+        fn create() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "smartsec-base-teste-{}-{}",
+                std::process::id(),
+                CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).expect("o diretório base de teste precisa ser criado");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn is_empty(&self) -> bool {
+            fs::read_dir(&self.0)
+                .map(|entries| entries.count() == 0)
+                .unwrap_or(true)
+        }
+    }
+
+    impl Drop for PrivateBase {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Diretório de saída sobre `tmpfs`, para os testes do executor que não são
+    /// sobre a verificação de filesystem.
+    fn writable_output() -> WritableOutput {
+        WritableOutput::new_in(
+            &std::env::temp_dir(),
+            "/smartsec-out",
+            "relatorio.json",
+            &FixedFilesystem(tmpfs::REQUIRED_FILESYSTEM),
+        )
+        .expect("o diretório de saída sobre tmpfs precisa ser criado")
+    }
 
     struct FakePodman {
         directory: PathBuf,
@@ -926,8 +1018,7 @@ mod tests {
     async fn collects_the_artifact_written_in_the_writable_output_dir() {
         let fake = FakePodman::new(&write_artifact_script("{\"alertas\":[]}"));
         let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(5));
-        let output = WritableOutput::new("/smartsec-out", "relatorio.json")
-            .unwrap()
+        let output = writable_output()
             .with_memory("1536m")
             .with_tmpfs("/home/zap:rw,noexec,nosuid,nodev,size=512m");
         let host_dir = output.host_dir().to_path_buf();
@@ -988,7 +1079,7 @@ mod tests {
     async fn a_missing_artifact_is_reported_and_still_removes_the_container() {
         let fake = FakePodman::new("printf 'sem relatorio\\n'; exit 0");
         let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(5));
-        let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+        let output = writable_output();
 
         let result = executor
             .execute_with_artifact("example/zap:1", &["zap.sh".to_owned()], &[], &output)
@@ -1016,7 +1107,7 @@ mod tests {
         let fake =
             FakePodman::new(&write_artifact_script("{\"parcial\":1}").replace("exit 0", "exit 3"));
         let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(5));
-        let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+        let output = writable_output();
 
         let result = executor
             .execute_with_artifact("example/zap:1", &["zap.sh".to_owned()], &[], &output)
@@ -1034,7 +1125,7 @@ mod tests {
     async fn a_timeout_collects_no_artifact_and_removes_the_container() {
         let fake = FakePodman::new("exec sleep 10");
         let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(1));
-        let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+        let output = writable_output();
 
         let result = executor
             .execute_with_artifact("example/zap:1", &["zap.sh".to_owned()], &[], &output)
@@ -1056,7 +1147,7 @@ mod tests {
     async fn cancellation_during_an_artifact_run_removes_the_container() {
         let fake = FakePodman::new("exec sleep 10");
         let executor = PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(30));
-        let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+        let output = writable_output();
         let task = tokio::spawn(async move {
             executor
                 .execute_with_artifact("example/zap:1", &["zap.sh".to_owned()], &[], &output)
@@ -1084,13 +1175,87 @@ mod tests {
     #[test]
     fn the_writable_output_dir_is_removed_when_the_value_goes_out_of_scope() {
         let path = {
-            let output = WritableOutput::new("/smartsec-out", "relatorio.json").unwrap();
+            let output = writable_output();
             let path = output.host_dir().to_path_buf();
             assert!(path.is_dir());
             assert_eq!(output.container_path(), "/smartsec-out/relatorio.json");
             path
         };
         assert!(!path.exists(), "o diretório de saída não pode sobrar");
+    }
+
+    #[test]
+    fn the_writable_output_is_created_when_the_base_dir_is_tmpfs() {
+        // Caminho positivo da regra: com tmpfs, o diretório é criado.
+        let base = PrivateBase::create();
+        let output = WritableOutput::new_in(
+            base.path(),
+            "/smartsec-out",
+            "relatorio.json",
+            &FixedFilesystem(tmpfs::REQUIRED_FILESYSTEM),
+        )
+        .expect("uma tmpfs atende a regra de isolamento");
+        assert!(output.host_dir().starts_with(base.path()));
+        assert!(output.host_dir().is_dir());
+        assert_eq!(output.container_path(), "/smartsec-out/relatorio.json");
+    }
+
+    #[test]
+    fn the_writable_output_is_refused_when_the_base_dir_is_on_a_regular_disk() {
+        // Caminho negativo da regra: um diretório base em disco comum (o caso de
+        // um runner de CI com `TMPDIR` apontando para o disco) não pode montar
+        // um bind mount persistente. A execução falha, não degrada.
+        for filesystem in ["ext4", "xfs", "btrfs", "overlay"] {
+            let base = PrivateBase::create();
+            let error = match WritableOutput::new_in(
+                base.path(),
+                "/smartsec-out",
+                "relatorio.json",
+                &FixedFilesystem(filesystem),
+            ) {
+                Ok(_) => panic!("fora de tmpfs a criação precisa falhar"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains(filesystem), "{error}");
+            assert!(error.contains("'tmpfs'"), "{error}");
+            assert!(error.contains("TMPDIR"), "{error}");
+            assert!(error.contains("relatório do scanner"), "{error}");
+            assert!(error.contains("mount -t tmpfs"), "{error}");
+            assert!(
+                base.is_empty(),
+                "nenhum diretório pode ser criado fora da regra: {}",
+                base.path().display()
+            );
+        }
+    }
+
+    #[test]
+    fn the_real_temp_dir_of_this_machine_is_verified_and_never_assumed() {
+        // O fluxo real lê `/proc/self/mountinfo`. Este teste não presume que a
+        // máquina de teste tem tmpfs: ele exige que o resultado da verificação
+        // real seja coerente com a tabela de montagens do processo.
+        let temp_dir = std::env::temp_dir();
+        let probe = tmpfs::ProcMounts::process();
+        let declared = probe
+            .filesystem(&temp_dir)
+            .expect("a tabela de montagens do processo precisa ser legível")
+            .expect("o TMPDIR precisa estar sob algum ponto de montagem");
+        match WritableOutput::new("/smartsec-out", "relatorio.json") {
+            Ok(_) => assert_eq!(
+                declared,
+                tmpfs::REQUIRED_FILESYSTEM,
+                "a criação só pode ser liberada com tmpfs no TMPDIR"
+            ),
+            Err(error) => {
+                let error = error.to_string();
+                assert_ne!(
+                    declared,
+                    tmpfs::REQUIRED_FILESYSTEM,
+                    "com tmpfs no TMPDIR a criação não deveria falhar: {error}"
+                );
+                assert!(error.contains(&declared), "{error}");
+            }
+        }
     }
 
     #[tokio::test]

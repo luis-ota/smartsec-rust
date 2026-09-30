@@ -146,6 +146,80 @@ a intenção (coletar um artefato do container antes de removê-lo) é mantida, 
 por bind mount em vez de `podman cp`, porque o `podman cp` foi demonstradamente
 inviável com tmpfs e redundante com bind mount.
 
+### A tmpfs do `TMPDIR` é verificada, não presumida
+
+O bind mount acima só é aceito pela regra de isolamento do `TCC_SPEC.md`
+*porque* o diretório de saída está em `tmpfs`. Essa condição não é garantida
+pelo código: o `TMPDIR` é herdado do ambiente, e nesta máquina ele é `tmpfs` por
+acaso da configuração (`TMPDIR=/tmp`, `/tmp` é tmpfs). Numa máquina — ou num
+runner de CI — em que `TMPDIR` aponte para um diretório comum em disco, o mesmo
+código montaria um diretório persistente e gravaria o relatório do scanner fora
+da regra, **sem nenhum sinal**.
+
+Por isso `WritableOutput::new` verifica a condição antes de criar o diretório.
+O tipo do filesystem é resolvido em `/proc/self/mountinfo` (o ponto de montagem
+mais específico que contém o caminho, sobre o caminho canonicalizado), e sem
+`tmpfs` a execução falha com mensagem acionável. O mesmo vale para o diretório
+do plano de automação, que é a configuração temporária da execução.
+
+Verificado com o binário real, nos dois sentidos:
+
+**`TMPDIR` em disco comum — a execução é recusada, sem degradar:**
+
+```
+$ df -T $TMPDIR
+/dev/mapper/root  btrfs  247943168 219649720 25435928  90%  /home
+
+$ smartsec-rust tool ZAP --target http://127.0.0.1:3000
+FALHA (o diretório de escrita efêmera
+'/home/luis/dev/bobera/tcc/.tmpfs-prova/smartsec-zap-plano-2139822-1790805148066234664'
+está no filesystem 'btrfs', e a regra de isolamento do SmartSec exige 'tmpfs'; a
+execução foi interrompida para não gravar a configuração temporária e o
+relatório do scanner fora da tmpfs. Ajuste o ambiente: monte uma tmpfs (por
+exemplo `sudo mount -t tmpfs -o size=512m tmpfs /var/tmp/smartsec`) e aponte a
+variável TMPDIR para ela antes de rodar a varredura. Um 'overlay' não é aceito:
+a camada copy-on-write do container grava em disco do host.)
+```
+
+Nenhum container é criado, nenhum `--volume` é montado, e a varredura é
+registrada como `failed` — nunca como varredura limpa.
+
+**`TMPDIR` em tmpfs — a execução segue e o diretório some ao final:**
+
+```
+$ df -T $TMPDIR
+tmpfs  tmpfs  8073404  848 8072556  1%  /dev/shm
+
+$ smartsec-rust tool ZAP --target http://127.0.0.1:3000
+  │ $ podman create ... --volume /dev/shm/sb-tmpfs/smartsec-zap-plano-...:/zap/automation:ro \
+  │   --volume /dev/shm/sb-tmpfs/smartsec-saida-2142783-1:/smartsec-out:rw,noexec,nosuid,nodev ...
+  OK (2026-09-30T21:52:58Z, 0 bytes de saída)
+
+$ ls -A /dev/shm/sb-tmpfs
+(nada: o diretório de saída e o do plano foram removidos)
+```
+
+### Decisão sobre `overlay`
+
+`overlay` **não** é aceito. Ele é a camada copy-on-write de um container, e o
+dado gravado nela reside no diretório superior (`upperdir`), normalmente em
+disco do host: aceitá-lo equivaleria a aceitar escrita em disco com outro
+nome, que é exatamente o que a regra do TCC proíbe. Em container de CI o `/tmp`
+costuma ser uma `tmpfs` própria; quando não é, a execução falha e a mensagem diz
+como corrigir o ambiente — falha barulhenta é o comportamento desejado, e
+melhor que a violação silenciosa que a verificação existe para impedir.
+
+Os testes cobrem os dois sentidos sem depender da máquina: o tipo de filesystem
+é injetável (`tmpfs::FilesystemProbe`), então o caminho negativo usa um diretório
+base descartável e afirma que a recusa acontece **antes** de qualquer criação, e
+que a mensagem nomeia o filesystem encontrado, o `tmpfs` exigido e a correção.
+Há ainda um teste sobre a máquina real que exige coerência entre a tabela de
+montagens do processo e o resultado da verificação, em vez de assumir tmpfs.
+
+As limitações conhecidas — namespace de montagem do processo, janela TOCTOU de
+symlink e kernels sem `/proc/self/mountinfo` legível — estão documentadas em
+`src/orchestrator/tmpfs.rs`, e a regra correspondente em `TCC_SPEC.md` §7.
+
 ## 6. Configuração final validada
 
 ```
