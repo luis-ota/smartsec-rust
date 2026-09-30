@@ -1,4 +1,4 @@
-use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SUCCESS, SURFACE, TEXT};
+use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SUCCESS, SURFACE, TEXT, WARNING};
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::{AppState, ToolStatus};
 use ratatui::{
@@ -114,6 +114,7 @@ fn render_tool_detail(app: &AppState, frame: &mut Frame, area: Rect) {
     let (status, color) = match tool.status {
         ToolStatus::Pending => ("pendente", MUTED),
         ToolStatus::Running => ("em execução", ACCENT),
+        ToolStatus::Paused => ("pausada", WARNING),
         ToolStatus::Done => ("concluída", SUCCESS),
         ToolStatus::Failed => ("falhou", DANGER),
     };

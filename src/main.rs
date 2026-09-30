@@ -75,6 +75,7 @@ struct ExecutionArgs {
     model: Option<String>,
     output: Option<String>,
     output_dir: Option<String>,
+    max_critical_findings: Option<String>,
 }
 
 impl Cli {
@@ -144,6 +145,9 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
             "--model" => options.model = Some(value(&mut index, "--model")?),
             "--output" | "-o" => options.output = Some(value(&mut index, "--output")?),
             "--output-dir" => options.output_dir = Some(value(&mut index, "--output-dir")?),
+            "--max-critical-findings" => {
+                options.max_critical_findings = Some(value(&mut index, "--max-critical-findings")?)
+            }
             other => {
                 anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções")
             }
@@ -157,8 +161,8 @@ fn print_help() {
     println!("SmartSec - Plataforma de análise de segurança");
     println!("Uso: smartsec <scan|tool> --target <ALVO> [OPÇÕES]");
     println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
-    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n      --max-critical-findings <N>  Interrompe a varredura ao atingir N achados críticos (0 desativa)\n  -h, --help\n  -V, --version");
+    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução\n130  cancelado por SIGINT (Ctrl+C)\n143  cancelado por SIGTERM\n\n  Relatório e log estruturado são gravados antes da mensagem final, inclusive\n  no cancelamento por sinal.");
 }
 
 impl CommandLineInterface {
@@ -254,6 +258,19 @@ impl CommandLineInterface {
         let all_tools = orchestrator.registry.tools().to_vec();
         let selected = selected_tools(&all_tools, &config.active_tools);
 
+        // SIGINT e SIGTERM cancelam a execução pelo mesmo canal de controle da
+        // TUI: o container em execução é encerrado de forma cooperativa e o
+        // relatório e o log estruturado são gravados antes da saída.
+        let signals =
+            crate::orchestrator::control::SignalWatcher::install(orchestrator.control.clone());
+        if config.max_critical_findings > 0 {
+            println!(
+                "  Regra de interrupção: {} vulnerabilidades críticas",
+                config.max_critical_findings
+            );
+        }
+        println!("  Ctrl+C ou SIGTERM cancelam a varredura com relatório preservado");
+
         println!("[1/3] Executando ferramentas de segurança...");
         let (trace_tx, mut trace_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         orchestrator.trace_sink = Some(trace_tx);
@@ -264,17 +281,19 @@ impl CommandLineInterface {
         });
         let total = selected.len();
         for (i, tool) in selected.iter().enumerate() {
-            if orchestrator.cancelled {
-                println!("  X Cancelado.");
-                return Ok(EXIT_ERROR);
+            // A pausa e o cancelamento chegam pelo canal compartilhado com o
+            // executor; o `wait_while_paused` resolve para `Cancelled` quando o
+            // cancelamento vence a pausa.
+            if orchestrator.control.wait_while_paused().await
+                == crate::orchestrator::control::RunControl::Cancelled
+            {
+                break;
             }
-            if orchestrator.paused {
-                loop {
-                    if !orchestrator.paused || orchestrator.cancelled {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
+            if let Some(reason) = orchestrator.interrupt_after_findings(tool.manifest.name.as_str())
+            {
+                orchestrator.record_interruption(reason.clone());
+                println!("  X {}", reason.message);
+                break;
             }
             println!("  [{:>2}/{:>2}] {:<12} ", i + 1, total, tool.manifest.name);
             let exec = orchestrator
@@ -294,12 +313,15 @@ impl CommandLineInterface {
         let _ = trace_printer.await;
         println!();
 
+        let interrupted = signals.received();
+        // Uma varredura interrompida não chama a IA: o operador pediu para
+        // parar, e o que importa é preservar o que já foi coletado.
+        if let Some(reason) = orchestrator.interruption() {
+            orchestrator.last_log = reason.message;
+            return finalize_headless(&mut orchestrator, &config, interrupted).await;
+        }
+
         orchestrator.build_findings();
-        let scan_failure = orchestrator
-            .execution_history
-            .iter()
-            .find_map(|execution| execution.execution_error.as_deref())
-            .map(str::to_owned);
         let analysis = orchestrator
             .agent
             .analyze_logs(&orchestrator.findings)
@@ -315,11 +337,6 @@ impl CommandLineInterface {
         }
         println!();
 
-        let report = crate::report::ReportGenerator::compile_report(
-            &config,
-            &orchestrator.findings,
-            &orchestrator.decision_history,
-        );
         let crit = orchestrator
             .findings
             .iter()
@@ -357,27 +374,59 @@ impl CommandLineInterface {
         println!("  Próximo passo: {}", orchestrator.determine_next_step());
         println!("  Contêiner: {}", orchestrator.container_id());
         println!();
-        let report_path = resolve_report_path(&config)?;
-        let log_result = orchestrator.persist_scan_log();
-        let report_result = crate::report::ReportGenerator::export_to_markdown(
-            &report,
-            &report_path.to_string_lossy(),
-        );
-        let log_path = log_result?;
-        report_result?;
-        println!("═══════════════════════════════════════════════════════════");
-        println!("  OK Relatório exportado: {}", report_path.display());
-        println!("  OK Log estruturado: {}", log_path.display());
-        let exit_code = headless_exit_code(&orchestrator.findings, scan_failure.as_deref());
-        if let Some(failure) = scan_failure {
-            println!("  FALHA Varredura concluída com erros: {failure}");
-            println!("═══════════════════════════════════════════════════════════");
-            return Ok(exit_code);
-        }
-        println!("  OK Análise concluída.");
-        println!("═══════════════════════════════════════════════════════════");
-        Ok(exit_code)
+        finalize_headless(&mut orchestrator, &config, None).await
     }
+}
+
+/// Consolida o resultado headless: relatório, log estruturado e exit code.
+///
+/// O relatório e o log são **sempre** gravados antes da mensagem final,
+/// inclusive quando a execução foi interrompida por sinal (TCC_SPEC §10).
+async fn finalize_headless(
+    orchestrator: &mut Orchestrator,
+    config: &config::Configuration,
+    interrupted: Option<crate::orchestrator::control::InterruptSignal>,
+) -> Result<i32> {
+    orchestrator.build_findings();
+    let scan_failure = orchestrator
+        .execution_history
+        .iter()
+        .find_map(|execution| execution.execution_error.as_deref())
+        .map(str::to_owned);
+    let report = crate::report::ReportGenerator::compile_report(
+        config,
+        &orchestrator.findings,
+        &orchestrator.decision_history,
+    );
+    let report_path = resolve_report_path(config)?;
+    let log_result = orchestrator.persist_scan_log();
+    let report_result =
+        crate::report::ReportGenerator::export_to_markdown(&report, &report_path.to_string_lossy());
+    let log_path = log_result?;
+    report_result?;
+    println!("═══════════════════════════════════════════════════════════");
+    println!("  OK Relatório exportado: {}", report_path.display());
+    println!("  OK Log estruturado: {}", log_path.display());
+    if let Some(reason) = orchestrator.interruption() {
+        println!("  X Interrupção registrada: {}", reason.message);
+    }
+
+    if let Some(signal) = interrupted {
+        // O cancelamento por sinal tem código próprio: não é erro interno (2)
+        // nem sucesso (0), e o relatório já foi preservado acima.
+        println!("  X Execução cancelada por {}.", signal.label());
+        println!("═══════════════════════════════════════════════════════════");
+        return Ok(signal.exit_code());
+    }
+    let exit_code = headless_exit_code(&orchestrator.findings, scan_failure.as_deref());
+    if let Some(failure) = scan_failure {
+        println!("  FALHA Varredura concluída com erros: {failure}");
+        println!("═══════════════════════════════════════════════════════════");
+        return Ok(exit_code);
+    }
+    println!("  OK Análise concluída.");
+    println!("═══════════════════════════════════════════════════════════");
+    Ok(exit_code)
 }
 
 /// Código de saída consolidado do modo headless (TCC_SPEC.md, seção 10).
@@ -486,6 +535,13 @@ fn build_config(
             anyhow::bail!("o diretório de saída não pode ser vazio");
         }
         config.output_dir = Some(dir.clone());
+    }
+    if let Some(limit) = &options.max_critical_findings {
+        config.max_critical_findings = limit.trim().parse().map_err(|_| {
+            anyhow::anyhow!(
+                "--max-critical-findings exige um número inteiro de 0 em diante (0 desativa a regra)"
+            )
+        })?;
     }
     config.validate_target().map_err(anyhow::Error::msg)?;
     config.llm.validate().map_err(anyhow::Error::msg)?;
@@ -602,6 +658,65 @@ mod tests {
     }
 
     #[test]
+    fn the_cancellation_flag_overrides_the_configured_threshold() {
+        let path = std::env::temp_dir().join(format!("smartsec-regra-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "target_url = \"http://config.local\"\nactive_tools = [\"Nmap\"]\n\
+             max_critical_findings = 5\n\
+             [llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+        )
+        .unwrap();
+        let options = ExecutionArgs {
+            config: Some(path.clone()),
+            max_critical_findings: Some("2".to_owned()),
+            ..ExecutionArgs::default()
+        };
+
+        let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();
+
+        assert_eq!(
+            configured.max_critical_findings, 2,
+            "a flag da CLI tem precedência sobre o arquivo"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn an_invalid_threshold_is_rejected_with_an_actionable_message() {
+        let options = ExecutionArgs {
+            max_critical_findings: Some("muitos".to_owned()),
+            ..ExecutionArgs::default()
+        };
+
+        let error = build_config(&options, "192.0.2.10".to_owned(), None, true)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("--max-critical-findings"), "{error}");
+        assert!(error.contains("0 desativa"), "{error}");
+    }
+
+    #[test]
+    fn the_toml_threshold_is_loaded_and_defaults_to_disabled() {
+        let configured: crate::config::persistence::PersistedConfig = toml::from_str(
+            "target_url = \"http://test.local\"\nmax_critical_findings = 3\n[llm]\nprovider = \"ollama\"\n",
+        )
+        .unwrap();
+        assert_eq!(configured.max_critical_findings, 3);
+
+        // Ausente precisa continuar significando "regra desligada".
+        let legacy: crate::config::persistence::PersistedConfig =
+            toml::from_str("target_url = \"http://test.local\"\n[llm]\nprovider = \"ollama\"\n")
+                .unwrap();
+        assert_eq!(legacy.max_critical_findings, 0);
+        assert_eq!(
+            crate::config::Configuration::from(legacy).max_critical_findings,
+            0
+        );
+    }
+
+    #[test]
     fn scan_flags_configure_the_report_destination() {
         let path =
             std::env::temp_dir().join(format!("smartsec-output-flags-{}.toml", std::process::id()));
@@ -618,6 +733,7 @@ mod tests {
             model: None,
             output: Some("personalizado.md".to_owned()),
             output_dir: Some("saida".to_owned()),
+            max_critical_findings: None,
         };
 
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();

@@ -1,3 +1,4 @@
+pub mod control;
 pub mod decision;
 pub mod generic_parser;
 pub mod nikto_parser;

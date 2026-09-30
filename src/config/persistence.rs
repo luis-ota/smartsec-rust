@@ -23,6 +23,10 @@ pub struct PersistedConfig {
     pub output_file: Option<String>,
     #[serde(default)]
     pub output_dir: Option<String>,
+    /// Limiar da regra automática de interrupção (REQ05). Ausente ou `0`
+    /// mantém a regra desativada, preservando o comportamento anterior.
+    #[serde(default)]
+    pub max_critical_findings: usize,
 }
 
 impl Default for PersistedConfig {
@@ -37,6 +41,7 @@ impl Default for PersistedConfig {
             tools: Vec::new(),
             output_file: None,
             output_dir: None,
+            max_critical_findings: 0,
         }
     }
 }
@@ -105,6 +110,7 @@ impl From<crate::config::Configuration> for PersistedConfig {
             tools: c.tools,
             output_file: c.output_file,
             output_dir: c.output_dir,
+            max_critical_findings: c.max_critical_findings,
         }
     }
 }
@@ -121,6 +127,7 @@ impl From<&crate::config::Configuration> for PersistedConfig {
             tools: c.tools.clone(),
             output_file: c.output_file.clone(),
             output_dir: c.output_dir.clone(),
+            max_critical_findings: c.max_critical_findings,
         }
     }
 }

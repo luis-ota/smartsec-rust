@@ -4,6 +4,7 @@ use crate::config::llm_config::LlmProviderKind;
 use crate::config::Configuration;
 use crate::domain::security_tool::SecurityTool;
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::control::RunControl;
 use crate::orchestrator::decision::DecisionRecord;
 use crate::orchestrator::Orchestrator;
 use crate::tools::registry::RunnerKind;
@@ -30,6 +31,8 @@ pub enum AppStep {
 pub enum ToolStatus {
     Pending,
     Running,
+    /// Container real pausado com `podman pause` (REQ14).
+    Paused,
     Done,
     #[allow(dead_code)]
     Failed,
@@ -84,6 +87,9 @@ pub struct ToolItem {
 
 enum RunEvent {
     ToolStarted(usize),
+    /// O container em execução mudou de estado por pausa, retomada ou
+    /// cancelamento pedido pelo usuário.
+    ToolControl(RunControl),
     ToolLog(String),
     AiDecisionStarted,
     AiDecisionFinished(DecisionRecord),
@@ -166,6 +172,8 @@ pub struct AppState {
     pub audit_log_path: Option<PathBuf>,
     pub run_error: Option<String>,
     pub exec_cancelled: bool,
+    /// Execução pausada com `podman pause`; a retomada usa `podman unpause`.
+    pub exec_paused: bool,
     pub show_help_overlay: bool,
     pub show_command_palette: bool,
     pub command_cursor: usize,
@@ -285,6 +293,7 @@ impl AppState {
             audit_log_path: None,
             run_error: None,
             exec_cancelled: false,
+            exec_paused: false,
             show_help_overlay: false,
             show_command_palette: false,
             command_cursor: 0,
@@ -324,6 +333,15 @@ impl AppState {
 
     pub fn set_mode(&mut self, mode: ExecutionType) {
         self.config.execution_type = mode;
+    }
+
+    /// Rótulo do estado real do container, lido do canal de controle.
+    ///
+    /// A tela de execução usa este rótulo para o indicador de pausa: a TUI e o
+    /// executor compartilham o mesmo canal, então ele reflete o que o
+    /// `podman pause`/`unpause` realmente fez, e não a intenção do usuário.
+    pub fn run_control_label(&self) -> &'static str {
+        self.orchestrator.control.label()
     }
 
     pub fn spinner_char(&self) -> &str {
@@ -374,7 +392,11 @@ impl AppState {
         }
     }
 
-    fn has_blocking_layer(&self) -> bool {
+    /// Indica se há uma camada sobreposta capturando a interação.
+    ///
+    /// Os atalhos de pausa e cancelamento são ignorados enquanto existe uma,
+    /// para que `p` e `c` não virem ação dentro de um overlay.
+    pub fn has_blocking_layer(&self) -> bool {
         self.show_settings
             || self.show_help_overlay
             || self.show_command_palette
@@ -402,6 +424,7 @@ impl AppState {
                     self.exec_current = index;
                     self.tools[index].status = ToolStatus::Running;
                 }
+                RunEvent::ToolControl(control) => self.apply_run_control(control),
                 RunEvent::ToolLog(line) => {
                     let prefix = self
                         .tools
@@ -550,6 +573,34 @@ impl AppState {
         }
     }
 
+    /// Reflete na tela o estado do container que o executor realmente aplicou.
+    fn apply_run_control(&mut self, control: RunControl) {
+        let index = self
+            .tools
+            .iter()
+            .position(|tool| matches!(tool.status, ToolStatus::Running | ToolStatus::Paused));
+        match control {
+            RunControl::Running => {
+                self.exec_paused = false;
+                if let Some(tool) = index.map(|index| &mut self.tools[index]) {
+                    tool.status = ToolStatus::Running;
+                }
+            }
+            RunControl::Paused => {
+                self.exec_paused = true;
+                if let Some(tool) = index
+                    .map(|index| &mut self.tools[index])
+                    .filter(|tool| tool.status == ToolStatus::Running)
+                {
+                    tool.status = ToolStatus::Paused;
+                }
+            }
+            RunControl::Cancelled => {
+                self.exec_paused = false;
+            }
+        }
+    }
+
     fn follow_latest_log(&mut self) {
         if !self.log_follow {
             return;
@@ -624,8 +675,12 @@ impl AppState {
         self.log_total_lines = 0;
         self.log_follow = true;
         self.exec_cancelled = false;
+        self.exec_paused = false;
         let registry = self.orchestrator.registry.clone();
         self.orchestrator = Orchestrator::with_registry(self.config.clone(), registry.clone());
+        // A task de execução e a TUI compartilham o mesmo canal de controle,
+        // para que a pausa e o cancelamento atinjam o container real.
+        let control = self.orchestrator.control.clone();
         self.audit_log_path = None;
         self.run_error = None;
         self.llm_warning = None;
@@ -655,6 +710,10 @@ impl AppState {
         self.run_receiver = Some(receiver);
         self.run_task = Some(tokio::spawn(async move {
             let mut orchestrator = Orchestrator::with_registry(config, registry);
+            // A task precisa do MESMO canal da TUI: cada `Orchestrator::new`
+            // criaria o seu, e a pausa da tela nunca chegaria ao container.
+            orchestrator.control = control.clone();
+            let control_events = control.subscribe();
             for (index, tool, runner) in selected {
                 let is_nuclei = runner == RunnerKind::Nuclei;
                 if sender.send(RunEvent::ToolStarted(index)).is_err() {
@@ -663,6 +722,28 @@ impl AppState {
                 if is_nuclei && sender.send(RunEvent::AiDecisionStarted).is_err() {
                     return;
                 }
+                // Aplica o estado pendente (pausa ou cancelamento pedido antes
+                // de a ferramenta começar) e reflete cada mudança na tela.
+                let control_task = {
+                    let sender = sender.clone();
+                    let control_events = control_events.clone();
+                    tokio::spawn(async move {
+                        let mut control_events = control_events;
+                        // O estado corrente é aplicado de imediato: uma pausa
+                        // pedida antes de a ferramenta começar não pode ser
+                        // perdida por esperar a próxima mudança.
+                        let mut state = *control_events.borrow_and_update();
+                        loop {
+                            if sender.send(RunEvent::ToolControl(state)).is_err() {
+                                return;
+                            }
+                            if control_events.changed().await.is_err() {
+                                return;
+                            }
+                            state = *control_events.borrow_and_update();
+                        }
+                    })
+                };
                 let (trace_tx, mut trace_rx) = mpsc::unbounded_channel::<String>();
                 orchestrator.trace_sink = Some(trace_tx);
                 let forwarder = tokio::spawn({
@@ -692,6 +773,7 @@ impl AppState {
                 let execution = orchestrator.execute_tool(&tool, &target).await;
                 orchestrator.trace_sink = None;
                 orchestrator.decision_sink = None;
+                control_task.abort();
                 let _ = forwarder.await;
                 if let Some(forwarder) = decision_forwarder {
                     let _ = forwarder.await;
@@ -705,8 +787,30 @@ impl AppState {
                 {
                     return;
                 }
+                // Regra automática de interrupção (REQ05): decide entre
+                // ferramentas para não descartar a evidência recém-coletada.
+                if let Some(reason) = orchestrator.interrupt_after_findings(tool.name.as_str()) {
+                    orchestrator.record_interruption(reason);
+                    break;
+                }
+                if orchestrator.is_cancelled() {
+                    break;
+                }
             }
             orchestrator.build_findings();
+            if let Some(reason) = orchestrator.interruption() {
+                // Execução interrompida: a auditoria do que já foi coletado vem
+                // primeiro, e a IA não é chamada — o operador pediu para parar.
+                orchestrator.last_log = reason.message;
+                let audit_log = orchestrator
+                    .persist_scan_log()
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(RunEvent::Completed {
+                    orchestrator: Box::new(orchestrator),
+                    audit_log,
+                });
+                return;
+            }
             let heartbeat = tokio::spawn({
                 let sender = sender.clone();
                 async move {
@@ -741,7 +845,8 @@ impl AppState {
     }
 
     pub fn advance_execution(&mut self) {
-        if self.exec_cancelled || self.orchestrator.cancelled {
+        if self.exec_cancelled || self.orchestrator.is_cancelled() {
+            self.exec_paused = false;
             self.step = AppStep::ToolSelect;
             self.focus = FocusTarget::ToolList;
         }
@@ -875,52 +980,134 @@ impl AppState {
         }
     }
 
+    /// Cancela a execução em andamento pelo canal de controle compartilhado.
+    ///
+    /// O container é encerrado de forma cooperativa (`podman stop` seguido de
+    /// `podman rm --force`) pelo executor; a task **não** é abortada às cegas,
+    /// porque isso impediria a limpeza e a persistência da auditoria.
     pub fn cancel_run(&mut self) {
-        if self.step != AppStep::Execution {
+        if self.step != AppStep::Execution || self.exec_cancelled {
             return;
         }
         self.exec_cancelled = true;
+        self.exec_paused = false;
         self.orchestrator.cancel_execution();
+        if let Some(tool) = self
+            .tools
+            .iter_mut()
+            .find(|tool| matches!(tool.status, ToolStatus::Running | ToolStatus::Paused))
+        {
+            tool.status = ToolStatus::Failed;
+        }
+        self.exec_logs
+            .push("X Cancelamento solicitado; encerrando o container".to_string());
+        self.follow_latest_log();
+    }
+
+    /// Pausa a ferramenta em execução (`podman pause` no container real).
+    pub fn pause_run(&mut self) {
+        if self.step != AppStep::Execution || self.exec_cancelled || self.exec_paused {
+            return;
+        }
+        self.orchestrator.pause_execution();
+        self.exec_paused = true;
+        if let Some(tool) = self
+            .tools
+            .iter_mut()
+            .find(|tool| tool.status == ToolStatus::Running)
+        {
+            tool.status = ToolStatus::Paused;
+        }
+        self.exec_logs
+            .push("‖ Pausa solicitada; o container será pausado".to_string());
+        self.follow_latest_log();
+    }
+
+    /// Retoma a ferramenta pausada (`podman unpause` no container real).
+    pub fn resume_run(&mut self) {
+        if self.step != AppStep::Execution || self.exec_cancelled || !self.exec_paused {
+            return;
+        }
+        self.orchestrator.resume_execution();
+        self.exec_paused = false;
+        if let Some(tool) = self
+            .tools
+            .iter_mut()
+            .find(|tool| tool.status == ToolStatus::Paused)
+        {
+            tool.status = ToolStatus::Running;
+        }
+        self.exec_logs
+            .push("‖ Retomada solicitada; o container será retomado".to_string());
+        self.follow_latest_log();
+    }
+
+    /// Encerra a execução antes de sair da TUI, sem deixar container órfão.
+    pub async fn shutdown_run(&mut self) {
+        if self.run_task.is_none() {
+            return;
+        }
+        if !self.exec_cancelled {
+            self.orchestrator.cancel_execution();
+        }
         if let Some(task) = self.run_task.take() {
-            task.abort();
+            let completed = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                let _ = task.await;
+            })
+            .await
+            .is_ok();
+            if !completed {
+                // O executor cooperativo não respondeu: o `abort` é o último
+                // recurso, e o guard `ContainerCleanup` ainda remove o
+                // container parcial no encerramento da task.
+                self.run_error = Some(
+                    "A execução não respondeu ao cancelamento e foi interrompida; \
+                     confirme com `podman ps -a` que não restou container."
+                        .to_string(),
+                );
+            }
         }
         self.run_receiver = None;
         self.persist_cancelled_run();
-        self.exec_logs.push("X Execução CANCELADA".to_string());
-        let vh = self.log_visible_height.max(1);
-        if self.exec_logs.len() > vh {
-            self.log_scroll = self.exec_logs.len().saturating_sub(vh);
-        }
     }
 
-    pub async fn shutdown_run(&mut self) {
-        self.run_receiver = None;
-        if let Some(task) = self.run_task.take() {
-            task.abort();
-            let _ = task.await;
-            self.persist_cancelled_run();
-        }
-    }
-
+    /// Persiste a execução sintética de cancelamento para auditoria.
+    ///
+    /// A TUI **não** executa nenhum scanner para isso: o registro é fabricado a
+    /// partir do estado da tela e serve apenas para deixar claro, no log
+    /// estruturado, qual ferramenta estava em execução quando o operador
+    /// cancelou. O registro real do container vem do executor, com o trace do
+    /// Podman, e é combinado a este.
     fn persist_cancelled_run(&mut self) {
-        self.orchestrator.cancelled = true;
-        if let Some(tool) = self
-            .tools
-            .iter()
-            .find(|tool| tool.status == ToolStatus::Running)
-        {
-            let mut execution = SecurityTool::new(
-                &tool.tool.name,
-                &format!("{} {}", tool.tool.name, self.config.target_url),
-            );
-            execution.executed_at =
-                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-            execution.status = "cancelled".to_string();
-            execution.execution_error = Some("Execução cancelada pelo usuário".to_string());
-            self.orchestrator.execution_history.push(execution);
+        self.orchestrator.record_interruption(
+            crate::orchestrator::control::InterruptionReason::user_cancelled(),
+        );
+        if let Some(tool) = self.tools.iter().find(|tool| {
+            matches!(
+                tool.status,
+                ToolStatus::Running | ToolStatus::Paused | ToolStatus::Failed
+            )
+        }) {
+            let already_recorded = self
+                .orchestrator
+                .execution_history
+                .iter()
+                .any(|execution| execution.status == "cancelled");
+            if !already_recorded {
+                let mut execution = SecurityTool::new(
+                    &tool.tool.name,
+                    &format!("{} {}", tool.tool.name, self.config.target_url),
+                );
+                execution.executed_at =
+                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                execution.status = "cancelled".to_string();
+                execution.execution_error = Some("Execução cancelada pelo usuário".to_string());
+                self.orchestrator.execution_history.push(execution);
+            }
         }
-        self.orchestrator.build_findings();
-        self.orchestrator.last_log = "Execução cancelada pelo usuário".to_string();
+        if self.orchestrator.last_log.is_empty() {
+            self.orchestrator.last_log = "Execução cancelada pelo usuário".to_string();
+        }
         match self.orchestrator.persist_scan_log() {
             Ok(path) => self.audit_log_path = Some(path),
             Err(error) => {
@@ -1215,6 +1402,94 @@ mod tests {
         );
         assert_eq!(app.log_total_lines, 197);
         assert!(!app.log_follow);
+    }
+
+    #[test]
+    fn cancel_run_uses_the_control_channel_instead_of_aborting_the_task() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.step = AppStep::Execution;
+        app.tools[0].status = ToolStatus::Running;
+
+        app.cancel_run();
+
+        assert!(app.exec_cancelled);
+        assert!(
+            app.orchestrator.is_cancelled(),
+            "o cancelamento precisa chegar ao container pelo canal compartilhado"
+        );
+        assert!(
+            app.run_task.is_none(),
+            "não existe task de execução fora da tela de execução"
+        );
+        let reason = app
+            .orchestrator
+            .interruption()
+            .expect("o cancelamento precisa ser auditável");
+        assert_eq!(reason.rule, "cancelado_pelo_usuario");
+    }
+
+    #[test]
+    fn pause_and_resume_travel_through_the_shared_control_channel() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.step = AppStep::Execution;
+        app.tools[0].status = ToolStatus::Running;
+
+        app.pause_run();
+        assert!(app.orchestrator.control.is_paused());
+        assert_eq!(app.tools[0].status, ToolStatus::Paused);
+
+        // Pausar de novo não muda o pedido.
+        app.pause_run();
+        assert!(app.orchestrator.control.is_paused());
+
+        app.resume_run();
+        assert!(!app.orchestrator.control.is_paused());
+        assert_eq!(app.tools[0].status, ToolStatus::Running);
+
+        // O cancelamento encerra a linha: a retomada posterior é ignorada.
+        app.cancel_run();
+        app.resume_run();
+        assert!(app.orchestrator.control.is_cancelled());
+    }
+
+    #[test]
+    fn run_control_events_drive_the_visible_tool_status() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.step = AppStep::Execution;
+        app.tools[0].status = ToolStatus::Running;
+
+        // O executor confirma a pausa de fato aplicada no container.
+        app.apply_run_control(crate::orchestrator::control::RunControl::Paused);
+        assert!(app.exec_paused);
+        assert_eq!(app.tools[0].status, ToolStatus::Paused);
+
+        app.apply_run_control(crate::orchestrator::control::RunControl::Running);
+        assert!(!app.exec_paused);
+        assert_eq!(app.tools[0].status, ToolStatus::Running);
+    }
+
+    #[test]
+    fn the_cancelled_run_is_recorded_for_audit_without_creating_findings() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.step = AppStep::Execution;
+        app.tools[0].status = ToolStatus::Running;
+
+        app.persist_cancelled_run();
+
+        let cancelled: Vec<_> = app
+            .orchestrator
+            .execution_history
+            .iter()
+            .filter(|execution| execution.status == "cancelled")
+            .collect();
+        assert_eq!(cancelled.len(), 1, "um registro sintético por cancelamento");
+        assert!(app.orchestrator.findings.is_empty());
+        assert!(
+            app.audit_log_path.is_some(),
+            "a auditoria precisa ser gravada"
+        );
+        let log = std::fs::read_to_string(app.audit_log_path.as_ref().unwrap()).unwrap();
+        assert!(log.contains("cancelado_pelo_usuario"), "{log}");
     }
 
     #[test]

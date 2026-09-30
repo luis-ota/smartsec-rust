@@ -390,6 +390,7 @@ mod tests {
             tools: Vec::new(),
             output_file: None,
             output_dir: None,
+            max_critical_findings: 0,
             show_help: false,
             show_version: false,
         };
