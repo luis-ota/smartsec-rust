@@ -14,6 +14,31 @@ const SENSITIVE_KEYS: &[&str] = &[
 
 const HTTP_PAYLOAD_KEYS: &[&str] = &["curl-command", "request", "response"];
 
+/// Chaves do registro do TruffleHog que carregam o **valor** do segredo.
+///
+/// O TruffleHog entrega o segredo completo em `Raw`, `RawV2` e `SecretParts`.
+/// Medido em container real: um achado de chave privada chegou ao stdout com
+/// `"Raw":"-----BEGIN RSA PRIVATE KEY-----\nMIIE<MASCARADO>…"` e
+/// `"SecretParts":{"token":"-----BEGIN RSA PRIVATE KEY-----\n…"}`.
+///
+/// `Redacted` também é removido: ele truca o segredo no meio e não é estável
+/// entre versões, então não serve como evidência nem como registro fiel.
+const TRUFFLEHOG_SECRET_KEYS: &[&str] = &["raw", "rawv2", "secretparts", "redacted"];
+
+/// Marcadores que identificam um registro do TruffleHog.
+///
+/// As chaves acima são removidas apenas em objetos que são registro do
+/// TruffleHog, para não atingir um campo homônimo de outro scanner.
+const TRUFFLEHOG_MARKERS: &[&str] = &["detectorname", "sourcemetadata"];
+
+/// Verifica se o objeto é um registro do TruffleHog.
+fn is_trufflehog_result(object: &serde_json::Map<String, Value>) -> bool {
+    object.keys().any(|key| {
+        let key = normalize_key(key);
+        TRUFFLEHOG_MARKERS.iter().any(|marker| *marker == key)
+    })
+}
+
 /// Sanitiza texto técnico antes de exibi-lo ou persistí-lo.
 ///
 /// Registros JSONL de scanners preservam os metadados do achado, mas descartam
@@ -73,6 +98,16 @@ pub fn sanitize_json_value(value: &mut Value) {
     match value {
         Value::Object(object) => {
             object.retain(|key, _| !is_http_payload_key(key));
+            // O valor do segredo do TruffleHog é removido antes das demais
+            // regras, porque é o único caminho em que um segredo detectado
+            // poderia chegar a um log, relatório ou finding.
+            if is_trufflehog_result(object) {
+                object.retain(|key, _| {
+                    !TRUFFLEHOG_SECRET_KEYS
+                        .iter()
+                        .any(|candidate| *candidate == normalize_key(key))
+                });
+            }
             for (key, child) in object {
                 if is_sensitive_key(key) {
                     *child = Value::String("[REDACTED]".to_string());
@@ -195,6 +230,49 @@ mod tests {
         assert_eq!(
             sanitize_url("http://user:secret@target.local/%zz?token=secret#fragment"),
             "http://target.local/%zz"
+        );
+    }
+
+    #[test]
+    fn removes_the_trufflehog_secret_fields_from_jsonl() {
+        // Registro real do TruffleHog: o segredo está em Raw, RawV2, Redacted
+        // e SecretParts, e não pode sobreviver à sanitização.
+        let raw = concat!(
+            r#"{"SourceMetadata":{"Data":{"Filesystem":{"file":"/alvo/config/credenciais.env","line":14}}},"SourceID":1,"DetectorName":"AWS","DecoderName":"PLAIN","Verified":true,"Raw":"AWS_SECRET_DE_EXEMPLO_NAO_E_REAL_0000","RawV2":"AWS_SECRET_DE_EXEMPLO_NAO_E_REAL_0000","Redacted":"AWS_SECRET_DE","ExtraData":{},"SecretParts":{"token":"AWS_SECRET_DE_EXEMPLO_NAO_E_REAL_0000"}}"#,
+            "\n",
+            r#"{"SourceMetadata":{"Data":{"Git":{"file":"src/lib.rs","line":42,"commit":"abc1234","repository":"https://github.com/org/repo"}}},"DetectorName":"PrivateKey","Verified":false,"Raw":"AWS_SECRET_DE_EXEMPLO_NAO_E_REAL_0000"}"#,
+            "\n"
+        );
+
+        let sanitized = sanitize_text(raw);
+
+        // Detector, arquivo, linha, commit e verificação sobrevivem.
+        assert!(
+            sanitized.contains("\"DetectorName\":\"AWS\""),
+            "{sanitized}"
+        );
+        assert!(sanitized.contains("config/credenciais.env"), "{sanitized}");
+        assert!(sanitized.contains("abc1234"), "{sanitized}");
+        assert!(sanitized.contains("\"Verified\":true"), "{sanitized}");
+        // O valor do segredo não sobrevive em nenhuma forma.
+        assert!(!sanitized.contains("AWS_SECRET_DE_EXEMPLO"), "{sanitized}");
+        assert!(!sanitized.contains("\"Raw\""), "{sanitized}");
+        assert!(!sanitized.contains("RawV2"), "{sanitized}");
+        assert!(!sanitized.contains("SecretParts"), "{sanitized}");
+        assert!(!sanitized.contains("Redacted"), "{sanitized}");
+    }
+
+    #[test]
+    fn nao_remove_raw_de_registro_que_nao_e_trufflehog() {
+        // `Raw` de outro scanner não é segredo do TruffleHog e não deve ser
+        // apagado por uma regra específica desta ferramenta.
+        let raw = r#"{"template-id":"custom","Raw":"valor-legitimo-do-outro-scanner"}"#;
+
+        let sanitized = sanitize_text(raw);
+
+        assert!(
+            sanitized.contains("valor-legitimo-do-outro-scanner"),
+            "{sanitized}"
         );
     }
 
