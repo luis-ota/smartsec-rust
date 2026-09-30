@@ -37,6 +37,8 @@ pub struct Orchestrator {
     /// Resultado estruturado da última análise da IA, com modelo, provedor
     /// efetivo, fallback, motivo da falha e horário.
     pub last_analysis_result: Option<AnalysisResult>,
+    /// Serviço único de análise, compartilhado pela TUI e pelo modo headless.
+    analysis_service: AnalysisService,
 }
 
 impl Orchestrator {
@@ -67,6 +69,7 @@ impl Orchestrator {
             started_at: now_iso8601(),
             latest_nmap_output: None,
             last_analysis_result: None,
+            analysis_service: AnalysisService::new(),
         }
     }
 
@@ -307,8 +310,13 @@ impl Orchestrator {
     /// headless. Concentrar a chamada aqui impede que os dois modos voltem a
     /// divergir (issue #23) e garante que consentimento, teto de 45 s (RNF04),
     /// validação da resposta e fallback sejam sempre os mesmos.
+    ///
+    /// O serviço é um campo do orquestrador, e não uma instância criada por
+    /// chamada: os dois modos de execução recebem a mesma configuração de prazo,
+    /// o que torna a unificação observável em vez de apenas declarada.
     pub async fn analyze_findings(&mut self) -> AnalysisResult {
-        let result = AnalysisService::new()
+        let result = self
+            .analysis_service
             .analyze(&mut self.agent, &self.findings)
             .await;
         self.last_log = result.text.clone();
@@ -321,7 +329,7 @@ impl Orchestrator {
             target,
             self.latest_nmap_output.as_deref().unwrap_or_default(),
         );
-        AnalysisService::new()
+        self.analysis_service
             .request(&mut self.agent, &prompt)
             .await
     }
