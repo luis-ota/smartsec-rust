@@ -94,6 +94,8 @@ enum RunEvent {
     AnalysisProgress {
         elapsed_secs: u64,
     },
+    /// Linha de resumo da correlação e do enriquecimento CVE/NVD.
+    EnrichmentSummary(String),
     Completed {
         orchestrator: Box<Orchestrator>,
         audit_log: Result<PathBuf, String>,
@@ -165,6 +167,8 @@ pub struct AppState {
     pub llm_warning: Option<String>,
     pub audit_log_path: Option<PathBuf>,
     pub run_error: Option<String>,
+    /// Aviso de indisponibilidade do enriquecimento CVE/NVD, exibido na TUI.
+    pub enrichment_warning: Option<String>,
     pub exec_cancelled: bool,
     pub show_help_overlay: bool,
     pub show_command_palette: bool,
@@ -284,6 +288,7 @@ impl AppState {
             llm_warning: None,
             audit_log_path: None,
             run_error: None,
+            enrichment_warning: None,
             exec_cancelled: false,
             show_help_overlay: false,
             show_command_palette: false,
@@ -467,6 +472,14 @@ impl AppState {
                     if elapsed_secs % 10 == 0 {
                         self.exec_logs
                             .push(format!("[ia] análise em andamento… ({elapsed_secs}s)"));
+                    }
+                }
+                RunEvent::EnrichmentSummary(line) => {
+                    // A indisponibilidade da NVD precisa ser visível na TUI,
+                    // não silenciosa: a linha já carrega a causa em pt-BR.
+                    self.exec_logs.push(format!("[cve/nvd] {line}"));
+                    if line.contains("indisponível") {
+                        self.enrichment_warning = Some(line.clone());
                     }
                 }
                 RunEvent::Completed {
@@ -707,6 +720,10 @@ impl AppState {
                 }
             }
             orchestrator.build_findings();
+            orchestrator.correlate_and_enrich_findings().await;
+            for line in orchestrator.enrichment.lines_pt_br() {
+                let _ = sender.send(RunEvent::EnrichmentSummary(line));
+            }
             let heartbeat = tokio::spawn({
                 let sender = sender.clone();
                 async move {
@@ -772,10 +789,11 @@ impl AppState {
     }
 
     pub fn export_md(&self) -> String {
-        crate::report::ReportGenerator::compile_report(
+        crate::report::ReportGenerator::compile_report_with_enrichment(
             &self.config,
             &self.vulnerabilities(),
             &self.orchestrator.decision_history,
+            &self.orchestrator.enrichment,
         )
     }
 
@@ -1120,6 +1138,9 @@ mod tests {
             target: "http://target.local".to_string(),
             evidence: "porta aberta".to_string(),
             detected_at: "2026-09-04T14:00:00Z".to_string(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
         });
         orchestrator.last_log = "Análise real".to_string();
         let audit_path = PathBuf::from("/tmp/scan.json");

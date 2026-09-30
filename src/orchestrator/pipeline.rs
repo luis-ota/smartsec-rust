@@ -3,6 +3,8 @@ use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner};
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
+use crate::orchestrator::enrichment::{correlate_and_enrich, EnrichmentSummary};
+use crate::orchestrator::nvd::NvdClient;
 use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
 use crate::tools::nmap::NmapTool;
 use crate::tools::nuclei::{NucleiTool, NUCLEI_TEMPLATES_COMMIT};
@@ -30,6 +32,8 @@ pub struct Orchestrator {
     pub trace_sink: Option<mpsc::UnboundedSender<String>>,
     /// Notifica a interface assim que o plano do Nuclei é validado.
     pub decision_sink: Option<mpsc::UnboundedSender<DecisionRecord>>,
+    /// Resumo da correlação e do enriquecimento CVE/NVD (issue #19).
+    pub enrichment: EnrichmentSummary,
     started_at: String,
     latest_nmap_output: Option<String>,
 }
@@ -59,6 +63,7 @@ impl Orchestrator {
             last_log: String::new(),
             trace_sink: None,
             decision_sink: None,
+            enrichment: EnrichmentSummary::default(),
             started_at: now_iso8601(),
             latest_nmap_output: None,
         }
@@ -372,6 +377,19 @@ impl Orchestrator {
         self.findings = real_findings;
     }
 
+    /// Correlaciona os achados e enriquece cada grupo com os dados da NVD.
+    ///
+    /// Roda depois de [`build_findings`](Self::build_findings). A indisponibilidade
+    /// da NVD não impede o resultado: os achados voltam consolidados e a causa
+    /// fica em `self.enrichment.nvd`, visível na TUI, no headless e no relatório.
+    pub async fn correlate_and_enrich_findings(&mut self) {
+        let client = NvdClient::new().ok();
+        let (findings, summary) =
+            correlate_and_enrich(self.findings.clone(), client.as_ref()).await;
+        self.findings = findings;
+        self.enrichment = summary;
+    }
+
     fn nuclei_templates_path(&self) -> PathBuf {
         self.config
             .nuclei_templates_path
@@ -406,6 +424,7 @@ impl Orchestrator {
         }
 
         self.build_findings();
+        self.correlate_and_enrich_findings().await;
 
         let analysis = self.agent.analyze_logs(&self.findings).await;
         self.last_log = analysis;
@@ -465,6 +484,7 @@ impl Orchestrator {
                 .iter()
                 .map(DecisionRecord::sanitized)
                 .collect(),
+            enrichment: self.enrichment.clone(),
             ..metadata
         };
         crate::orchestrator::scan_logger::save_scan_log(&metadata)
