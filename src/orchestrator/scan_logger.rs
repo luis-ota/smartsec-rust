@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// Concordância de número para os textos de interface em pt-BR.
+fn plural(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("{count} {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
 /// Registro estruturado de execução de uma ferramenta de segurança.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolExecutionRecord {
@@ -75,15 +84,98 @@ pub struct ScanMetadata {
     pub decisions: Vec<DecisionRecord>,
 }
 
+/// Contagem de achados por severidade usada na listagem do histórico.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScanSeverityCounts {
+    pub critical: usize,
+    pub high: usize,
+    pub medium: usize,
+    pub low: usize,
+    pub info: usize,
+}
+
+impl ScanSeverityCounts {
+    pub fn from_metadata(meta: &ScanMetadata) -> Self {
+        Self {
+            critical: meta.critical_count,
+            high: meta.high_count,
+            medium: meta.medium_count,
+            low: meta.low_count,
+            info: meta.info_count,
+        }
+    }
+
+    /// Total de achados contabilizados por severidade.
+    pub fn total(&self) -> usize {
+        self.critical + self.high + self.medium + self.low + self.info
+    }
+
+    /// Resumo em uma linha para a listagem do histórico, em pt-BR.
+    pub fn label(&self) -> String {
+        format!(
+            "{} · {} · {} · {} · {} · {}",
+            plural(self.total(), "achado", "achados"),
+            plural(self.critical, "crítica", "críticas"),
+            plural(self.high, "alta", "altas"),
+            plural(self.medium, "média", "médias"),
+            plural(self.low, "baixa", "baixas"),
+            plural(self.info, "informativa", "informativas"),
+        )
+    }
+}
+
 /// Resumo compacto para listagem de scans históricos.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct ScanRecordSummary {
     pub scan_id: String,
     pub target_url: String,
+    pub started_at: String,
     pub completed_at: String,
+    pub execution_type: String,
     pub findings_count: usize,
+    pub severity_counts: ScanSeverityCounts,
     pub file_path: PathBuf,
+}
+
+/// Registro presente no diretório de histórico que não pôde ser consultado.
+///
+/// Um registro ilegível nunca desaparece em silêncio: ele volta para o usuário
+/// como item identificável da listagem.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnreadableScanRecord {
+    pub file_name: String,
+    pub reason: String,
+}
+
+/// Resultado de uma consulta ao histórico: o que foi lido e o que ficou ilegível.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScanHistory {
+    /// `false` quando o diretório de execuções ainda não existe.
+    pub directory_exists: bool,
+    pub records: Vec<ScanRecordSummary>,
+    pub unreadable: Vec<UnreadableScanRecord>,
+}
+
+impl ScanHistory {
+    /// `true` quando o diretório existe mas não possui registro consultável.
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty() && self.unreadable.is_empty()
+    }
+
+    /// Aviso em pt-BR sobre registros ilegíveis, ou `None` quando tudo leu.
+    pub fn unreadable_warning(&self) -> Option<String> {
+        if self.unreadable.is_empty() {
+            return None;
+        }
+        if self.unreadable.len() == 1 {
+            Some("1 registro ilegível foi ignorado na listagem:".to_string())
+        } else {
+            Some(format!(
+                "{} registros ilegíveis foram ignorados na listagem:",
+                self.unreadable.len()
+            ))
+        }
+    }
 }
 
 impl ScanMetadata {
@@ -216,43 +308,116 @@ pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Re
 }
 
 /// Lista o resumo de todos os scans estruturados gravados em um diretório.
-#[allow(dead_code)]
-pub fn list_scan_logs_from_dir(dir: &PathBuf) -> Result<Vec<ScanRecordSummary>> {
-    let mut summaries = Vec::new();
+///
+/// A listagem é somente leitura: nenhum arquivo do diretório é criado,
+/// reescrito ou removido. Registros ilegíveis são devolvidos em
+/// [`ScanHistory::unreadable`] em vez de sumirem em silêncio.
+pub fn list_scan_logs_from_dir(dir: &PathBuf) -> Result<ScanHistory> {
+    let mut history = ScanHistory {
+        directory_exists: dir.exists(),
+        ..ScanHistory::default()
+    };
     if !dir.exists() {
-        return Ok(summaries);
+        return Ok(history);
     }
 
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("json") {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(meta) = serde_json::from_str::<ScanMetadata>(&content) {
-                    summaries.push(ScanRecordSummary {
-                        scan_id: meta.scan_id,
-                        target_url: meta.target_url,
-                        completed_at: meta.completed_at,
-                        findings_count: meta.findings_count,
-                        file_path: path,
-                    });
-                }
+    let entries = fs::read_dir(dir)
+        .with_context(|| format!("Falha ao ler o diretório de histórico {dir:?}"))?;
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                history.unreadable.push(UnreadableScanRecord {
+                    file_name: "<entrada ilegível>".to_string(),
+                    reason: format!("não foi possível ler a entrada do diretório: {error}"),
+                });
+                continue;
             }
+        };
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        match fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str::<ScanMetadata>(&content) {
+                Ok(meta) => history.records.push(ScanRecordSummary {
+                    scan_id: meta.scan_id.clone(),
+                    target_url: meta.target_url.clone(),
+                    started_at: meta.started_at.clone(),
+                    completed_at: meta.completed_at.clone(),
+                    execution_type: meta.execution_type.clone(),
+                    findings_count: meta.findings_count,
+                    severity_counts: ScanSeverityCounts::from_metadata(&meta),
+                    file_path: path,
+                }),
+                Err(error) => history.unreadable.push(UnreadableScanRecord {
+                    file_name,
+                    reason: format!("conteúdo inválido ou incompleto: {error}"),
+                }),
+            },
+            Err(error) => history.unreadable.push(UnreadableScanRecord {
+                file_name,
+                reason: format!("não foi possível ler o arquivo: {error}"),
+            }),
         }
     }
 
-    summaries.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
-    Ok(summaries)
+    history
+        .records
+        .sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
+    Ok(history)
+}
+
+/// Indica se o identificador segue o padrão `scan_<nanos>` gerado pelo orquestrador.
+///
+/// O padrão é ASCII e não contém separadores de caminho, portanto um id fora do
+/// padrão nunca pode ser convertido em um caminho arbitrário.
+pub fn is_valid_scan_id(scan_id: &str) -> bool {
+    let Some(digits) = scan_id.strip_prefix("scan_") else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Resolve o caminho do registro de um `scan_id` dentro de [`scans_dir`].
+///
+/// Rejeita path traversal e qualquer id fora do padrão `scan_<nanos>`; o id nunca
+/// pode apontar para fora do diretório de histórico.
+pub fn scan_log_path(scan_id: &str) -> Result<PathBuf> {
+    if !is_valid_scan_id(scan_id) {
+        anyhow::bail!(
+            "identificador de execução inválido: {scan_id}; esperado no formato scan_<nanos>"
+        );
+    }
+    let dir = scans_dir();
+    let path = dir.join(format!("{scan_id}.json"));
+    debug_assert_eq!(path.parent(), Some(dir.as_path()));
+    Ok(path)
 }
 
 /// Carrega os metadados completos de um scan dado seu caminho de arquivo.
-#[allow(dead_code)]
 pub fn load_scan_log_from_file(file_path: &PathBuf) -> Result<ScanMetadata> {
     let content = fs::read_to_string(file_path)
-        .with_context(|| format!("Falha ao ler arquivo de log {:?}", file_path))?;
-    let meta: ScanMetadata = serde_json::from_str(&content)
-        .with_context(|| format!("Falha ao deserializar JSON de {:?}", file_path))?;
+        .with_context(|| format!("Falha ao ler o registro de execução em {file_path:?}"))?;
+    let meta: ScanMetadata = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "Falha ao interpretar o registro de execução em {file_path:?}; \
+             o arquivo pode estar corrompido, incompleto ou em uma versão anterior do formato"
+        )
+    })?;
     Ok(meta)
+}
+
+/// Carrega uma execução do histórico pelo `scan_id` informado pelo usuário.
+pub fn load_scan_log_by_id(scan_id: &str) -> Result<ScanMetadata> {
+    let path = scan_log_path(scan_id)?;
+    if !path.is_file() {
+        anyhow::bail!("execução não encontrada no histórico: {scan_id}");
+    }
+    load_scan_log_from_file(&path)
 }
 
 #[cfg(test)]
@@ -342,9 +507,9 @@ mod tests {
         assert_eq!(loaded.critical_count, 0);
         assert_eq!(loaded.info_count, 1);
 
-        let summaries = list_scan_logs_from_dir(&temp_dir).expect("list should succeed");
-        assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].scan_id, "scan_20260831_120000");
+        let history = list_scan_logs_from_dir(&temp_dir).expect("list should succeed");
+        assert_eq!(history.records.len(), 1);
+        assert_eq!(history.records[0].scan_id, "scan_20260831_120000");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -400,5 +565,325 @@ mod tests {
         assert!(!serialized.contains("\"response\""));
         assert!(serialized.contains("template-id"));
         assert!(serialized.contains("[REDACTED]"));
+    }
+
+    // ---------- Histórico consultável (issue #24) ----------
+
+    /// Diretório exclusivo por teste: evita colisão entre threads do mesmo binário.
+    fn history_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "smartsec_historico_{label}_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    fn sample_metadata(scan_id: &str, completed_at: &str, target: &str) -> ScanMetadata {
+        ScanMetadata {
+            scan_id: scan_id.to_string(),
+            target_url: target.to_string(),
+            started_at: "2026-09-01T10:00:00Z".to_string(),
+            completed_at: completed_at.to_string(),
+            execution_type: "Auto".to_string(),
+            llm_provider: "Ollama".to_string(),
+            tools_executed: Vec::new(),
+            findings_count: 0,
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+            info_count: 0,
+            findings: Vec::new(),
+            agent_analysis: "Analise local".to_string(),
+            decisions: Vec::new(),
+        }
+    }
+
+    /// Fotografia byte a byte do diretório para provar que a consulta é somente leitura.
+    fn snapshot_bytes(dir: &PathBuf) -> Vec<(String, Vec<u8>)> {
+        let mut entries: Vec<_> = fs::read_dir(dir)
+            .expect("o diretório de histórico deve ser legível")
+            .map(|entry| {
+                let path = entry.expect("entrada legível").path();
+                let name = path
+                    .file_name()
+                    .expect("entrada com nome")
+                    .to_string_lossy()
+                    .into_owned();
+                (name, fs::read(&path).expect("conteúdo legível"))
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
+
+    #[test]
+    fn empty_and_missing_history_are_distinguishable() {
+        let missing = history_dir("inexistente");
+        let _ = fs::remove_dir_all(&missing);
+
+        let history = list_scan_logs_from_dir(&missing).expect("listar não pode falhar");
+
+        assert!(
+            !history.directory_exists,
+            "diretório inexistente precisa ser distinguido de vazio"
+        );
+        assert!(history.is_empty());
+        assert!(history.unreadable_warning().is_none());
+
+        let empty = history_dir("vazio");
+        let _ = fs::remove_dir_all(&empty);
+        fs::create_dir_all(&empty).unwrap();
+
+        let history = list_scan_logs_from_dir(&empty).expect("listar não pode falhar");
+
+        assert!(history.directory_exists, "diretório vazio existe");
+        assert!(
+            history.is_empty(),
+            "diretório vazio não tem registros nem ilegíveis"
+        );
+
+        let _ = fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn complete_history_is_ordered_by_completion_without_touching_the_files() {
+        let dir = history_dir("completo");
+        let _ = fs::remove_dir_all(&dir);
+
+        for (scan_id, completed_at, target) in [
+            (
+                "scan_1000000000000000001",
+                "2026-09-01T10:00:00Z",
+                "http://antigo.local",
+            ),
+            (
+                "scan_1000000000000000003",
+                "2026-09-03T10:00:00Z",
+                "http://recente.local",
+            ),
+            (
+                "scan_1000000000000000002",
+                "2026-09-02T10:00:00Z",
+                "http://medio.local",
+            ),
+        ] {
+            let mut metadata = sample_metadata(scan_id, completed_at, target);
+            metadata.critical_count = 1;
+            metadata.info_count = 2;
+            metadata.findings_count = 3;
+            save_scan_log_to_dir(&metadata, &dir).expect("gravação de teste");
+        }
+        let before = snapshot_bytes(&dir);
+
+        let history = list_scan_logs_from_dir(&dir).expect("listagem deve funcionar");
+
+        assert_eq!(
+            history
+                .records
+                .iter()
+                .map(|record| record.scan_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "scan_1000000000000000003",
+                "scan_1000000000000000002",
+                "scan_1000000000000000001"
+            ],
+            "a listagem ordena da mais recente para a mais antiga"
+        );
+        assert!(
+            history.records[0]
+                .target_url
+                .starts_with("http://recente.local"),
+            "alvo sanitizado: {}",
+            history.records[0].target_url
+        );
+        assert_eq!(history.records[0].severity_counts.total(), 3);
+        assert_eq!(history.records[0].severity_counts.critical, 1);
+        assert!(history.unreadable.is_empty());
+        assert!(history.unreadable_warning().is_none());
+
+        for record in &history.records {
+            load_scan_log_from_file(&record.file_path).expect("abertura deve funcionar");
+        }
+        assert_eq!(
+            snapshot_bytes(&dir),
+            before,
+            "a consulta ao historico nao pode alterar os artefatos originais (criterio d)"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupted_record_is_reported_instead_of_disappearing() {
+        let dir = history_dir("corrompido");
+        let _ = fs::remove_dir_all(&dir);
+
+        let valid = sample_metadata(
+            "scan_1000000000000000010",
+            "2026-09-01T10:00:00Z",
+            "http://valido.local",
+        );
+        save_scan_log_to_dir(&valid, &dir).expect("gravação de teste");
+        fs::write(
+            dir.join("scan_1000000000000000011.json"),
+            "{isto nao e json",
+        )
+        .expect("gravação do registro corrompido");
+        let before = snapshot_bytes(&dir);
+
+        let history = list_scan_logs_from_dir(&dir).expect("listagem deve funcionar");
+
+        assert_eq!(
+            history.records.len(),
+            1,
+            "o registro válido continua legível"
+        );
+        assert_eq!(history.unreadable.len(), 1);
+        assert_eq!(
+            history.unreadable[0].file_name,
+            "scan_1000000000000000011.json"
+        );
+        assert!(
+            history.unreadable[0].reason.contains("conteúdo inválido"),
+            "o motivo deve ser acionável: {}",
+            history.unreadable[0].reason
+        );
+        let warning = history
+            .unreadable_warning()
+            .expect("registro ilegivel gera aviso");
+        assert!(warning.contains('1'), "{warning}");
+
+        assert_eq!(
+            snapshot_bytes(&dir),
+            before,
+            "listar um diretorio corrompido nao pode reescrever o arquivo quebrado"
+        );
+
+        let error = load_scan_log_from_file(&dir.join("scan_1000000000000000011.json"))
+            .expect_err("registro corrompido nao pode carregar");
+        let message = format!("{error:#}");
+        assert!(message.contains("Falha ao interpretar"), "{message}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partial_record_fails_with_an_actionable_message() {
+        let dir = history_dir("parcial");
+        let _ = fs::remove_dir_all(&dir);
+
+        // Registro truncado: os campos obrigatórios de topo continuam ausentes.
+        let partial = r#"{"scan_id":"scan_1000000000000000020","findings":[]}"#;
+        let path = dir.join("scan_1000000000000000020.json");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, partial).expect("gravação do registro parcial");
+        let before = snapshot_bytes(&dir);
+
+        let history = list_scan_logs_from_dir(&dir).expect("listagem deve funcionar");
+        assert!(history.records.is_empty());
+        assert_eq!(history.unreadable.len(), 1);
+
+        let error = load_scan_log_from_file(&path).expect_err("registro parcial nao carrega");
+        let message = format!("{error:#}");
+        assert!(message.contains("corrompido"), "{message}");
+        assert!(message.contains("versão anterior"), "{message}");
+
+        assert_eq!(
+            snapshot_bytes(&dir),
+            before,
+            "falha de leitura nao pode alterar o registro parcial"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn previous_version_without_new_fields_is_readable() {
+        let dir = history_dir("versao_anterior");
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut metadata = sample_metadata(
+            "scan_1000000000000000030",
+            "2026-09-01T10:00:00Z",
+            "http://legado.local",
+        );
+        metadata.tools_executed = vec![ToolExecutionRecord {
+            tool_name: "Nmap".to_string(),
+            arguments: vec!["-sT".to_string()],
+            executed_at: "2026-09-01T10:00:30Z".to_string(),
+            output_bytes: 10,
+            output_sample: String::new(),
+            stdout: String::new(),
+            stderr: String::new(),
+            status: "succeeded".to_string(),
+            duration_ms: 30,
+            tool_version: Some("7.94".to_string()),
+            image: Some("imagem:1".to_string()),
+            execution_error: None,
+            podman_trace: Vec::new(),
+        }];
+        let mut legacy_json = serde_json::to_value(&metadata).unwrap();
+        let object = legacy_json.as_object_mut().unwrap();
+        object.remove("info_count");
+        object.remove("decisions");
+        legacy_json["tools_executed"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("podman_trace");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("scan_1000000000000000030.json"),
+            serde_json::to_string_pretty(&legacy_json).unwrap(),
+        )
+        .expect("gravação do registro legado");
+
+        let history = list_scan_logs_from_dir(&dir).expect("listagem deve funcionar");
+        assert_eq!(history.records.len(), 1);
+        assert!(history.unreadable.is_empty());
+
+        let loaded = load_scan_log_from_file(&history.records[0].file_path)
+            .expect("registro de versão anterior deve carregar");
+        assert_eq!(loaded.scan_id, "scan_1000000000000000030");
+        assert_eq!(loaded.info_count, 0);
+        assert!(loaded.decisions.is_empty());
+        assert!(loaded.tools_executed[0].podman_trace.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_id_rejects_path_traversal_and_out_of_pattern_values() {
+        assert!(is_valid_scan_id("scan_1757000000000000000"));
+        for invalid in [
+            "../../etc/passwd",
+            "scan_../../etc/passwd",
+            "scan_",
+            "scan_abc",
+            "scan_1/../../x",
+            "scan_1.json",
+            "",
+            "SCAN_123",
+            "scan_123\n",
+        ] {
+            assert!(
+                !is_valid_scan_id(invalid),
+                "id fora do padrão deveria ser rejeitado: {invalid}"
+            );
+            let error = scan_log_path(invalid).expect_err("id invalido nao pode resolver");
+            assert!(
+                format!("{error:#}").contains("identificador de execução inválido"),
+                "mensagem acionável para {invalid}: {error:#}"
+            );
+        }
+
+        // Mesmo com o XDG isolado, um id válido resolve dentro de scans_dir().
+        let path = scan_log_path("scan_1757000000000000000").expect("id valido resolve");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("scan_1757000000000000000.json")
+        );
+        assert!(path.starts_with(scans_dir()));
     }
 }
