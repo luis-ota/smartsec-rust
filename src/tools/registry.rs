@@ -574,7 +574,7 @@ mod tests {
             "target_url = \"http://test.local\"\n\
              [llm]\nprovider = \"ollama\"\n\
              [[tools]]\n\
-             name = \"ZAP\"\n\
+             name = \"ScannerExemplo\"\n\
              description = \"Scanner de servidores web\"\n\
              category = \"DAST\"\n\
              image = \"docker.io/zaproxy/zap:2.14.0\"\n\
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn rejects_duplicated_configured_tools() {
         let error =
-            ToolRegistry::with_configured(&[generic_manifest("ZAP"), generic_manifest("zap")])
+            ToolRegistry::with_configured(&[generic_manifest("ScannerExemplo"), generic_manifest("zap")])
                 .unwrap_err();
 
         assert!(error.to_string().contains("duplicada"), "{error}");
@@ -614,13 +614,13 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_runner_citing_the_tool_and_the_field() {
-        let mut manifest = generic_manifest("ZAP");
+        let mut manifest = generic_manifest("ScannerExemplo");
         manifest.runner = "runner-inexistente".to_string();
 
         let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("ZAP"), "{message}");
+        assert!(message.contains("ScannerExemplo"), "{message}");
         assert!(message.contains("runner desconhecido"), "{message}");
         assert!(message.contains("runner-inexistente"), "{message}");
         assert!(message.contains("nmap"), "{message}");
@@ -628,45 +628,45 @@ mod tests {
 
     #[test]
     fn rejects_an_unknown_parser_citing_the_tool_and_the_field() {
-        let mut manifest = generic_manifest("ZAP");
+        let mut manifest = generic_manifest("ScannerExemplo");
         manifest.parser = "parser-inexistente".to_string();
 
         let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("ZAP"), "{message}");
+        assert!(message.contains("ScannerExemplo"), "{message}");
         assert!(message.contains("parser desconhecido"), "{message}");
         assert!(message.contains("generic-text"), "{message}");
     }
 
     #[test]
     fn rejects_a_missing_required_field_citing_the_tool() {
-        let mut manifest = generic_manifest("ZAP");
+        let mut manifest = generic_manifest("ScannerExemplo");
         manifest.image.clear();
 
         let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("ZAP"), "{message}");
+        assert!(message.contains("ScannerExemplo"), "{message}");
         assert!(message.contains("'image'"), "{message}");
     }
 
     #[test]
     fn rejects_output_format_incompatible_with_the_parser() {
-        let mut manifest = generic_manifest("ZAP");
+        let mut manifest = generic_manifest("ScannerExemplo");
         manifest.output_format = "xml".to_string();
 
         let error = ToolRegistry::with_configured(&[manifest]).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("ZAP"), "{message}");
+        assert!(message.contains("ScannerExemplo"), "{message}");
         assert!(message.contains("output_format"), "{message}");
         assert!(message.contains("'text'"), "{message}");
     }
 
     #[test]
     fn output_format_comparison_is_case_insensitive() {
-        let mut manifest = generic_manifest("ZAP");
+        let mut manifest = generic_manifest("ScannerExemplo");
         manifest.output_format = "TEXT".to_string();
 
         assert!(ToolRegistry::with_configured(&[manifest]).is_ok());
@@ -674,11 +674,11 @@ mod tests {
 
     #[test]
     fn a_disabled_tool_stays_out_of_the_catalog() {
-        let mut manifest = generic_manifest("ZAP");
+        let mut manifest = generic_manifest("ScannerExemplo");
         manifest.enabled = false;
 
         let registry = ToolRegistry::with_configured(&[manifest]).unwrap();
 
-        assert!(registry.find("ZAP").is_none());
+        assert!(registry.find("ScannerExemplo").is_none());
     }
 }

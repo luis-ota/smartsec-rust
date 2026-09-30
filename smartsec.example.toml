@@ -50,7 +50,7 @@ model = "llama3.2:1b"
 # Procedimento completo em docs/EXTENDING_TOOLS.md.
 #
 # [[tools]]
-# name = "ZAP"
+# name = "ScannerExemplo"
 # description = "Scanner de servidores web"
 # category = "DAST"
 # image = "docker.io/zaproxy/zap:2.14.0"
