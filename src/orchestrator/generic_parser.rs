@@ -62,6 +62,11 @@ pub fn parse_generic_findings_with_errors(
             origins: Vec::new(),
             enrichment: None,
             severity_conflict: None,
+
+            // Scanner não conhece o código do projeto: a origem no código é
+            // preenchida exclusivamente pela fase do agente de código (#76).
+            code_location: None,
+            code_remediation: Vec::new(),
         });
     }
     (findings, Vec::new())

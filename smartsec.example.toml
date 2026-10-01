@@ -40,6 +40,10 @@ model = "llama3.2:1b"
 # A flag --max-critical-findings da CLI tem precedência sobre este campo.
 # A avaliação ocorre entre ferramentas, preservando a evidência já coletada.
 # max_critical_findings = 3
+# Diretorio do projeto analisado pelo agente de codigo (--project).
+# Padrao: o diretorio atual. A analise e somente leitura: o SmartSec nao cria,
+# altera nem remove nada dentro deste diretorio.
+# project_dir = "/caminho/para/minha-aplicacao"
 
 # Ferramentas adicionais registradas por configuração (RNF08).
 # O manifesto é validado no carregamento: campos obrigatórios, duplicidade e

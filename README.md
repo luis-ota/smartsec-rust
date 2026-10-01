@@ -42,6 +42,9 @@ previstas no TCC ainda nao fazem parte do catalogo executavel.
 - **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM
 - **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes e explicacoes didaticas
 - **Historico consultavel** — `smartsec history` lista as execucoes e `smartsec show <SCAN_ID>` abre uma delas, tambem pela tela de historico da TUI
+- **Servico unico de analise** — TUI e modo headless chamam o mesmo servico; o resultado identifica modelo, provedor efetivo, uso da alternativa local, motivo da falha e horario, e isso vai para o log estruturado
+- **Agente de codigo** — depois dos scanners, um agente de IA com ferramentas somente leitura explora o projeto e aponta `arquivo:linha` de cada achado, com os passos de correcao no proprio codigo. O projeto vem de `scan --project <DIR>` (padrao: diretorio atual) ou do campo "Projeto analisado" na TUI. Uma localizacao so e declarada quando o agente leu a linha de fato; sem isso, o resultado honesto e "localizacao nao determinada" com o motivo. A severidade do scanner nunca muda. Fluxo, limites e riscos em [`docs/AGENTE_DE_CODIGO.md`](docs/AGENTE_DE_CODIGO.md)
+- **Exportacao de relatorio** — gera `smartsec-report.md` com findings, recomendacoes, localizacao no codigo e explicacoes didaticas
 - **Evidencia segura** — preserva template, matcher, endpoint, host, URL e tags, sem corpos HTTP, credenciais ou query strings
 
 ## Requisitos
@@ -90,6 +93,8 @@ cargo run -- scan --target https://example.com --output relatorio.md --output-di
 cargo run -- history
 cargo run -- history --limit 5
 cargo run -- show scan_1757000000000000000
+# Analisar o código de um projeto (padrão: diretório atual)
+cargo run -- scan --target https://example.com --project ./minha-aplicacao
 
 # Na TUI em modo assistido, marque ou desmarque ferramentas com Espaco
 ```
@@ -133,6 +138,37 @@ Regras de seguranca e de robustez:
 printf '{quebrado' > ~/.config/smartsec/scans/scan_1757000000000000009.json
 cargo run -- history
 ```
+### Análise do código do alvo
+
+Depois dos scanners, o SmartSec explora a codebase para dizer **onde** corrigir
+cada achado:
+
+```text
+[3/4] Localização no código (projeto: /home/luis/minha-aplicacao)
+  │ [ALTA] Autenticação fraca em /api/login
+    código: src/auth/login.py:42
+    correção: Valide o usuário antes de prosseguir
+    correção: Adicione teste de regressão
+  │ 3 de 5 achados com origem localizada no código
+```
+
+O diretório vem de `--project <DIR>` (padrão: diretório atual) ou do campo
+"Projeto analisado" na tela de configurações da TUI.
+
+Regras que valem para esta fase:
+
+- O projeto é **somente leitura**. Nada é criado, alterado ou removido nele.
+- O agente só acessa o diretório informado; `..`, caminho absoluto fora da raiz
+  e symlink que escape são recusados.
+- Uma localização só aparece quando o agente **leu a linha** durante a análise.
+  Caso contrário, o resultado é "localização não determinada" com o motivo — o
+  SmartSec não inventa arquivo nem linha.
+- A severidade é a do scanner. O agente aponta onde corrigir e não reclassifica.
+- `run_command` está desabilitado por padrão e exige uma allowlist explícita.
+- Com provedor remoto, **nenhum trecho do código sai da máquina** sem
+  consentimento explícito.
+
+Fluxo, limites e riscos: [`docs/AGENTE_DE_CODIGO.md`](docs/AGENTE_DE_CODIGO.md).
 
 ### Exit codes do modo headless
 
@@ -254,6 +290,11 @@ src/
   tools/               Runners reais das ferramentas (Nmap, Nuclei, Nikto, SQLMap,
                          TruffleHog e ZAP)
   ai/                  Agente IA (prompt LLM + analise)
+  orchestrator/        Pipeline de execucao, sandbox, parsers
+  tools/               Runners reais das ferramentas (Nmap, Nuclei e Nikto)
+  ai/                  Agente IA e servico unico de analise (TUI e headless)
+  code_agent/          Agente de codigo: sandbox read-only, ferramentas locais,
+                       laco de tool calling e registro auditavel
   llm/                 Provedores LLM (openai, ollama, nvidia-nim)
   domain/              Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/              Persistencia de configuracao (~/.config/smartsec/)

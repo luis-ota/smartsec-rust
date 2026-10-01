@@ -567,6 +567,8 @@ mod tests {
             origins: Vec::new(),
             enrichment: None,
             severity_conflict: None,
+            code_location: None,
+            code_remediation: Vec::new(),
         }
     }
 

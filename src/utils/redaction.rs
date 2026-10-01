@@ -146,6 +146,32 @@ fn sanitize_string_value(value: &str) -> String {
     sanitize_embedded_url(value)
 }
 
+/// Sanitiza um diagnóstico produced pelo próprio SmartSec, e não pela saída de
+/// um scanner.
+///
+/// A substituição integral de linhas existe para descartar corpos HTTP,
+/// comandos curl e credenciais que só o scanner produz. Aplicada a uma mensagem
+/// de erro do transporte ela destruiria o campo inteiro: o erro típico do
+/// cliente é "error sending request for url (...)", que contém a palavra
+/// "request" e seria gravado inteiro como `[REDACTED]`, tornando o motivo da
+/// falha em um campo sem informação.
+///
+/// Aqui a credencial continua removida e a query string da URL continua
+/// descartada; o que deixa de acontecer é o descarte do resto da frase.
+pub fn sanitize_diagnostic(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| {
+            let normalized = normalize_key(line);
+            if SENSITIVE_KEYS.iter().any(|key| normalized.contains(key)) {
+                return "[REDACTED]".to_string();
+            }
+            sanitize_embedded_url(line)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn sanitize_embedded_url(value: &str) -> String {
     value
         .split_whitespace()

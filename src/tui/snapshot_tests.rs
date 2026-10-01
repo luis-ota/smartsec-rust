@@ -64,6 +64,7 @@ fn finding() -> Vulnerability {
         origins: Vec::new(),
         enrichment: None,
         severity_conflict: None,
+        ..Default::default()
     }
 }
 
@@ -301,7 +302,8 @@ fn traceability_overlay_matches_80x24_snapshots() {
             "REQ10",
             "REQ14",
             "REQ05",
-            "0/7 verificados",
+            "REQ16",
+            "0/8 verificados",
         ],
     );
 
@@ -323,7 +325,7 @@ fn traceability_overlay_matches_80x24_snapshots() {
     let snapshot = assert_snapshot(
         &mut app,
         &[
-            "4/7 verificados",
+            "4/8 verificados",
             "alvo validado",
             "rootless confirmado",
             "Nmap ok",
@@ -334,6 +336,14 @@ fn traceability_overlay_matches_80x24_snapshots() {
     assert!(snapshot.contains("○ REQ10"), "{snapshot}");
     assert!(snapshot.contains("○ REQ14"), "{snapshot}");
     assert!(snapshot.contains("○ REQ05"), "{snapshot}");
+    // REQ16 fica pendente porque a fase de código ainda não rodou: é isso que
+    // distingue "análise de código não executou" de "executou e não achou
+    // origem", e a linha precisa dizer qual dos dois é o caso.
+    assert!(snapshot.contains("○ REQ16"), "{snapshot}");
+    assert!(
+        snapshot.contains("aguardando análise de código"),
+        "{snapshot}"
+    );
 }
 
 #[test]
@@ -416,6 +426,7 @@ fn seed_history(label: &str, count: usize) -> std::path::PathBuf {
             enrichment: Default::default(),
             decisions: Vec::new(),
             interruption: None,
+            ..Default::default()
         };
         crate::orchestrator::scan_logger::save_scan_log_to_dir(&metadata, &dir)
             .expect("gravação do registro de teste");

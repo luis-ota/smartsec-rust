@@ -360,6 +360,8 @@ pub fn parse_zap_findings_with_errors(
                 origins: Vec::new(),
                 enrichment: None,
                 severity_conflict: None,
+                code_location: None,
+                code_remediation: Vec::new(),
             });
         }
     }

@@ -76,6 +76,13 @@ pub enum SettingsField {
     FallbackEnabled,
     FallbackBaseUrl,
     FallbackModel,
+    /// Diretório do projeto analisado pelo agente de código (issue #76).
+    ///
+    /// Vive na tela de configurações ao lado do provedor porque é o campo que
+    /// decide **o que** o agente de código pode ler: trocá-lo muda o escopo da
+    /// fase de análise, e escondê-lo em outro lugar tornaria essa mudança
+    /// invisível justamente onde o operador decide o que será lido.
+    ProjectDir,
 }
 
 pub struct ToolItem {
@@ -169,6 +176,7 @@ pub struct AppState {
     pub settings_fallback_enabled: bool,
     pub settings_input_fallback_base_url: String,
     pub settings_input_fallback_model: String,
+    pub settings_input_project_dir: String,
     pub settings_api_key_touched: bool,
     pub settings_error: Option<String>,
     pub llm_warning: Option<String>,
@@ -243,6 +251,10 @@ impl AppState {
         let fallback_enabled = config.llm.fallback_enabled;
         let fallback_base_url = config.llm.fallback_base_url.clone();
         let fallback_model = config.llm.fallback_model.clone();
+        let project_dir = config
+            .project_dir
+            .clone()
+            .unwrap_or_else(|| config.effective_project_dir().display().to_string());
 
         Ok(Self {
             config,
@@ -301,6 +313,7 @@ impl AppState {
             settings_fallback_enabled: fallback_enabled,
             settings_input_fallback_base_url: fallback_base_url,
             settings_input_fallback_model: fallback_model,
+            settings_input_project_dir: project_dir,
             settings_api_key_touched: false,
             settings_error: None,
             llm_warning: None,
@@ -865,12 +878,13 @@ impl AppState {
                     }
                 }
             });
-            let analysis = orchestrator
-                .agent
-                .analyze_logs(&orchestrator.findings)
-                .await;
+            orchestrator.analyze_findings().await;
+            // A fase do agente de código roda depois da análise de logs, pela
+            // mesma razão do headless: os achados precisam existir e já estar
+            // classificados. O heartbeat continua vivo para que a TUI não fique
+            // parada durante a exploração do projeto.
+            orchestrator.analyze_code().await;
             heartbeat.abort();
-            orchestrator.last_log = analysis;
             let audit_log = orchestrator
                 .persist_scan_log()
                 .map_err(|error| error.to_string());
@@ -919,6 +933,7 @@ impl AppState {
             &self.vulnerabilities(),
             &self.orchestrator.decision_history,
             &self.orchestrator.enrichment,
+            Some(&self.config.effective_project_dir()),
         )
     }
 
@@ -936,6 +951,7 @@ impl AppState {
             SettingsField::Retries,
             SettingsField::FallbackEnabled,
         ]);
+        fields.push(SettingsField::ProjectDir);
         if self.settings_fallback_enabled {
             fields.extend([SettingsField::FallbackBaseUrl, SettingsField::FallbackModel]);
         }
@@ -984,6 +1000,18 @@ impl AppState {
         candidate.llm.fallback_base_url = self.settings_input_fallback_base_url.trim().to_string();
         candidate.llm.fallback_model = self.settings_input_fallback_model.trim().to_string();
         candidate.llm.validate()?;
+        // O diretório do projeto é validado pelo mesmo sandbox que o agente vai
+        // usar: aceitar na tela um caminho que a fase rejeitaria entregaria ao
+        // operador a impressão de que a análise de código está configurada.
+        let project = self.settings_input_project_dir.trim().to_string();
+        let project_path = if project.is_empty() {
+            PathBuf::from(".")
+        } else {
+            PathBuf::from(&project)
+        };
+        crate::code_agent::workspace::Workspace::open(&project_path)
+            .map_err(|error| format!("Diretório do projeto inválido: {error}"))?;
+        candidate.project_dir = Some(project);
         candidate.save()?;
         self.config = candidate;
         self.reset_settings_draft();
@@ -1007,6 +1035,11 @@ impl AppState {
         self.settings_fallback_enabled = self.config.llm.fallback_enabled;
         self.settings_input_fallback_base_url = self.config.llm.fallback_base_url.clone();
         self.settings_input_fallback_model = self.config.llm.fallback_model.clone();
+        self.settings_input_project_dir = self
+            .config
+            .project_dir
+            .clone()
+            .unwrap_or_else(|| self.config.effective_project_dir().display().to_string());
         self.settings_api_key_touched = false;
         self.settings_error = None;
         self.settings_scroll = 0;
@@ -1219,6 +1252,34 @@ impl AppState {
             }
         }
     }
+
+    /// Motivo pelo qual um achado ficou sem origem no código.
+    ///
+    /// O texto vem do relatório da fase, indexado pela posição do achado, e é
+    /// sanitizado porque é um diagnóstico que pode carregar detalhe do
+    /// transporte do provedor.
+    pub fn code_reason_for_index(&self, index: usize) -> Option<String> {
+        self.orchestrator
+            .last_code_report
+            .as_ref()?
+            .findings
+            .iter()
+            .find(|item| item.finding_index == index)
+            .and_then(|item| item.reason.clone())
+            .map(|reason| crate::utils::redaction::sanitize_diagnostic(&reason))
+    }
+
+    /// Motivo registrado para o achado atualmente aberto no painel de detalhe.
+    pub fn code_reason_fallback(&self) -> Option<String> {
+        self.code_reason_for_index(self.result_detail_vuln?)
+    }
+
+    /// Diretório do projeto analisado pela fase de código, para exibição.
+    pub fn project_dir_label(&self) -> String {
+        crate::utils::redaction::sanitize_text(
+            &self.config.effective_project_dir().display().to_string(),
+        )
+    }
 }
 
 /// Conta as linhas visuais de entradas que saíram do log, usando a mesma
@@ -1408,6 +1469,7 @@ mod tests {
             origins: Vec::new(),
             enrichment: None,
             severity_conflict: None,
+            ..Default::default()
         });
         orchestrator.last_log = "Análise real".to_string();
         let audit_path = PathBuf::from("/tmp/scan.json");

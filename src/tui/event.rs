@@ -180,6 +180,7 @@ fn accepts_text(app: &AppState) -> bool {
                     | SettingsField::Retries
                     | SettingsField::FallbackBaseUrl
                     | SettingsField::FallbackModel
+                    | SettingsField::ProjectDir
             )
         );
     }
@@ -914,6 +915,9 @@ fn insert_text(app: &mut AppState, text: &str) {
         FocusTarget::SettingsField(SettingsField::FallbackModel) => {
             app.settings_input_fallback_model.push_str(text)
         }
+        FocusTarget::SettingsField(SettingsField::ProjectDir) => {
+            app.settings_input_project_dir.push_str(text)
+        }
         _ => {}
     }
     if app.show_settings {
@@ -952,6 +956,9 @@ fn delete_backward(app: &mut AppState) {
         FocusTarget::SettingsField(SettingsField::FallbackModel) => {
             app.settings_input_fallback_model.pop();
         }
+        FocusTarget::SettingsField(SettingsField::ProjectDir) => {
+            app.settings_input_project_dir.pop();
+        }
         _ => {}
     }
     if app.show_settings {
@@ -974,6 +981,11 @@ fn clear_text(app: &mut AppState) {
         }
         FocusTarget::SettingsField(SettingsField::FallbackModel) => {
             app.settings_input_fallback_model.clear()
+        }
+        // Limpar o diretório não significa "não analisar": o valor vazio
+        // significa diretório atual, e é esse o padrão do agente de código.
+        FocusTarget::SettingsField(SettingsField::ProjectDir) => {
+            app.settings_input_project_dir.clear()
         }
         _ => return,
     }
@@ -1007,6 +1019,7 @@ mod tests {
             origins: Vec::new(),
             enrichment: None,
             severity_conflict: None,
+            ..Default::default()
         }
     }
 
@@ -1654,6 +1667,7 @@ mod tests {
                 decisions: Vec::new(),
                 enrichment: Default::default(),
                 interruption: None,
+                ..Default::default()
             },
             &dir,
         )
@@ -1729,6 +1743,7 @@ mod tests {
                     decisions: Vec::new(),
                     enrichment: Default::default(),
                     interruption: None,
+                    ..Default::default()
                 },
                 &dir,
             )

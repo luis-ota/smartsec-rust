@@ -27,6 +27,9 @@ pub struct PersistedConfig {
     /// mantém a regra desativada, preservando o comportamento anterior.
     #[serde(default)]
     pub max_critical_findings: usize,
+    /// Diretório do projeto analisado pelo agente de código (issue #76).
+    #[serde(default)]
+    pub project_dir: Option<String>,
 }
 
 impl Default for PersistedConfig {
@@ -42,6 +45,7 @@ impl Default for PersistedConfig {
             output_file: None,
             output_dir: None,
             max_critical_findings: 0,
+            project_dir: None,
         }
     }
 }
@@ -111,6 +115,7 @@ impl From<crate::config::Configuration> for PersistedConfig {
             output_file: c.output_file,
             output_dir: c.output_dir,
             max_critical_findings: c.max_critical_findings,
+            project_dir: c.project_dir.clone(),
         }
     }
 }
@@ -128,6 +133,7 @@ impl From<&crate::config::Configuration> for PersistedConfig {
             output_file: c.output_file.clone(),
             output_dir: c.output_dir.clone(),
             max_critical_findings: c.max_critical_findings,
+            project_dir: c.project_dir.clone(),
         }
     }
 }
