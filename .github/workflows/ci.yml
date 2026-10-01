@@ -153,6 +153,19 @@ jobs:
           shared-key: smartsec-rust-ci
           cache-on-failure: true
 
+      # O executor recusa montar o diretorio de escrita efemera fora de uma
+      # tmpfs (TCC_SPEC.md, secao 7), e no runner hospedado o `/tmp` e `ext4`.
+      # Sem este passo, a verificacao falha e a varredura e interrompida: a
+      # regra esta funcionando como projetado, mas o ambiente precisa de uma
+      # tmpfs de verdade.
+      - name: Preparar a tmpfs de trabalho
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /var/tmp/smartsec
+          sudo mount -t tmpfs -o size=512m tmpfs /var/tmp/smartsec
+          echo "TMPDIR=/var/tmp/smartsec" >> "$GITHUB_ENV"
+          findmnt -no FSTYPE --target /var/tmp/smartsec
+
       - name: rustfmt
         run: cargo fmt --all --check
 
@@ -282,6 +295,19 @@ jobs:
 
       # Prova, no próprio runner, de que o contrato de exit codes usado pelo
       # veredito abaixo é o do TCC_SPEC.md seção 10. Não usa Podman nem rede.
+      # O executor recusa montar o diretorio de escrita efemera fora de uma
+      # tmpfs (TCC_SPEC.md, secao 7), e no runner hospedado o `/tmp` e `ext4`.
+      # Sem este passo, a verificacao falha e a varredura e interrompida: a
+      # regra esta funcionando como projetado, mas o ambiente precisa de uma
+      # tmpfs de verdade.
+      - name: Preparar a tmpfs de trabalho
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /var/tmp/smartsec
+          sudo mount -t tmpfs -o size=512m tmpfs /var/tmp/smartsec
+          echo "TMPDIR=/var/tmp/smartsec" >> "$GITHUB_ENV"
+          findmnt -no FSTYPE --target /var/tmp/smartsec
+
       - name: Verificar o contrato de exit codes da CLI
         run: |
           set -euo pipefail
