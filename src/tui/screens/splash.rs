@@ -11,9 +11,12 @@ use ratatui::{
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    // A precedencia e do erro mais recente: um erro de execucao corrige o que
+    // aconteceu depois do aviso de configuracao, e nao o contrario.
     let status = app
         .run_error
         .clone()
+        .or_else(|| app.config_warning.clone())
         .unwrap_or_else(|| "Pronto para configurar a análise".to_string());
     let shell = chrome::render_shell(app, frame, area, "Nova análise", &status);
     let content = if shell.content.width > 72 {

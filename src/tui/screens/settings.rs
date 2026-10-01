@@ -18,13 +18,16 @@ struct FieldView {
 }
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let status = app.settings_error.clone().unwrap_or_else(|| {
-        if app.settings_connection_is_remote() {
-            "Conexão remota · HTTPS, chave e consentimento obrigatórios".to_string()
-        } else {
-            "Conexão local · nenhum dado será enviado para fora da máquina".to_string()
-        }
-    });
+    let status = app
+        .settings_status_error()
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if app.settings_connection_is_remote() {
+                "Conexão remota · HTTPS, chave e consentimento obrigatórios".to_string()
+            } else {
+                "Conexão local · nenhum dado será enviado para fora da máquina".to_string()
+            }
+        });
     let shell = chrome::render_shell(app, frame, area, "Configurações de IA", &status);
     let rows = Layout::vertical([
         Constraint::Length(2),
@@ -43,10 +46,9 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
 fn render_intro(app: &AppState, frame: &mut Frame, area: Rect) {
     let detail = app
-        .settings_error
-        .as_deref()
+        .settings_status_error()
         .unwrap_or("Tab navega · ← → altera seleções · espaço alterna · ctrl+u limpa o campo");
-    let detail_color = if app.settings_error.is_some() {
+    let detail_color = if app.settings_status_error().is_some() {
         DANGER
     } else {
         MUTED
@@ -381,6 +383,42 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app() -> AppState {
+        AppState::new(Configuration::default()).expect("configuração de teste válida")
+    }
+
+    /// Criterio de aceite 2: salvar uma configuracao valida remove o aviso.
+    /// Sem isso, o operador corrigiria o problema e a interface continuaria
+    /// anunciando que ele existe.
+    #[test]
+    fn saving_a_valid_configuration_clears_the_opening_warning() {
+        let mut app = app();
+        app.set_config_warning(Some("IA: credenciais obrigatórias".to_string()));
+        assert!(app.config_warning.is_some());
+
+        // Preenche a chave remota que faltava, que e o que faltava no aviso.
+        app.settings_input_api_key = "chave-de-teste-nao-e-real".to_string();
+        app.apply_settings()
+            .expect("a configuração corrigida deve ser válida");
+
+        assert!(app.config_warning.is_none());
+    }
+
+    /// O aviso de abertura e o erro de salvamento disputam a mesma linha, e o
+    /// erro de salvamento e mais recente: ele tem a precedencia.
+    #[test]
+    fn a_save_error_takes_precedence_over_the_opening_warning() {
+        let mut app = app();
+        app.set_config_warning(Some("IA: credenciais obrigatórias".to_string()));
+        app.settings_error = Some("IA: consentimento não aceito".to_string());
+
+        assert_eq!(
+            app.settings_status_error(),
+            Some("IA: consentimento não aceito")
+        );
+    }
+
     use crate::config::execution_type::ExecutionType;
     use crate::config::llm_config::LlmConfig;
     use crate::config::Configuration;

@@ -68,6 +68,39 @@ fn finding() -> Vulnerability {
     }
 }
 
+/// Criterio de aceite 1: a TUI abre com configuracao de IA invalida e diz o
+/// que esta errado na linha de status, que e a primeira coisa que o operador
+/// ve. O texto e o mesmo do erro do headless, entao a mensagem nao mente nem
+/// muda conforme a interface.
+#[test]
+fn the_splash_shows_the_configuration_problem_instead_of_refusing_to_open() {
+    let mut app = app();
+    app.step = AppStep::Splash;
+    app.set_config_warning(Some(
+        "IA: As credenciais da LLM remota são obrigatórias".to_string(),
+    ));
+
+    let snapshot = assert_snapshot(&mut app, &["Nova análise", "Alvo", "Iniciar"]);
+
+    assert!(
+        snapshot.contains("credenciais da LLM remota são obrigatórias"),
+        "o aviso de configuracao nao chegou à tela de abertura: {snapshot}"
+    );
+}
+
+/// Sem problema de configuracao, a linha de status segue Offer o que
+/// promete: nada de aviso fantasma.
+#[test]
+fn a_valid_configuration_shows_no_warning_on_the_splash() {
+    let mut app = app();
+    app.step = AppStep::Splash;
+    app.set_config_warning(None);
+
+    let snapshot = assert_snapshot(&mut app, &["Nova análise", "Alvo", "Iniciar"]);
+
+    assert!(!snapshot.contains("obrigatórias"), "{snapshot}");
+}
+
 #[test]
 fn splash_matches_80x24_snapshot() {
     let mut app = app();

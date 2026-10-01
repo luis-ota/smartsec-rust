@@ -304,15 +304,26 @@ impl CommandLineInterface {
             Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
             Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
             None => {
-                let config = config::Configuration::load(&[])?;
-                Self::display_tui(config).await?;
+                // A TUI abre mesmo com configuracao invalida: e a propria tela de
+                // Configurar IA que permite consertar o que esta errado, entao
+                // abortar aqui deixaria o operador sem caminho. Os problemas
+                // encontrados viram aviso visivel. O headless segue validando.
+                let (config, problems) =
+                    config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
+                Self::display_tui(config, problems).await?;
                 Ok(EXIT_SUCCESS)
             }
         }
     }
 
-    async fn display_tui(initial_config: config::Configuration) -> Result<()> {
+    async fn display_tui(
+        initial_config: config::Configuration,
+        config_problems: Vec<String>,
+    ) -> Result<()> {
         let mut app = tui::state::AppState::new(initial_config)?;
+        // O aviso de configuracao entra antes de qualquer execucao e so sai
+        // quando o operador salva uma configuracao valida pela propria tela.
+        app.set_config_warning(Some(config_problems.join(" · ")));
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -1228,4 +1239,37 @@ mod tests {
         ])
         .is_err());
     }
+}
+
+/// Criterio de aceite 3: o headless **continua recusando** a mesma configuracao
+/// que a TUI agora aceita. Se o headless passasse a aceitar, a diferenca entre
+/// os dois modos viraria um furo: o pipeline de automacao perderia a validacao
+/// que a interface flexivel.
+#[test]
+fn headless_still_refuses_an_invalid_remote_llm() {
+    let path =
+        std::env::temp_dir().join(format!("smartsec-llm-invalida-{}.toml", std::process::id()));
+    std::fs::write(
+        &path,
+        "target_url = \"http://alvo.local\"\n\n[llm]\n\
+         provider = \"OpenAI\"\nbase_url = \"https://api.openai.com/v1\"\n\
+         model = \"gpt-4o\"\nremote_consent = false\n\n",
+    )
+    .expect("a configuração de teste deve ser escrita");
+
+    let options = ExecutionArgs {
+        config: Some(path.clone()),
+        ..ExecutionArgs::default()
+    };
+    let error = build_config(&options, "192.0.2.10".to_owned(), None, true)
+        .expect_err("o headless precisa recusar a configuração inválida");
+
+    // A falha usada e a de consentimento, e nao a de credencial: a chave vem
+    // do keyring, que o teste nao controla, e um teste que passa ou falha
+    // conforme o estado da maquina nao prova nada.
+    assert!(
+        format!("{error:#}").contains("consentimento"),
+        "o erro do headless precisa ser o mesmo que a interface mostra"
+    );
+    let _ = std::fs::remove_file(path);
 }
