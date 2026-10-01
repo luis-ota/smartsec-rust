@@ -216,6 +216,13 @@ fn reliability_fields(app: &AppState) -> Vec<FieldView> {
         field_view(app, SettingsField::Retries),
         field_view(app, SettingsField::FallbackEnabled),
     ];
+    // O diretório entra na coluna de confiabilidade porque é o campo que decide
+    // o **escopo de leitura** do agente de código: fica ao lado dos limites e
+    // do consentimento, e não junto de provedor e modelo, que são parâmetros de
+    // transporte. Agrupá-lo com o consentimento também deixa visível que os
+    // dois controlam a mesma coisa: o que o SmartSec pode ler e para onde pode
+    // enviá-lo.
+    fields.push(field_view(app, SettingsField::ProjectDir));
     if app.settings_fallback_enabled {
         fields.extend([
             field_view(app, SettingsField::FallbackBaseUrl),
@@ -288,6 +295,11 @@ fn field_view(app: &AppState, field: SettingsField) -> FieldView {
             empty_label(&app.settings_input_fallback_model),
             "editar",
         ),
+        SettingsField::ProjectDir => (
+            "Projeto analisado",
+            app.settings_input_project_dir.clone(),
+            "read-only",
+        ),
     };
     FieldView {
         field,
@@ -327,6 +339,7 @@ fn is_text_field(field: SettingsField) -> bool {
             | SettingsField::Retries
             | SettingsField::FallbackBaseUrl
             | SettingsField::FallbackModel
+            | SettingsField::ProjectDir
     )
 }
 
@@ -390,6 +403,7 @@ mod tests {
             tools: Vec::new(),
             output_file: None,
             output_dir: None,
+            project_dir: None,
             show_help: false,
             show_version: false,
         };

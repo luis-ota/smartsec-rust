@@ -19,7 +19,6 @@ use crate::llm::tool_calling::{ToolCall, ToolMessage, ToolTurn, ToolTurnRequest}
 use crate::llm::LLMProvider;
 use crate::utils::redaction::sanitize_text;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::time::Duration;
 
 /// Prefixo que marca a mensagem de sistema do agente de código.
@@ -42,22 +41,10 @@ const HINT_CLOSE: &str = "</PISTAS_DO_ACHADO>";
 /// Máximo de itens de evidência do scanner repassados como pista.
 const MAX_HINT_EVIDENCE_CHARS: usize = 400;
 
-/// Localização provável da origem de um achado no código do projeto.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CodeLocation {
-    /// Caminho relativo à raiz do projeto analisado.
-    pub file: String,
-    /// Linha 1-based dentro do arquivo.
-    pub line: usize,
-    /// Trecho lido da linha indicada, já sanitizado.
-    pub snippet: String,
-}
-
-impl fmt::Display for CodeLocation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}", self.file, self.line)
-    }
-}
+/// A localização vive em `domain`, junto do restante do contrato de findings,
+/// porque é persistida no log estruturado, impressa no relatório e exibida na
+/// TUI: um tipo próprio do agente a tornaria um segundo contrato parallelo.
+pub use crate::domain::vulnerability::CodeLocation;
 
 /// Linha realmente lida de um arquivo do projeto.
 ///
@@ -194,9 +181,62 @@ pub struct CodeAnalysisReport {
     pub findings: Vec<FindingCodeAnalysis>,
     /// Registro de cada chamada de ferramenta executada na fase.
     pub tool_calls: Vec<ToolCallRecord>,
+    /// Motivo pelo qual a fase inteira não pôde começar, quando for o caso.
+    ///
+    /// Distinto de um achado sem localização: aqui nenhum laço rodou, e o
+    /// relatório precisa dizer isso em vez de apresentar uma lista vazia como
+    /// se nada tivesse sido procurado.
+    pub unavailable_reason: Option<String>,
 }
 
 impl CodeAnalysisReport {
+    /// Relatório de uma fase que não pôde começar.
+    ///
+    /// Usado quando o diretório do projeto não pode ser aberto. Todos os
+    /// achados recebem "localização não determinada" com o motivo: um erro de
+    /// configuração do workspace é um resultado que o relatório precisa
+    /// mostrar, não um silêncio que pareceria sucesso.
+    pub fn unavailable(project_dir: &std::path::Path, reason: &str) -> Self {
+        let project = project_dir.display().to_string();
+        Self {
+            findings: Vec::new(),
+            tool_calls: Vec::new(),
+            unavailable_reason: Some(format!(
+                "não foi possível abrir o projeto \"{project}\" para análise de código: {reason}"
+            )),
+        }
+    }
+
+    /// Relatório da fase quando o envio ao provedor remoto foi bloqueado.
+    ///
+    /// Reaproveita o consentimento que a issue #23 já exige para enviar logs:
+    /// a diferença é que aqui o dado protegido é o **código do alvo**, e não
+    /// apenas a saída do scanner. Nenhum turno é aberto — nem mesmo um turno
+    /// sem ferramentas — porque qualquer ida ao provedor já seria o envio.
+    pub fn blocked_by_consent(
+        findings: &[Vulnerability],
+        model: &str,
+        provider: &str,
+    ) -> Self {
+        let reason = "o envio de trechos do código do alvo a um provedor remoto exige \
+                      consentimento explícito, que não está configurado (RNF10); a localização \
+                      no código não foi determinada"
+            .to_string();
+        Self {
+            findings: findings
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    let mut analysis = undetermined(index, model, provider, reason.clone());
+                    analysis.fallback_used = true;
+                    analysis
+                })
+                .collect(),
+            tool_calls: Vec::new(),
+            unavailable_reason: None,
+        }
+    }
+
     /// Quantos achados receberam localização verificada.
     pub fn located_count(&self) -> usize {
         self.findings.iter().filter(|item| item.located()).count()
@@ -843,6 +883,7 @@ mod tests {
             target: "http://alvo.local/api/login?token=segredo".to_string(),
             evidence: evidence.to_string(),
             detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
         }
     }
 

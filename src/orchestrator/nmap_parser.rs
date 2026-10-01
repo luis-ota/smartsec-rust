@@ -200,6 +200,11 @@ fn build_vuln_for_port(
         target: target.to_string(),
         evidence,
         detected_at: now_iso8601(),
+
+        // Scanner não conhece o código do projeto: a origem no código é
+        // preenchida exclusivamente pela fase do agente de código (#76).
+        code_location: None,
+        code_remediation: Vec::new(),
     })
 }
 

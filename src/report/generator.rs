@@ -9,6 +9,7 @@ impl ReportGenerator {
         config: &Configuration,
         vulns: &[Vulnerability],
         decisions: &[DecisionRecord],
+        project_dir: Option<&std::path::Path>,
     ) -> String {
         let vulns = vulns
             .iter()
@@ -22,6 +23,16 @@ impl ReportGenerator {
         ));
         md.push_str(&format!("**Modo:** {}\n\n", config.execution_type));
         md.push_str("**Dados:** REAL\n\n");
+        // O diretório do projeto entra no cabeçalho mesmo quando nenhum achado
+        // foi localizado: ele declara **qual árvore foi analisada**, e um
+        // relatório que não diz isso deixa a auditoria sem forma de saber se a
+        // fase de código rodou sobre o repositório certo.
+        if let Some(project_dir) = project_dir {
+            md.push_str(&format!(
+                "**Projeto analisado:** {}\n\n",
+                crate::utils::redaction::sanitize_text(&project_dir.display().to_string())
+            ));
+        }
         if !decisions.is_empty() {
             md.push_str("## Decisões Dinâmicas\n\n");
             for decision in decisions {
@@ -71,6 +82,7 @@ impl ReportGenerator {
                 ));
                 md.push_str(&format!("{}\n\n", v.description));
                 md.push_str(&format!("**Ferramenta:** {}\n\n", v.tool));
+                append_code_analysis(&mut md, v);
                 append_provenance(&mut md, v);
                 md.push_str(&format!("**Recomendação:** {}\n\n", v.recommendation));
             }
@@ -78,12 +90,14 @@ impl ReportGenerator {
         md.push_str("## Todas as Vulnerabilidades\n\n");
         for v in &vulns {
             md.push_str(&format!(
-                "- [{}] {} - {}\n",
+                "- [{}] {} - {} - código: {}\n",
                 v.severity.label_pt_br(),
                 v.title,
-                v.tool
+                v.tool,
+                code_location_label(v)
             ));
         }
+        append_code_analysis_section(&mut md, &vulns);
         md.push_str("\n## Proveniência dos achados\n\n");
         for vulnerability in &vulns {
             append_provenance(&mut md, vulnerability);
@@ -101,6 +115,87 @@ impl ReportGenerator {
         Err(anyhow::anyhow!(
             "a exportação para PDF ainda não foi implementada"
         ))
+    }
+}
+
+/// Rótulo da origem no código, ou o texto honesto de "não determinada".
+fn code_location_label(vulnerability: &Vulnerability) -> String {
+    vulnerability
+        .code_location
+        .as_ref()
+        .map_or_else(
+            || crate::code_agent::agent::UNDETERMINED_LABEL.to_string(),
+            ToString::to_string,
+        )
+}
+
+/// Escreve a localização e os passos de correção de um achado.
+///
+/// A severidade não aparece aqui de propósito: o agente de código aponta onde
+/// corrigir e nunca reclassifica (TCC_SPEC, seção 7).
+fn append_code_analysis(md: &mut String, vulnerability: &Vulnerability) {
+    let Some(location) = vulnerability.code_location.as_ref() else {
+        return;
+    };
+    md.push_str(&format!(
+        "**Origem no código:** {}:{}\n\n",
+        location.file, location.line
+    ));
+    if !vulnerability.code_remediation.is_empty() {
+        md.push_str("**Correção sugerida no código:**\n\n");
+        for step in &vulnerability.code_remediation {
+            md.push_str(&format!("- {step}\n"));
+        }
+        md.push('\n');
+    }
+}
+
+/// Seção dedicada à análise do código.
+///
+/// A seção lista **todos** os achados, inclusive os sem origem, com o motivo da
+/// recusa quando houver. Omitir os não localizados faria o relatório parecer
+/// mais preciso do que foi: o número de achados sem origem é informação de
+/// auditoria, não ruído.
+fn append_code_analysis_section(md: &mut String, vulns: &[Vulnerability]) {
+    let located = vulns
+        .iter()
+        .filter(|v| v.code_location.is_some())
+        .count();
+    md.push_str("\n## Localização no código\n\n");
+    md.push_str(&format!(
+        "- Achados com origem localizada: {located} de {}\n\n",
+        vulns.len()
+    ));
+    for vulnerability in vulns {
+        md.push_str(&format!(
+            "### [{}] {}\n\n",
+            vulnerability.severity.label_pt_br(),
+            vulnerability.title
+        ));
+        match vulnerability.code_location.as_ref() {
+            Some(location) => {
+                md.push_str(&format!(
+                    "**Arquivo:** `{}` · **Linha:** {}\n\n",
+                    location.file, location.line
+                ));
+                if !location.snippet.is_empty() {
+                    md.push_str(&format!("```\n{}\n```\n\n", location.snippet));
+                }
+            }
+            None => md.push_str(&format!(
+                "**Arquivo:** {} · **Linha:** —\n\n",
+                crate::code_agent::agent::UNDETERMINED_LABEL
+            )),
+        }
+        if vulnerability.code_remediation.is_empty() {
+            md.push_str("**Correção sugerida:** não determinada.\n\n");
+        } else {
+            md.push_str("**Correção sugerida:**\n\n");
+            for step in &vulnerability.code_remediation {
+                md.push_str(&format!("- {step}\n"));
+            }
+            md.push('\n');
+        }
     }
 }
 
@@ -133,9 +228,10 @@ mod tests {
             target: "http://target.local".to_string(),
             evidence: "porta 3000".to_string(),
             detected_at: "2026-09-04T14:00:00Z".to_string(),
+        ..Default::default()
         };
 
-        let report = ReportGenerator::compile_report(&Configuration::default(), &[finding], &[]);
+        let report = ReportGenerator::compile_report(&Configuration::default(), &[finding], &[], None);
 
         assert!(report.contains("- Total de vulnerabilidades: 1"));
         assert!(report.contains("- Informativas: 1"));
@@ -158,9 +254,10 @@ mod tests {
             target: "https://target.local/path?token=secret".to_string(),
             evidence: "request: GET /private?token=secret".to_string(),
             detected_at: "2026-09-06T12:00:00Z".to_string(),
+        ..Default::default()
         };
 
-        let report = ReportGenerator::compile_report(&config, &[finding], &[]);
+        let report = ReportGenerator::compile_report(&config, &[finding], &[], None);
 
         assert!(!report.contains("secret"));
         assert!(!report.contains("?token="));

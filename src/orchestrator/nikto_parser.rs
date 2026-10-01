@@ -261,6 +261,11 @@ pub fn parse_nikto_findings_with_errors(
                 "nikto referência: {safe_reference} | método: {safe_method} | url: {safe_url} | host: {safe_host} | banner: {safe_banner} | msg: {safe_message}"
             ),
             detected_at: detected_at.clone(),
+
+            // Scanner não conhece o código do projeto: a origem no código é
+            // preenchida exclusivamente pela fase do agente de código (#76).
+            code_location: None,
+            code_remediation: Vec::new(),
         });
     }
 

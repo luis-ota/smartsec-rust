@@ -97,6 +97,25 @@ pub struct ScanMetadata {
     pub agent_analysis: String,
     #[serde(default)]
     pub decisions: Vec<DecisionRecord>,
+    /// Diretório canônico do projeto analisado pelo agente de código (#76).
+    ///
+    /// Vazio quando a fase não rodou (scan cancelado antes dela, ou histórico
+    /// gravado antes desta issue). A ausência é um estado legítimo e
+    /// desserializável, por isso o `serde(default)`.
+    #[serde(default)]
+    pub code_project_dir: String,
+    /// Quantos achados receberam origem localizada no código.
+    #[serde(default)]
+    pub code_located_count: usize,
+    /// Quantas chamadas de ferramenta o agente de código executou na fase.
+    #[serde(default)]
+    pub code_tool_calls_count: usize,
+    /// Registro auditável de cada chamada de ferramenta do agente de código.
+    #[serde(default)]
+    pub code_tool_calls: Vec<crate::code_agent::agent::ToolCallRecord>,
+    /// Motivo pelo qual a fase do agente de código não pôde começar.
+    #[serde(default)]
+    pub code_unavailable_reason: Option<String>,
 }
 
 /// Resumo compacto para listagem de scans históricos.
@@ -175,7 +194,34 @@ impl ScanMetadata {
                 .collect(),
             agent_analysis: crate::utils::redaction::sanitize_text(&agent_analysis),
             decisions: Vec::new(),
+            code_project_dir: String::new(),
+            code_located_count: 0,
+            code_tool_calls_count: 0,
+            code_tool_calls: Vec::new(),
+            code_unavailable_reason: None,
         }
+    }
+
+    /// Anexa o resultado da fase do agente de código ao log estruturado.
+    ///
+    /// O diretório do projeto é gravado **mesmo sem nenhum achado localizado**:
+    /// é ele que permite à auditoria distinguir "a fase rodou e não achou
+    /// origem" de "a fase nunca rodou".
+    pub fn with_code_analysis(
+        mut self,
+        report: &crate::code_agent::agent::CodeAnalysisReport,
+        project_dir: &std::path::Path,
+    ) -> Self {
+        self.code_project_dir =
+            crate::utils::redaction::sanitize_text(&project_dir.display().to_string());
+        self.code_located_count = report.located_count();
+        self.code_tool_calls_count = report.tool_calls.len();
+        self.code_unavailable_reason = report
+            .unavailable_reason
+            .as_deref()
+            .map(crate::utils::redaction::sanitize_diagnostic);
+        self.code_tool_calls = report.tool_calls.clone();
+        self
     }
 
     /// Anexa a proveniência da análise da IA ao log estruturado.
@@ -239,7 +285,38 @@ impl ScanMetadata {
                 .iter()
                 .map(DecisionRecord::sanitized)
                 .collect(),
+            code_project_dir: sanitize(&self.code_project_dir),
+            code_located_count: self.code_located_count,
+            code_tool_calls_count: self.code_tool_calls_count,
+            // As chamadas de ferramenta são sanitizadas aqui e não no
+            // registro: um `snippet` de arquivo e um argumento de comando
+            // chegam do código do alvo e podem conter segredo, e o log
+            // estruturado é o arquivo que sobrevive ao scan.
+            code_tool_calls: self
+                .code_tool_calls
+                .iter()
+                .map(sanitize_tool_call_record)
+                .collect(),
+            code_unavailable_reason: self
+                .code_unavailable_reason
+                .as_deref()
+                .map(crate::utils::redaction::sanitize_diagnostic),
         }
+    }
+}
+
+/// Sanitiza um registro de chamada de ferramenta antes da persistência.
+fn sanitize_tool_call_record(
+    record: &crate::code_agent::agent::ToolCallRecord,
+) -> crate::code_agent::agent::ToolCallRecord {
+    let sanitize = crate::utils::redaction::sanitize_text;
+    crate::code_agent::agent::ToolCallRecord {
+        finding_index: record.finding_index,
+        iteration: record.iteration,
+        tool: sanitize(&record.tool),
+        arguments: sanitize(&record.arguments),
+        outcome: sanitize(&record.outcome),
+        summary: sanitize(&record.summary),
     }
 }
 
@@ -361,6 +438,7 @@ mod tests {
                     target: "http://target.local".to_string(),
                     evidence: "test evidence".to_string(),
                     detected_at: "2026-08-31T12:01:00Z".to_string(),
+                ..Default::default()
                 },
                 Vulnerability {
                     title: "Informational finding".to_string(),
@@ -373,6 +451,7 @@ mod tests {
                     target: "http://target.local".to_string(),
                     evidence: "port open".to_string(),
                     detected_at: "2026-08-31T12:01:00Z".to_string(),
+                ..Default::default()
                 },
             ],
             "AI Analysis text".to_string(),
@@ -662,6 +741,7 @@ mod tests {
                 target: "https://target.local/path?token=secret".to_string(),
                 evidence: "request: secret".to_string(),
                 detected_at: "2026-09-06T12:00:01Z".to_string(),
+            ..Default::default()
             }],
             "Authorization: Bearer secret".to_string(),
         );
