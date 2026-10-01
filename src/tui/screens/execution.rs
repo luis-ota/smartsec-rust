@@ -11,14 +11,7 @@ use ratatui::{
 };
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let completed = app
-        .tools
-        .iter()
-        .filter(|tool| {
-            tool.selected && matches!(tool.status, ToolStatus::Done | ToolStatus::Failed)
-        })
-        .count();
-    let total = app.tools.iter().filter(|tool| tool.selected).count();
+    let (completed, total) = app.finished_tools();
     let percent = completed
         .saturating_mul(100)
         .checked_div(total)
@@ -27,7 +20,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         "Execução cancelada; retornando às ferramentas".to_string()
     } else if total > 0 && completed == total {
         format!(
-            "Preparando análise da IA {} · {}s",
+            "Ferramentas concluídas · preparando análise da IA {} · {}s",
             app.spinner_char(),
             app.analysis_wait_secs
         )
@@ -36,17 +29,65 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     };
     let shell = chrome::render_shell(app, frame, area, "Execução", &status);
     let progress_height = (total as u16).saturating_add(2).clamp(3, 6);
-    let rows = Layout::vertical([
-        Constraint::Length(progress_height),
-        Constraint::Length(4),
-        Constraint::Min(3),
-        Constraint::Length(2),
-    ])
-    .split(shell.content);
-    render_progress(app, frame, rows[0], percent);
-    render_ai_activity(app, frame, rows[1]);
-    render_logs(app, frame, rows[2]);
-    render_actions(app, frame, rows[3]);
+    // O painel de ocorrências só existe quando há algo a relatar; o log nunca
+    // perde espaço por causa de uma execução sem erro.
+    let mut constraints = vec![Constraint::Length(progress_height), Constraint::Length(4)];
+    if app.has_run_issues() {
+        // Uma linha por ocorrência, no máximo três: o log nunca some e o
+        // painel continua legível em 80x24.
+        constraints.push(Constraint::Length(
+            (app.run_issues.len().min(3) as u16).saturating_add(2),
+        ));
+    }
+    constraints.push(Constraint::Min(3));
+    constraints.push(Constraint::Length(2));
+    let rows = Layout::vertical(constraints).split(shell.content);
+    let mut index = 0;
+    render_progress(app, frame, rows[index], percent);
+    index += 1;
+    render_ai_activity(app, frame, rows[index]);
+    index += 1;
+    if app.has_run_issues() {
+        render_issues(app, frame, rows[index]);
+        index += 1;
+    }
+    render_logs(app, frame, rows[index]);
+    index += 1;
+    render_actions(app, frame, rows[index]);
+}
+
+/// Todas as ocorrências da execução, não apenas a primeira.
+///
+/// Ferramenta, auditoria, IA, executor, validação e exportação têm rótulos
+/// próprios; avisos de IA (fallback, consentimento, resposta descartada) são
+/// mostrados em tom distinto porque não interrompem a varredura.
+fn render_issues(app: &AppState, frame: &mut Frame, area: Rect) {
+    let block = chrome::panel("Ocorrências", false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let lines: Vec<Line> = app
+        .run_issues
+        .iter()
+        .take(inner.height as usize)
+        .map(|issue| {
+            let color = if issue.scope.is_warning() {
+                WARNING
+            } else {
+                DANGER
+            };
+            Line::styled(
+                chrome::truncate_width(
+                    &format!("{}: {}", issue.scope.label(), issue.detail),
+                    inner.width as usize,
+                ),
+                Style::default().fg(color),
+            )
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
+        inner,
+    );
 }
 
 fn render_ai_activity(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -184,7 +225,13 @@ fn render_progress(app: &AppState, frame: &mut Frame, area: Rect, percent: u16) 
 
 fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let focused = app.focus == FocusTarget::ExecutionLogs;
-    let block = chrome::panel("Log de saída", focused);
+    let dropped = app.dropped_log_lines();
+    let title = if dropped > 0 {
+        format!("Log de saída · {dropped} linhas descartadas na saturação")
+    } else {
+        "Log de saída".to_string()
+    };
+    let block = chrome::panel(&title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.log_visible_height = inner.height.max(1) as usize;
