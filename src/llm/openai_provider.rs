@@ -1,36 +1,54 @@
+use crate::llm::tool_calling::{ToolCall, ToolTurn, ToolTurnRequest};
 use crate::llm::LLMProvider;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::Duration;
 
 #[derive(Serialize)]
-#[allow(dead_code)]
 struct ChatRequest {
     model: String,
-    messages: Vec<ChatMessage>,
+    messages: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<Value>>,
     temperature: f32,
 }
 
-#[derive(Serialize, Deserialize)]
-#[allow(dead_code)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
-
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct ChatChoice {
     message: ChatMessage,
 }
 
-#[allow(dead_code)]
+#[derive(Clone, Deserialize)]
+struct ChatMessage {
+    #[serde(default)]
+    #[allow(dead_code)]
+    role: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<RawToolCall>>,
+}
+
+#[derive(Clone, Deserialize)]
+struct RawToolCall {
+    #[serde(default)]
+    id: String,
+    function: RawToolCallFunction,
+}
+
+#[derive(Clone, Deserialize)]
+struct RawToolCallFunction {
+    name: String,
+    #[serde(default)]
+    arguments: String,
+}
+
 pub struct OpenAIProvider {
     pub base_url: String,
     pub api_key: String,
@@ -39,43 +57,47 @@ pub struct OpenAIProvider {
     pub send_auth: bool,
 }
 
-#[async_trait]
-impl LLMProvider for OpenAIProvider {
-    async fn execute_prompt(&self, prompt: &str, model: &str) -> Result<String, anyhow::Error> {
+impl OpenAIProvider {
+    /// Monta o corpo da requisição. Sem ferramentas declaradas, o campo
+    /// `tools` é omitido para que o caminho de análise de logs continue
+    /// idêntico ao anterior (e aceito por provedores sem tool calling).
+    fn chat_body(model: &str, messages: Vec<Value>, tools: Option<Vec<Value>>) -> ChatRequest {
+        ChatRequest {
+            model: model.to_string(),
+            messages,
+            tools,
+            temperature: 0.7,
+        }
+    }
+
+    /// Envia o corpo ao endpoint de chat, com retentativa limitada, e devolve
+    /// o texto da primeira escolha.
+    async fn post_chat(&self, body: &ChatRequest) -> Result<String, anyhow::Error> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(self.timeout_secs))
             .build()?;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
-        let body = ChatRequest {
-            model: model.to_string(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
-            temperature: 0.7,
-        };
-
         for attempt in 0..=self.max_retries {
             let mut request = client
                 .post(&url)
                 .header("Content-Type", "application/json")
-                .json(&body);
+                .json(body);
             if self.send_auth {
                 request = request.bearer_auth(&self.api_key);
             }
 
             match request.send().await {
-                Ok(response) if response.status().is_success() => {
-                    let chat_response: ChatResponse = response.json().await?;
+                Ok(answer) if answer.status().is_success() => {
+                    let chat_response: ChatResponse = answer.json().await?;
                     return chat_response
                         .choices
                         .first()
-                        .map(|choice| choice.message.content.clone())
+                        .map(|choice| choice.message.content.clone().unwrap_or_default())
                         .ok_or_else(|| anyhow::anyhow!("A LLM não retornou uma resposta"));
                 }
-                Ok(response) => {
-                    let status = response.status();
+                Ok(answer) => {
+                    let status = answer.status();
                     let retryable = status.is_server_error()
                         || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
                     if !retryable || attempt == self.max_retries {
@@ -91,13 +113,116 @@ impl LLMProvider for OpenAIProvider {
     }
 }
 
+#[async_trait]
+impl LLMProvider for OpenAIProvider {
+    async fn execute_prompt(&self, prompt: &str, model: &str) -> Result<String, anyhow::Error> {
+        let body = Self::chat_body(
+            model,
+            vec![serde_json::json!({
+                "role": "user",
+                "content": prompt,
+            })],
+            None,
+        );
+        self.post_chat(&body).await
+    }
+
+    /// O endpoint Chat Completions do padrão OpenAI é aceito por Ollama,
+    /// NVIDIA NIM e provedores `custom`, então a mesma implementação do
+    /// caminho de análise também conduz o turno com ferramentas.
+    fn supports_tool_calling(&self) -> bool {
+        true
+    }
+
+    async fn execute_tool_turn(
+        &self,
+        request: &ToolTurnRequest,
+    ) -> Result<ToolTurn, anyhow::Error> {
+        let body = Self::chat_body(
+            &request.model,
+            request.to_wire(),
+            Some(request.tools_to_wire()),
+        );
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(self.timeout_secs))
+            .build()?;
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let mut turn = ToolTurn::default();
+
+        for attempt in 0..=self.max_retries {
+            let mut http = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .json(&body);
+            if self.send_auth {
+                http = http.bearer_auth(&self.api_key);
+            }
+            match http.send().await {
+                Ok(answer) if answer.status().is_success() => {
+                    let chat_response: ChatResponse = answer.json().await?;
+                    let message = chat_response
+                        .choices
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("A LLM não retornou uma resposta"))?
+                        .message
+                        .clone();
+                    turn.content = message.content.unwrap_or_default();
+                    turn.tool_calls = message
+                        .tool_calls
+                        .unwrap_or_default()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, call)| ToolCall {
+                            id: if call.id.trim().is_empty() {
+                                format!("call-{index}")
+                            } else {
+                                call.id
+                            },
+                            name: call.function.name,
+                            arguments: parse_arguments(&call.function.arguments),
+                        })
+                        .collect();
+                    return Ok(turn);
+                }
+                Ok(answer) => {
+                    let status = answer.status();
+                    let retryable = status.is_server_error()
+                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                    if !retryable || attempt == self.max_retries {
+                        return Err(anyhow::anyhow!("A API da LLM retornou o status {status}"));
+                    }
+                }
+                Err(error) if attempt == self.max_retries => return Err(error.into()),
+                Err(_) => {}
+            }
+        }
+
+        unreachable!("o laço de tentativas sempre retorna na última tentativa")
+    }
+}
+
+/// Converte os argumentos serializados pelo modelo em JSON estruturado.
+///
+/// JSON inválido vira objeto vazio em vez de erro: a validação de contrato
+/// pertence ao registro de ferramentas, que responde com recusa acionável
+/// ("exige o argumento de texto \"path\"") em vez de derrubar o turno inteiro.
+fn parse_arguments(raw: &str) -> Value {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Value::Object(serde_json::Map::new());
+    }
+    serde_json::from_str(trimmed).unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    async fn mock_server(
+    /// Servidor HTTP local que responde com o par `(status, corpo)` de cada
+    /// requisição recebida. Reutilizado pelos testes do serviço de análise.
+    pub(crate) async fn mock_server(
         responses: Vec<(&'static str, &'static str)>,
     ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -121,7 +246,7 @@ mod tests {
         (format!("http://{address}/v1"), handle)
     }
 
-    fn provider(base_url: String) -> OpenAIProvider {
+    pub(crate) fn provider(base_url: String) -> OpenAIProvider {
         OpenAIProvider {
             base_url,
             api_key: "test-token".to_string(),

@@ -90,6 +90,7 @@ struct ExecutionArgs {
     output: Option<String>,
     output_dir: Option<String>,
     max_critical_findings: Option<String>,
+    project: Option<String>,
 }
 
 impl Cli {
@@ -190,6 +191,7 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
             "--max-critical-findings" => {
                 options.max_critical_findings = Some(value(&mut index, "--max-critical-findings")?)
             }
+            "--project" => options.project = Some(value(&mut index, "--project")?),
             other => {
                 anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções")
             }
@@ -267,6 +269,9 @@ Códigos de saída:
   Relatório e log estruturado são gravados antes da mensagem final, inclusive
   no cancelamento por sinal."
     );
+    println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n      --project <DIRETORIO>  Projeto analisado pelo agente de código (padrão: diretório atual)\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
+    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
 }
 
 impl CommandLineInterface {
@@ -524,7 +529,11 @@ impl CommandLineInterface {
         println!("  Alvo:   {}", config.target_url);
         println!("  Modo:   {}", config.execution_type);
         println!("  Dados:  REAL");
-        println!("  LLM:    {:?} ({})", config.llm.provider, config.llm.model);
+        println!(
+            "  LLM:    {} ({})",
+            config.llm.provider.label(),
+            config.llm.model
+        );
         println!("  Scanners: Podman sem privilégios de root");
         println!();
 
@@ -546,6 +555,7 @@ impl CommandLineInterface {
         println!("  Ctrl+C ou SIGTERM cancelam a varredura com relatório preservado");
 
         println!("[1/3] Executando ferramentas de segurança...");
+        println!("[1/4] Executando ferramentas de segurança...");
         let (trace_tx, mut trace_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         orchestrator.trace_sink = Some(trace_tx);
         let trace_printer = tokio::spawn(async move {
@@ -605,19 +615,29 @@ impl CommandLineInterface {
             return finalize_headless(&mut orchestrator, &config, interrupted).await;
         }
 
-        let analysis = orchestrator
-            .agent
-            .analyze_logs(&orchestrator.findings)
-            .await;
-        orchestrator.last_log = analysis.clone();
+        let analysis = orchestrator.analyze_findings().await;
 
         println!(
-            "[2/3] Análise da IA ({} achados):",
+            "[2/4] Análise da IA ({} achados):",
             orchestrator.findings.len()
         );
-        for line in analysis.lines() {
+        for line in analysis.text.lines() {
             println!("  │ {}", line);
         }
+        println!("  │ {}", analysis.provenance());
+        // A mesma linha de proveniência vai para o log estruturado; o headless
+        // não pode prometer uma proveniência que a auditoria não registra.
+        println!();
+
+        let project_dir = config.effective_project_dir().display().to_string();
+
+        // Fase do agente de código: roda depois dos scanners, porque a
+        // severidade já está classificada e o agente apenas aponta onde
+        // corrigir. O diretório efetivo é impresso antes do resultado para
+        // que a saída diga qual árvore foi lida.
+        let code_report = orchestrator.analyze_code().await;
+        println!("[3/4] Localização no código (projeto: {})", project_dir);
+        print_code_report(&orchestrator.findings, &code_report);
         println!();
 
         let crit = orchestrator
@@ -646,7 +666,7 @@ impl CommandLineInterface {
             .filter(|v| v.severity == Severity::Info)
             .count();
 
-        println!("[3/3] Resumo");
+        println!("[4/4] Resumo");
         println!("───────────────────────────────────────────────────────────");
         println!("  Total de achados: {}", orchestrator.findings.len());
         println!(
@@ -683,6 +703,7 @@ async fn finalize_headless(
         &orchestrator.findings,
         &orchestrator.decision_history,
         &orchestrator.enrichment,
+        Some(&config.effective_project_dir()),
     );
     let report_path = resolve_report_path(config)?;
     let log_result = orchestrator.persist_scan_log();
@@ -721,6 +742,57 @@ async fn finalize_headless(
     println!("  OK Análise concluída.");
     println!("═══════════════════════════════════════════════════════════");
     Ok(exit_code)
+}
+
+/// Imprime a localização no código de cada achado, ou o motivo da recusa.
+///
+/// A linha impressa aqui é a mesma que vai para o log estruturado e para o
+/// relatório: o modo headless não pode afirmar uma origem que a auditoria não
+/// registra, nem omitir um achado cuja origem não foi determinada.
+fn print_code_report(
+    findings: &[Vulnerability],
+    report: &crate::code_agent::agent::CodeAnalysisReport,
+) {
+    if let Some(reason) = &report.unavailable_reason {
+        println!("  X {reason}");
+        return;
+    }
+    if findings.is_empty() {
+        println!("  Nenhum achado para localizar no código.");
+        return;
+    }
+    for (index, finding) in findings.iter().enumerate() {
+        let title = crate::utils::redaction::sanitize_text(&finding.title);
+        println!("  │ [{}] {title}", finding.severity.label_pt_br());
+        match finding.code_location.as_ref() {
+            Some(location) => {
+                println!("    código: {location}");
+                for step in &finding.code_remediation {
+                    println!("    correção: {step}");
+                }
+            }
+            None => {
+                // O motivo vem do relatório da fase, indexado pela mesma
+                // posição do achado: sem ele, o operador veria apenas
+                // "localização não determinada" e não saberia se o agente
+                // falhou, recusou ou se o provedor não suporta tool calling.
+                let analysis = report
+                    .findings
+                    .iter()
+                    .find(|item| item.finding_index == index);
+                let reason = analysis.map_or_else(
+                    || crate::code_agent::agent::UNDETERMINED_LABEL.to_string(),
+                    |item| item.summary(),
+                );
+                println!("    {reason}");
+            }
+        }
+    }
+    println!(
+        "  │ {} de {} achados com origem localizada no código",
+        report.located_count(),
+        findings.len()
+    );
 }
 
 /// Código de saída consolidado do modo headless (TCC_SPEC.md, seção 10).
@@ -837,6 +909,22 @@ fn build_config(
             )
         })?;
     }
+    if let Some(project) = &options.project {
+        if project.trim().is_empty() {
+            anyhow::bail!("o diretório do projeto não pode estar vazio");
+        }
+        // Validado aqui, e não só na fase do agente: um `--project` inválido é
+        // erro de configuração do operador, e o headless precisa devolvê-lo
+        // como exit 2 antes de gastar minutos de varredura.
+        crate::code_agent::workspace::Workspace::open(std::path::Path::new(project)).map_err(
+            |error| {
+                anyhow::anyhow!(
+                    "o diretório do projeto informado em --project não pôde ser usado: {error}"
+                )
+            },
+        )?;
+        config.project_dir = Some(project.clone());
+    }
     config.validate_target().map_err(anyhow::Error::msg)?;
     config.llm.validate().map_err(anyhow::Error::msg)?;
     Ok(config)
@@ -909,6 +997,7 @@ mod tests {
             origins: Vec::new(),
             enrichment: None,
             severity_conflict: None,
+            ..Default::default()
         }
     }
 
@@ -1031,6 +1120,7 @@ mod tests {
             output: Some("personalizado.md".to_owned()),
             output_dir: Some("saida".to_owned()),
             max_critical_findings: None,
+            ..ExecutionArgs::default()
         };
 
         let configured = build_config(&options, "192.0.2.10".to_owned(), None, true).unwrap();

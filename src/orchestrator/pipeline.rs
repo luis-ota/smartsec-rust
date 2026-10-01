@@ -1,4 +1,7 @@
 use crate::ai::agent::AIAgent;
+use crate::ai::analysis_service::AnalysisResult;
+use crate::ai::analysis_service::AnalysisService;
+use crate::code_agent::agent::{CodeAnalysisReport, CodeAnalysisService};
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner};
 use crate::domain::vulnerability::Vulnerability;
@@ -44,6 +47,14 @@ pub struct Orchestrator {
     pub enrichment: EnrichmentSummary,
     started_at: String,
     latest_nmap_output: Option<String>,
+    /// Resultado estruturado da última análise da IA, com modelo, provedor
+    /// efetivo, fallback, motivo da falha e horário.
+    pub last_analysis_result: Option<AnalysisResult>,
+    /// Serviço único de análise, compartilhado pela TUI e pelo modo headless.
+    analysis_service: AnalysisService,
+    /// Relatório da fase do agente de código, com a localização de cada achado
+    /// e o registro auditável de cada chamada de ferramenta.
+    pub last_code_report: Option<CodeAnalysisReport>,
 }
 
 impl Orchestrator {
@@ -57,7 +68,7 @@ impl Orchestrator {
     /// Cria o orquestrador com um registry já validado (evita revalidar a
     /// configuração na TUI).
     pub fn with_registry(mut config: Configuration, registry: ToolRegistry) -> Self {
-        config.provider_mode = format!("{:?}", config.llm.provider);
+        config.provider_mode = config.llm.provider.label().to_string();
         let agent = AIAgent::from_config(&config.llm);
         Self {
             config,
@@ -73,6 +84,9 @@ impl Orchestrator {
             enrichment: EnrichmentSummary::default(),
             started_at: now_iso8601(),
             latest_nmap_output: None,
+            last_analysis_result: None,
+            analysis_service: AnalysisService::new(),
+            last_code_report: None,
         }
     }
 
@@ -534,12 +548,92 @@ impl Orchestrator {
         exec
     }
 
+    /// Interpreta os achados com o serviço único de análise da IA.
+    ///
+    /// Único caminho para a IA interpretar logs, usado pela TUI e pelo modo
+    /// headless. Concentrar a chamada aqui impede que os dois modos voltem a
+    /// divergir (issue #23) e garante que consentimento, teto de 45 s (RNF04),
+    /// validação da resposta e fallback sejam sempre os mesmos.
+    ///
+    /// O serviço é um campo do orquestrador, e não uma instância criada por
+    /// chamada: os dois modos de execução recebem a mesma configuração de prazo,
+    /// o que torna a unificação observável em vez de apenas declarada.
+    pub async fn analyze_findings(&mut self) -> AnalysisResult {
+        let result = self
+            .analysis_service
+            .analyze(&mut self.agent, &self.findings)
+            .await;
+        self.last_log = result.text.clone();
+        self.last_analysis_result = Some(result.clone());
+        result
+    }
+
+    /// Executa a fase do agente de código, depois dos scanners.
+    ///
+    /// A fase é **best effort** por desenho: ela roda depois que os achados já
+    /// estão construídos e não pode impedir o relatório de ser gravado. Se o
+    /// diretório do projeto não puder ser aberto, ou se o provedor não
+    /// suportar tool calling, cada achado recebe "localização não determinada"
+    /// com o motivo registrado, e o pipeline segue para o relatório.
+    ///
+    /// `run_command` **não** recebe allowlist aqui: o agente entra em modo
+    /// somente leitura por padrão, e a execução de comandos exigiria um opt-in
+    /// explícito que não existe no contrato da configuração atual. A ferramenta
+    /// permanece registrada e é recusada com mensagem acionável.
+    pub async fn analyze_code(&mut self) -> CodeAnalysisReport {
+        let project_dir = self.config.effective_project_dir();
+        let report = match CodeAnalysisService::open(
+            &project_dir,
+            crate::code_agent::CodeAgentLimits::default(),
+            Vec::new(),
+        ) {
+            Ok(service) => {
+                let model = self.agent.model.clone();
+                let label = self.agent.configured_provider_label();
+                // RNF10 é consultado **antes** do primeiro turno: o consentimento
+                // que a issue #23 já exige para enviar logs é o mesmo que
+                // precisa cobrir trechos do código do alvo, que são o ativo mais
+                // sensível do cliente. Sem esta checagem, um provedor remoto sem
+                // consentimento receberia o código-fonte auditado.
+                if !self.agent.allows_target_data() {
+                    CodeAnalysisReport::blocked_by_consent(&self.findings, &model, &label)
+                } else {
+                    service
+                        .analyze(self.agent.provider_handle(), &model, &label, &self.findings)
+                        .await
+                }
+            }
+            Err(error) => CodeAnalysisReport::unavailable(&project_dir, &error.to_string()),
+        };
+        self.apply_code_report(&report);
+        self.last_code_report = Some(report);
+        self.last_code_report.clone().unwrap_or_default()
+    }
+
+    /// Escreve a localização e a correção no contrato de cada achado.
+    ///
+    /// O índice do relatório casa com a posição do achado na lista original, e
+    /// é essa correspondência que permite gravar o resultado **sem** reordenar
+    /// nem reclassificar: a severidade continua exatamente a que o scanner
+    /// produziu.
+    fn apply_code_report(&mut self, report: &CodeAnalysisReport) {
+        for analysis in &report.findings {
+            let Some(finding) = self.findings.get_mut(analysis.finding_index) else {
+                continue;
+            };
+            finding.code_location = analysis.location.clone();
+            finding.code_remediation = analysis.remediation.clone();
+        }
+    }
+
     async fn request_nuclei_plan(&mut self, target: &str) -> Option<String> {
         let prompt = nuclei_plan_prompt(
             target,
             self.latest_nmap_output.as_deref().unwrap_or_default(),
         );
-        self.agent.execute_with_fallback(&prompt).await.ok()
+        self.analysis_service
+            .request(&mut self.agent, &prompt)
+            .await
     }
 
     /// Constrói os achados reais a partir da execução dos scanners.
@@ -698,8 +792,8 @@ impl Orchestrator {
         self.build_findings();
         self.correlate_and_enrich_findings().await;
 
-        let analysis = self.agent.analyze_logs(&self.findings).await;
-        self.last_log = analysis;
+        let analysis = self.analyze_findings().await;
+        self.last_log = analysis.text;
         Ok(self.findings.clone())
     }
 
@@ -782,6 +876,16 @@ impl Orchestrator {
             enrichment: self.enrichment.clone(),
             interruption: self.control.interruption(),
             ..metadata
+        };
+        let metadata = match &self.last_analysis_result {
+            Some(result) => metadata.with_analysis(result),
+            None => metadata,
+        };
+        let metadata = match &self.last_code_report {
+            Some(report) => {
+                metadata.with_code_analysis(report, &self.config.effective_project_dir())
+            }
+            None => metadata,
         };
         crate::orchestrator::scan_logger::save_scan_log(&metadata)
     }
@@ -998,6 +1102,7 @@ mod tests {
             origins: Vec::new(),
             enrichment: None,
             severity_conflict: None,
+            ..Default::default()
         }
     }
 
@@ -1130,6 +1235,186 @@ mod tests {
             serde_json::from_value(legacy).expect("histórico antigo precisa continuar legível");
 
         assert!(restored.interruption.is_none());
+    }
+
+    /// A fase do agente de código grava a origem no achado sem reordenar a lista
+    /// nem reclassificar a severidade.
+    ///
+    /// É o contrato público da issue #76: o scanner continua sendo a
+    /// autoridade da severidade (TCC_SPEC, seção 7) e o agente apenas aponta
+    /// onde corrigir. Um teste que passasse mesmo reordenando os achados não
+    /// provaria nada.
+    #[tokio::test]
+    async fn the_code_phase_writes_the_location_without_touching_severity() {
+        use crate::domain::vulnerability::CodeLocation;
+        use crate::domain::vulnerability::FindingSource;
+
+        let mut config = make_config();
+        config.project_dir = Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/codebase")
+                .display()
+                .to_string(),
+        );
+        let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
+
+        let mut first = Vulnerability {
+            title: "Autenticação fraca".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "Descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: FindingSource::Real,
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
+        };
+        let mut second = first.clone();
+        first.title = "Primeiro achado".to_string();
+        second.title = "Segundo achado".to_string();
+        second.severity = crate::domain::Severity::Info;
+        orch.findings = vec![first, second];
+
+        // Relatório sintético da fase: reproduz o que o agente produz sem
+        // depender de provedor, e exercita a escrita no contrato de findings.
+        let report = crate::code_agent::agent::CodeAnalysisReport {
+            findings: vec![
+                crate::code_agent::agent::FindingCodeAnalysis {
+                    finding_index: 1,
+                    location: Some(CodeLocation {
+                        file: "src/nested/deep.py".to_string(),
+                        line: 2,
+                        snippet: "def login():".to_string(),
+                    }),
+                    remediation: vec!["Encadeie a auditoria".to_string()],
+                    reason: None,
+                    model: "gpt-4o".to_string(),
+                    provider: "OpenAI".to_string(),
+                    tool_calls: 2,
+                    fallback_used: false,
+                },
+                crate::code_agent::agent::FindingCodeAnalysis {
+                    finding_index: 0,
+                    location: None,
+                    remediation: Vec::new(),
+                    reason: Some("o provedor não implementa tool calling".to_string()),
+                    model: "gpt-4o".to_string(),
+                    provider: "OpenAI".to_string(),
+                    tool_calls: 0,
+                    fallback_used: true,
+                },
+            ],
+            tool_calls: Vec::new(),
+            unavailable_reason: None,
+        };
+        orch.apply_code_report(&report);
+
+        // A ordem original é preservada e cada resultado foi para o índice certo.
+        assert_eq!(orch.findings[0].title, "Primeiro achado");
+        assert_eq!(orch.findings[1].title, "Segundo achado");
+        assert!(orch.findings[0].code_location.is_none());
+        assert!(orch.findings[0].code_remediation.is_empty());
+        assert_eq!(
+            orch.findings[1]
+                .code_location
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("src/nested/deep.py:2")
+        );
+        assert_eq!(
+            orch.findings[1].code_remediation,
+            vec!["Encadeie a auditoria".to_string()]
+        );
+
+        // A severidade do scanner não muda.
+        assert_eq!(orch.findings[0].severity, crate::domain::Severity::High);
+        assert_eq!(orch.findings[1].severity, crate::domain::Severity::Info);
+    }
+
+    /// Um `--project` que não existe não pode derrubar o scan: a fase registra
+    /// o motivo e o fluxo segue até o relatório.
+    #[tokio::test]
+    async fn an_unreadable_project_reports_the_reason_without_failing_the_scan() {
+        let mut config = make_config();
+        config.project_dir = Some("/caminho/que/nao/existe".to_string());
+        let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
+        orch.findings = vec![Vulnerability {
+            title: "Achado".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "Descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: crate::domain::vulnerability::FindingSource::Real,
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
+        }];
+
+        let report = orch.analyze_code().await;
+
+        let reason = report
+            .unavailable_reason
+            .as_deref()
+            .expect("a fase precisa registrar o motivo");
+        assert!(reason.contains("/caminho/que/nao/existe"), "{reason}");
+        assert!(orch.findings[0].code_location.is_none());
+        assert_eq!(report.located_count(), 0);
+    }
+
+    /// Sem consentimento remoto, a fase não abre turno nenhum e diz por quê.
+    ///
+    /// O provedor configurado é um Ollama local por padrão, o que não exige
+    /// consentimento; o teste força um provedor remoto sem consentimento.
+    #[tokio::test]
+    async fn a_remote_provider_without_consent_blocks_the_code_phase() {
+        let mut config = make_config();
+        config.llm = crate::config::llm_config::LlmConfig {
+            provider: crate::config::llm_config::LlmProviderKind::OpenAI,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key: "chave-de-teste".to_string(),
+            remote_consent: false,
+            ..crate::config::llm_config::LlmConfig::default()
+        };
+        // `validate` exigiria consentimento para um provedor remoto; o
+        // orquestrador é construído direto para reproduzir o estado herdado de
+        // uma configuração remota sem consentimento.
+        let mut orch = Orchestrator::with_registry(
+            config,
+            ToolRegistry::with_configured(&[]).expect("catálogo padrão"),
+        );
+        orch.findings = vec![Vulnerability {
+            title: "Segredo no código".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "Descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: crate::domain::vulnerability::FindingSource::Real,
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
+        }];
+
+        let report = orch.analyze_code().await;
+
+        assert_eq!(report.tool_calls.len(), 0, "nenhuma ferramenta pode rodar");
+        assert!(orch.findings[0].code_location.is_none());
+        assert_eq!(report.findings.len(), 1);
+        assert!(
+            report.findings[0]
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("RNF10")),
+            "{:?}",
+            report.findings[0].reason
+        );
     }
 
     #[tokio::test]
