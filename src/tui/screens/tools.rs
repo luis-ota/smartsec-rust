@@ -11,9 +11,7 @@ use ratatui::{
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let selected = app.tools.iter().filter(|tool| tool.selected).count();
-    let status = if app.tool_detecting {
-        "Detectando ferramentas compatíveis...".to_string()
-    } else if app.tools.is_empty() {
+    let status = if app.tools.is_empty() {
         "Nenhuma ferramenta disponível".to_string()
     } else {
         format!("{selected} de {} ferramentas selecionadas", app.tools.len())
@@ -42,17 +40,6 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(block, area);
     app.tool_visible_height = inner.height.max(1) as usize;
 
-    if app.tool_detecting {
-        frame.render_widget(
-            Paragraph::new(format!(
-                " {} Verificando catálogo e disponibilidade...",
-                app.spinner_char()
-            ))
-            .style(Style::default().fg(ACCENT).bg(SURFACE)),
-            inner,
-        );
-        return;
-    }
     if app.tools.is_empty() {
         frame.render_widget(
             Paragraph::new(" Nenhuma ferramenta foi encontrada. Volte e revise a configuração.")
@@ -154,6 +141,6 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         "Executar",
         SemanticAction::RunTools,
         chrome::ButtonState::primary(app.focus == FocusTarget::ToolRun)
-            .enabled(!app.tool_detecting && app.tools.iter().any(|tool| tool.selected)),
+            .enabled(app.tools.iter().any(|tool| tool.selected)),
     );
 }

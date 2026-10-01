@@ -429,9 +429,8 @@ fn go_back(app: &mut AppState) -> bool {
             app.focus = FocusTarget::ToolList;
         }
         AppStep::Analysis => {
-            app.orchestrator.cancelled = true;
+            app.cancel_run();
             app.step = AppStep::ToolSelect;
-            app.tool_detecting = false;
             app.focus = FocusTarget::ToolList;
         }
         AppStep::Results => new_scan(app),
@@ -442,30 +441,23 @@ fn go_back(app: &mut AppState) -> bool {
 fn start_scan(app: &mut AppState) {
     app.config.target_url = app.config.target_url.trim().to_string();
     if let Err(error) = app.config.validate_target() {
-        app.run_error = Some(error);
+        app.record_run_issue(crate::tui::state::RunIssueScope::Validation, error);
         app.focus = FocusTarget::SplashTarget;
         return;
     }
-    app.run_error = None;
+    app.clear_run_issues();
     app.step = AppStep::ToolSelect;
-    app.tool_detecting = true;
-    app.tool_detect_tick = 0;
     app.focus = FocusTarget::ToolList;
 }
 
 fn run_tools(app: &mut AppState) {
-    if app.step == AppStep::ToolSelect
-        && !app.tool_detecting
-        && app.tools.iter().any(|tool| tool.selected)
-    {
-        app.step = AppStep::Execution;
-        app.focus = FocusTarget::ExecutionLogs;
-        app.init_execution();
+    if app.step == AppStep::ToolSelect && app.tools.iter().any(|tool| tool.selected) {
+        app.start_selected_tools();
     }
 }
 
 fn toggle_tool(app: &mut AppState, index: usize) {
-    if app.step == AppStep::ToolSelect && !app.tool_detecting {
+    if app.step == AppStep::ToolSelect {
         if let Some(tool) = app.tools.get_mut(index) {
             tool.selected = !tool.selected;
             app.tool_cursor = index;
@@ -682,10 +674,8 @@ fn execute_command(app: &mut AppState, index: usize) -> bool {
 }
 
 fn cancel_execution(app: &mut AppState) {
-    if app.step == AppStep::Execution {
+    if matches!(app.step, AppStep::Execution | AppStep::Analysis) {
         app.cancel_run();
-    } else if app.step == AppStep::Analysis {
-        app.orchestrator.cancelled = true;
         app.step = AppStep::ToolSelect;
         app.focus = FocusTarget::ToolList;
     }
@@ -705,7 +695,10 @@ fn export_markdown(app: &mut AppState) {
             Err(error) => {
                 app.md_exported = false;
                 app.exported_report_path = None;
-                app.run_error = Some(format!("Falha ao exportar relatório: {error}"));
+                app.record_run_issue(
+                    crate::tui::state::RunIssueScope::Export,
+                    format!("Falha ao exportar relatório: {error}"),
+                );
             }
         }
         app.focus = FocusTarget::ResultsExport;
@@ -774,7 +767,7 @@ fn insert_text(app: &mut AppState, text: &str) {
     match app.focus {
         FocusTarget::SplashTarget => {
             app.config.target_url.push_str(text);
-            app.run_error = None;
+            app.clear_run_issues();
         }
         FocusTarget::SettingsField(SettingsField::BaseUrl) => {
             app.settings_input_base_url.push_str(text)
@@ -814,7 +807,7 @@ fn delete_backward(app: &mut AppState) {
     match app.focus {
         FocusTarget::SplashTarget => {
             app.config.target_url.pop();
-            app.run_error = None;
+            app.clear_run_issues();
         }
         FocusTarget::SettingsField(SettingsField::BaseUrl) => {
             app.settings_input_base_url.pop();
@@ -955,12 +948,10 @@ mod tests {
     fn keyboard_and_mouse_toggle_the_same_tool() {
         let mut keyboard = app();
         keyboard.step = AppStep::ToolSelect;
-        keyboard.tool_detecting = false;
         keyboard.focus = FocusTarget::ToolList;
         keyboard.tool_cursor = 1;
         let mut mouse = app();
         mouse.step = AppStep::ToolSelect;
-        mouse.tool_detecting = false;
         mouse.tool_cursor = 1;
         render_app(&mut mouse, 80, 16);
 
@@ -1224,7 +1215,6 @@ mod tests {
 
         let mut app = app();
         app.step = AppStep::ToolSelect;
-        app.tool_detecting = false;
         app.tool_cursor = 1;
         app.tool_scroll = 0;
         render_app(&mut app, 80, 16);
@@ -1283,6 +1273,51 @@ mod tests {
             .hit_regions
             .iter()
             .any(|region| region.action == SemanticAction::Back));
+    }
+
+    /// RNF07 sob carga: com milhares de linhas de log, teclado, mouse e
+    /// renderização em 80x24 continuam respondendo.
+    #[test]
+    fn the_tui_stays_responsive_under_a_full_log() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        app.exec_logs = (0..5000)
+            .map(|index| format!("[Nmap] linha {index} {}", "x".repeat(120)))
+            .collect();
+
+        let screen = render_app(&mut app, 80, 24);
+        assert!(
+            screen.contains("linha 4999"),
+            "o fim do log fica visível no auto-follow\n{screen}"
+        );
+
+        app.log_follow = false;
+        app.log_scroll = 0;
+        let top = render_app(&mut app, 80, 24);
+        assert!(top.contains("linha 0"), "o topo continua alcançável\n{top}");
+
+        click_action(
+            &mut app,
+            &SemanticAction::SetFocus(FocusTarget::ExecutionLogs),
+        );
+        assert_eq!(app.focus, FocusTarget::ExecutionLogs);
+        assert_eq!(app.log_scroll, 0, "o clique não move o histórico");
+
+        let before = app.log_scroll;
+        press(&mut app, KeyCode::Down);
+        assert!(app.log_scroll > before, "o teclado continua rolando");
+        assert!(
+            app.log_scroll <= app.log_max_scroll(),
+            "a rolagem respeita o limite de linhas visuais"
+        );
+        assert!(!app.log_follow);
+
+        let after = render_app(&mut app, 80, 24);
+        assert!(
+            after.contains("SmartSec"),
+            "a tela continua sendo renderizada"
+        );
     }
 
     #[test]
@@ -1373,7 +1408,9 @@ mod tests {
     fn disabled_palette_command_does_not_execute_or_close() {
         let mut app = app();
         app.step = AppStep::ToolSelect;
-        app.tool_detecting = true;
+        for tool in &mut app.tools {
+            tool.selected = false;
+        }
         dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
         let run_index = command_items(&app)
             .iter()
@@ -1430,14 +1467,15 @@ mod tests {
         app.set_mode(ExecutionType::Auto);
         app.step = AppStep::ToolSelect;
         app.focus = FocusTarget::ToolList;
-        app.tool_detecting = true;
-        app.tool_detect_tick = 50;
         dispatch_action(&mut app, SemanticAction::OpenSettings);
 
         app.tick();
         app.step_tick().await;
-        assert_eq!(app.step, AppStep::ToolSelect);
-        assert_eq!(app.tool_detect_tick, 50);
+        assert_eq!(
+            app.step,
+            AppStep::ToolSelect,
+            "a execução não começa por baixo de uma camada sobreposta"
+        );
         dispatch_action(&mut app, SemanticAction::CloseSettings);
         assert_eq!(app.focus, FocusTarget::ToolList);
         app.tick();
@@ -1445,18 +1483,29 @@ mod tests {
 
         app.step = AppStep::Analysis;
         app.focus = FocusTarget::AnalysisCancel;
-        app.analysis_phase = crate::tui::state::AnalysisPhase::Complete;
-        app.analysis_tick = 31;
         dispatch_action(&mut app, SemanticAction::OpenHelp);
         app.tick();
         app.step_tick().await;
-        assert_eq!(app.step, AppStep::Analysis);
-        assert_eq!(app.analysis_tick, 31);
+        assert_eq!(
+            app.step,
+            AppStep::Analysis,
+            "a análise em curso continua enquanto a ajuda está aberta"
+        );
         dispatch_action(&mut app, SemanticAction::Back);
         assert_eq!(app.focus, FocusTarget::AnalysisCancel);
         app.step_tick().await;
-        assert_eq!(app.step, AppStep::Results);
-        assert_eq!(app.focus, FocusTarget::ResultsList);
+        assert_eq!(
+            app.step,
+            AppStep::Analysis,
+            "só o cancelamento encerra a análise, e ele é explícito"
+        );
+        dispatch_action(&mut app, SemanticAction::Back);
+        app.step_tick().await;
+        assert_eq!(app.step, AppStep::ToolSelect);
+        assert_eq!(app.focus, FocusTarget::ToolList);
+        if let Some(path) = app.audit_log_path.clone() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]
