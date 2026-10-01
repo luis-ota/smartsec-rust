@@ -1,5 +1,8 @@
+use crate::domain::vulnerability::FindingSource;
 use crate::domain::Severity;
-use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SUCCESS, SURFACE, TEXT, WARNING};
+use crate::tui::chrome::{
+    self, ACCENT, DANGER, MUTED, SUCCESS, SURFACE, SURFACE_ACTIVE, TEXT, WARNING,
+};
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::AppState;
 use crate::utils::helpers::wrap_text;
@@ -17,10 +20,13 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .iter()
         .filter(|item| item.severity == Severity::Critical)
         .count();
-    let status = if let Some(error) = &app.run_error {
+    let status = if app.has_run_issues() {
+        let first = &app.run_issues[0];
         format!(
-            "Execução concluída com falhas · {}",
-            chrome::truncate_width(error, 60)
+            "Execução concluída com {} ocorrências · {} {}",
+            app.run_issues.len(),
+            first.scope.label(),
+            chrome::truncate_width(&first.detail, 30)
         )
     } else if let Some(warning) = &app.llm_warning {
         format!(
@@ -54,18 +60,20 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 fn render_overview(app: &mut AppState, frame: &mut Frame, area: Rect) {
     // Uma linha extra é reservada quando o enriquecimento CVE/NVD degradou, para
     // que a indisponibilidade da NVD fique visível sem cortar o painel de 80x24.
+    // Altura do resumo: metricas (2) + alvo e projeto na mesma linha (1) +
+    // resumo da IA (1) + auditoria (1), e mais uma quando o aviso de
+    // indisponibilidade do enriquecimento CVE/NVD esta presente. Encolher faria
+    // a linha de auditoria sumir em 80x24, que e o terminal que RNF07 exige.
     let summary_height: u16 = if app.enrichment_warning.is_some() {
-        7
+        8
     } else {
-        6
+        7
     };
     let rows = Layout::vertical([
+        // A altura acompanha o conteudo: com o aviso de indisponibilidade do
+        // enriquecimento CVE/NVD o resumo ganha uma linha. Encolher faria a
+        // linha de auditoria sumir em 80x24, que e o terminal que RNF07 exige.
         Constraint::Length(summary_height),
-        // Sete linhas para o resumo: as bordas consomem duas, e o bloco passou a
-        // exibir também o diretório do projeto ao lado do alvo. Encolher para
-        // seis faria a linha de auditoria sumir em 80x24, que é exatamente o
-        // terminal que RNF07 exige.
-        Constraint::Length(7),
         Constraint::Min(1),
         Constraint::Length(2),
     ])
@@ -103,29 +111,65 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
     let medium = counts(Severity::Medium);
     let low = counts(Severity::Low);
     let info = counts(Severity::Info);
-    let lines = if let Some(error) = &app.run_error {
-        vec![
-            Line::styled(
-                chrome::truncate_width(error, inner.width as usize),
-                Style::default().fg(DANGER).bold(),
-            ),
-            Line::from(vec![
-                metric("críticas", critical, DANGER),
-                Span::raw("   "),
-                metric("altas", high, Color::Rgb(220, 130, 90)),
-                Span::raw("   "),
-                metric("médias", medium, WARNING),
-            ]),
-            Line::from(vec![
-                metric("baixas", low, ACCENT),
-                Span::raw("   "),
-                metric("informativas", info, MUTED),
-            ]),
-            Line::styled(
-                audit_label(app.audit_log_path.as_ref(), "Log de auditoria indisponível"),
+    let severities = [
+        Line::from(vec![
+            metric("críticas", critical, DANGER),
+            Span::raw("   "),
+            metric("altas", high, Color::Rgb(220, 130, 90)),
+            Span::raw("   "),
+            metric("médias", medium, WARNING),
+        ]),
+        Line::from(vec![
+            metric("baixas", low, ACCENT),
+            Span::raw("   "),
+            metric("informativas", info, MUTED),
+        ]),
+    ];
+    // A linha da IA traz o resumo real devolvido pelo agente; o texto completo
+    // permanece no relatório Markdown e no log de auditoria.
+    let ai = Line::from(vec![
+        Span::styled("ia  ", Style::default().fg(MUTED)),
+        Span::styled(
+            chrome::truncate_width(first_line(app.ai_summary()), inner.width as usize - 4),
+            Style::default().fg(TEXT),
+        ),
+    ]);
+    let lines = if app.has_run_issues() {
+        let mut lines = Vec::new();
+        for issue in app
+            .run_issues
+            .iter()
+            .take(inner.height.saturating_sub(4) as usize)
+        {
+            let color = if issue.scope.is_warning() {
+                WARNING
+            } else {
+                DANGER
+            };
+            lines.push(Line::styled(
+                chrome::truncate_width(
+                    &format!("{}: {}", issue.scope.label(), issue.detail),
+                    inner.width as usize,
+                ),
+                Style::default().fg(color).bold(),
+            ));
+        }
+        let hidden = app
+            .run_issues
+            .len()
+            .saturating_sub(inner.height.saturating_sub(4) as usize);
+        if hidden > 0 {
+            lines.push(Line::styled(
+                format!("+{hidden} ocorrências no log da execução"),
                 Style::default().fg(MUTED),
-            ),
-        ]
+            ));
+        }
+        lines.push(severities[0].clone());
+        lines.push(severities[1].clone());
+        // Com ocorrências, o caminho da auditoria continua acessível no
+        // relatório, no log estruturado e na tela de rastreabilidade (f2).
+        lines.push(ai);
+        lines
     } else if vulnerabilities.is_empty() {
         vec![
             Line::styled(
@@ -142,18 +186,8 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
         // entre os dois paths, com folga para a borda direita.
         let path_budget = ((inner.width as usize).saturating_sub(18)) / 2;
         vec![
-            Line::from(vec![
-                metric("críticas", critical, DANGER),
-                Span::raw("   "),
-                metric("altas", high, Color::Rgb(220, 130, 90)),
-                Span::raw("   "),
-                metric("médias", medium, WARNING),
-            ]),
-            Line::from(vec![
-                metric("baixas", low, ACCENT),
-                Span::raw("   "),
-                metric("informativas", info, MUTED),
-            ]),
+            severities[0].clone(),
+            severities[1].clone(),
             // Alvo e projeto analisado dividem a mesma linha: em 80x24 cada
             // linha extra empurra a linha de auditoria para fora da tela, e a
             // auditoria e o registro que o TCC exige. Os dois paths continuam
@@ -170,6 +204,7 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
                     Style::default().fg(TEXT),
                 ),
             ]),
+            ai,
             Line::styled(
                 audit_label(
                     app.audit_log_path.as_ref(),
@@ -194,6 +229,10 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
     );
 }
 
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text)
+}
+
 fn metric(label: &str, value: usize, color: Color) -> Span<'_> {
     Span::styled(
         format!("{value} {label}"),
@@ -203,7 +242,19 @@ fn metric(label: &str, value: usize, color: Color) -> Span<'_> {
 
 fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let focused = app.focus == FocusTarget::ResultsList;
-    let block = chrome::panel("Achados", focused);
+    // REQ15: o painel anuncia que os críticos estão no topo, para que a
+    // ordenação seja visível e não apenas implícita.
+    let critical = app
+        .vulnerabilities()
+        .iter()
+        .filter(|item| item.severity == Severity::Critical)
+        .count();
+    let title = if critical > 0 {
+        format!("Achados · {critical} crítico(s) no topo")
+    } else {
+        "Achados".to_string()
+    };
+    let block = chrome::panel(&title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -248,14 +299,18 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
                     Style::default(),
                 ),
             ])
+            // A cor da severidade é autoritativa (TCC_SPEC.md, seção 7) e não
+            // pode desaparecer quando a linha está selecionada: o destaque vem
+            // do fundo e do marcador, nunca da cor.
             .style(
                 Style::default()
-                    .fg(if active {
-                        Color::Black
+                    .fg(severity_color(item.severity))
+                    .bg(if active { SURFACE_ACTIVE } else { SURFACE })
+                    .add_modifier(if current {
+                        ratatui::style::Modifier::BOLD
                     } else {
-                        severity_color(item.severity)
-                    })
-                    .bg(if active { ACCENT } else { SURFACE }),
+                        ratatui::style::Modifier::empty()
+                    }),
             ),
         );
         app.register_hit_region(
@@ -330,8 +385,8 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
 ///
 /// O contexto da NVD é informativo: ele **não** reclassifica a severidade, e a
 /// eventual divergência entre scanner e NVD aparece como nota explícita.
-fn append_enrichment<'a>(
-    lines: &mut Vec<Line<'a>>,
+fn append_enrichment(
+    lines: &mut Vec<Line<'static>>,
     item: &crate::domain::vulnerability::Vulnerability,
     width: usize,
 ) {
@@ -397,10 +452,12 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
     let inner = block.inner(rows[0]);
     frame.render_widget(block, rows[0]);
     let vulnerabilities = app.vulnerabilities();
-    if let Some(item) = vulnerabilities.get(index) {
-        // `Line<'static>` explícito: o painel é desenhado por quadro e o vetor
-        // de achados é recriado a cada chamada, então as linhas precisam ser
-        // independentes do empréstimo de `vulnerabilities`.
+    // O item e clonado, e nao emprestado: as linhas do painel sao `Line<'static>`
+    // porque o painel e redesenhado a cada quadro e o vetor de achados e recriado
+    // a cada chamada, entao elas nao podem depender do emprestimo.
+    if let Some(item) = vulnerabilities.get(index).cloned() {
+        // `Line<'static>` explicito: as linhas precisam ser independentes do
+        // vetor de achados, que morre no fim desta funcao.
         let mut lines: Vec<Line<'static>> = vec![
             Line::from(vec![
                 Span::styled(
@@ -409,15 +466,42 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
                 ),
                 Span::styled(item.title.clone(), Style::default().fg(TEXT).bold()),
             ]),
-            Line::styled(
-                format!("ferramenta  {}", item.tool),
-                Style::default().fg(MUTED),
-            ),
+            Line::from(vec![
+                Span::styled("ferramenta  ", Style::default().fg(MUTED)),
+                Span::styled(item.tool.clone(), Style::default().fg(TEXT)),
+                Span::styled("   alvo  ", Style::default().fg(MUTED)),
+                Span::styled(
+                    chrome::truncate_width(&item.target, inner.width as usize / 2).to_string(),
+                    Style::default().fg(TEXT),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("detectado  ", Style::default().fg(MUTED)),
+                Span::styled(item.detected_at.clone(), Style::default().fg(TEXT)),
+                Span::styled("   origem  ", Style::default().fg(MUTED)),
+                Span::styled(
+                    item.source.to_string(),
+                    Style::default().fg(if item.source == FindingSource::Real {
+                        SUCCESS
+                    } else {
+                        WARNING
+                    }),
+                ),
+            ]),
             Line::from(""),
             Line::styled("Descrição", Style::default().fg(TEXT).bold()),
         ];
         append_wrapped(&mut lines, &item.description, inner.width as usize, MUTED);
         lines.push(Line::from(""));
+        lines.push(Line::styled("Evidência", Style::default().fg(TEXT).bold()));
+        // A evidência é sanitizada na exibição: é o campo que carrega o trecho
+        // real do scanner e nunca deve exibir credencial ou corpo de requisição.
+        let evidence = crate::utils::redaction::sanitize_text(&item.evidence);
+        append_wrapped(&mut lines, &evidence, inner.width as usize, ACCENT);
+        lines.push(Line::from(""));
+        // A origem no código e a correcao proposta pelo agente de codigo (#76)
+        // vem depois da evidencia: a evidencia prova o que o scanner viu, e a
+        // localizacao aponta onde corrigir.
         append_code_location(
             app,
             &mut lines,
@@ -437,7 +521,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
             inner.width as usize,
             SUCCESS,
         );
-        append_enrichment(&mut lines, item, inner.width as usize);
+        append_enrichment(&mut lines, &item, inner.width as usize);
         let has_scroll = lines.len() > inner.height as usize;
         let indicator_height = u16::from(has_scroll);
         let viewport = Rect::new(

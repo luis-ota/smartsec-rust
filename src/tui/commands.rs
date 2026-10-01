@@ -77,7 +77,7 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
         ]),
         AppStep::ToolSelect => items.extend([
             CommandItem::new("Executar ferramentas", "enter", SemanticAction::RunTools)
-                .enabled(!app.tool_detecting && app.tools.iter().any(|tool| tool.selected)),
+                .enabled(app.tools.iter().any(|tool| tool.selected)),
             CommandItem::new("Voltar ao início", "esc", SemanticAction::Back),
         ]),
         AppStep::Execution => items.extend([
