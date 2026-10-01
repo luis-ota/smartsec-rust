@@ -1,0 +1,17 @@
+        ___
+       __H__
+ ___ ___[']_____ ___ ___  {1.10.4#stable}
+|_ -| . [)]     | .'| . |
+|___|_  [,]_|_|_|__,|  _|
+      |_|V...       |_|   https://sqlmap.org
+
+[*] starting @ 19:17:08 /2026-09-30/
+
+[19:17:08] [WARNING] using '/tmp' as the output directory
+[1/1] URL:
+GET ftp://169.254.1.2:3100/item?id=1
+do you want to test this URL? [Y/n/q]
+> Y
+[19:17:08] [ERROR] invalid target URL, skipping to the next target
+
+[*] ending @ 19:17:08 /2026-09-30/

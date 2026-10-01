@@ -1,9 +1,16 @@
 use crate::ai::agent::AIAgent;
+use crate::ai::analysis_service::AnalysisResult;
+use crate::ai::analysis_service::AnalysisService;
+use crate::code_agent::agent::{CodeAnalysisReport, CodeAnalysisService};
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner};
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::control::{ControlChannel, InterruptionReason, RunControl};
 use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
-use crate::orchestrator::sandbox::{ExecutionResult, ExecutionStatus, PodmanExecutor};
+use crate::orchestrator::enrichment::{correlate_and_enrich, EnrichmentSummary};
+use crate::orchestrator::nvd::NvdClient;
+use crate::orchestrator::sandbox::{self, ExecutionResult, ExecutionStatus, PodmanExecutor};
+use crate::orchestrator::tmpfs;
 use crate::tools::nmap::NmapTool;
 use crate::tools::nuclei::{NucleiTool, NUCLEI_TEMPLATES_COMMIT};
 use crate::tools::registry::{ParserKind, RegisteredTool, RunnerKind, ToolRegistry};
@@ -21,8 +28,14 @@ pub struct Orchestrator {
     pub execution_history: Vec<SecurityTool>,
     pub decision_history: Vec<DecisionRecord>,
     pub findings: Vec<Vulnerability>,
-    pub paused: bool,
-    pub cancelled: bool,
+    /// Canal de pausa, retomada e cancelamento compartilhado com o executor
+    /// Podman e com a interface (REQ14). Substitui as antigas bandeiras
+    /// `paused`/`cancelled`, que nunca chegavam ao container.
+    ///
+    /// O motivo da interrupção mora no canal, e não no orquestrador: a TUI e a
+    /// task de execução são `Orchestrator` distintos ligados só por ele, e o
+    /// log estruturado precisa ver o motivo independente de quem grava.
+    pub control: ControlChannel,
     pub last_log: String,
     /// Sink opcional que recebe ao vivo cada linha do trace operacional do
     /// Podman (TUI e headless). Quando ausente, o trace segue acumulado em
@@ -30,8 +43,18 @@ pub struct Orchestrator {
     pub trace_sink: Option<mpsc::UnboundedSender<String>>,
     /// Notifica a interface assim que o plano do Nuclei é validado.
     pub decision_sink: Option<mpsc::UnboundedSender<DecisionRecord>>,
+    /// Resumo da correlação e do enriquecimento CVE/NVD (issue #19).
+    pub enrichment: EnrichmentSummary,
     started_at: String,
     latest_nmap_output: Option<String>,
+    /// Resultado estruturado da última análise da IA, com modelo, provedor
+    /// efetivo, fallback, motivo da falha e horário.
+    pub last_analysis_result: Option<AnalysisResult>,
+    /// Serviço único de análise, compartilhado pela TUI e pelo modo headless.
+    analysis_service: AnalysisService,
+    /// Relatório da fase do agente de código, com a localização de cada achado
+    /// e o registro auditável de cada chamada de ferramenta.
+    pub last_code_report: Option<CodeAnalysisReport>,
 }
 
 impl Orchestrator {
@@ -45,7 +68,7 @@ impl Orchestrator {
     /// Cria o orquestrador com um registry já validado (evita revalidar a
     /// configuração na TUI).
     pub fn with_registry(mut config: Configuration, registry: ToolRegistry) -> Self {
-        config.provider_mode = format!("{:?}", config.llm.provider);
+        config.provider_mode = config.llm.provider.label().to_string();
         let agent = AIAgent::from_config(&config.llm);
         Self {
             config,
@@ -54,13 +77,16 @@ impl Orchestrator {
             execution_history: Vec::new(),
             decision_history: Vec::new(),
             findings: Vec::new(),
-            paused: false,
-            cancelled: false,
+            control: ControlChannel::new(),
             last_log: String::new(),
             trace_sink: None,
             decision_sink: None,
+            enrichment: EnrichmentSummary::default(),
             started_at: now_iso8601(),
             latest_nmap_output: None,
+            last_analysis_result: None,
+            analysis_service: AnalysisService::new(),
+            last_code_report: None,
         }
     }
 
@@ -78,9 +104,9 @@ impl Orchestrator {
 
     #[allow(dead_code)]
     pub fn status(&self) -> &str {
-        if self.cancelled {
+        if self.control.is_cancelled() {
             "cancelled"
-        } else if self.paused {
+        } else if self.control.is_paused() {
             "paused"
         } else if self.findings.is_empty() {
             "idle"
@@ -89,12 +115,56 @@ impl Orchestrator {
         }
     }
 
+    /// Solicita o cancelamento cooperativo da execução.
+    ///
+    /// A ordem chega ao container em execução pelo canal compartilhado: o
+    /// executor encerra o processo com `podman stop` e remove com
+    /// `podman rm --force`, sem depender de `abort()` da task.
     pub fn cancel_execution(&mut self) {
-        self.cancelled = true;
+        if self.control.is_cancelled() {
+            return;
+        }
+        self.record_interruption(InterruptionReason::user_cancelled());
+        self.control.cancel();
+    }
+
+    /// Solicita a pausa da ferramenta em execução (`podman pause`).
+    pub fn pause_execution(&mut self) {
+        if self.control.is_cancelled() {
+            return;
+        }
+        self.control.pause();
+    }
+
+    /// Retoma a ferramenta pausada (`podman unpause`).
+    pub fn resume_execution(&mut self) {
+        if self.control.is_cancelled() {
+            return;
+        }
+        self.control.resume();
+    }
+
+    /// Grava o motivo da interrupção uma única vez, preservando o primeiro.
+    ///
+    /// A auditoria precisa de um motivo, não de uma sequência: o primeiro
+    /// evento é o que explica por que a varredura parou.
+    pub fn record_interruption(&self, reason: InterruptionReason) {
+        self.control.record_interruption(reason);
+    }
+
+    /// Motivo registrado da interrupção (REQ05 ou REQ14), se houver.
+    pub fn interruption(&self) -> Option<InterruptionReason> {
+        self.control.interruption()
+    }
+
+    /// Indica se a execução foi interrompida por cancelamento ou por sinal.
+    pub fn is_cancelled(&self) -> bool {
+        self.control.is_cancelled()
     }
 
     fn podman_executor(&self) -> PodmanExecutor {
-        let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+        let executor =
+            PodmanExecutor::new(Duration::from_secs(15 * 60)).with_control(&self.control);
         match &self.trace_sink {
             Some(sink) => executor.with_log_sink(sink.clone()),
             None => executor,
@@ -135,7 +205,128 @@ impl Orchestrator {
             RunnerKind::Nmap => self.execute_nmap(&registered, target).await,
             RunnerKind::Nuclei => self.execute_nuclei_with_plan(&registered, target).await,
             RunnerKind::Generic => self.execute_generic(&registered, target).await,
+            RunnerKind::Repository => self.execute_repository(&registered, target).await,
+            RunnerKind::Zap => self.execute_zap(&registered, target).await,
         }
+    }
+
+    /// Executa o ZAP com um plano de automação montado em memória.
+    ///
+    /// O plano é gravado num diretório temporário do host e montado em somente
+    /// leitura, como os templates do Nuclei. O job `report` do ZAP só sabe
+    /// gravar um arquivo — ele sempre acrescenta a extensão do template ao nome
+    /// e não existe parâmetro de saída em stdout (verificado executando o
+    /// container, `docs/evidence/issue-28-zap.md`) —, então o relatório é
+    /// coletado do diretório de saída gravável antes da remoção do container.
+    async fn execute_zap(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
+        let arguments = crate::tools::zap::container_arguments(target).join(" ");
+        let mut exec = SecurityTool::new(&tool.manifest.name, &arguments);
+        exec.tool_version = Some(tool.manifest.version.clone());
+        exec.image = Some(tool.manifest.image.clone());
+        exec.executed_at = now_iso8601();
+
+        let plan = zap_plan_dir();
+        // O plano de automação é a configuração temporária da execução: a regra
+        // do TCC a restringe a tmpfs, então a condição é verificada e não
+        // presumida a partir do TMPDIR do ambiente.
+        if let Err(error) = tmpfs::ensure_tmpfs(&plan) {
+            return self.fail_zap(&mut exec, error.to_string());
+        }
+        if let Err(error) = std::fs::create_dir(&plan) {
+            return self.fail_zap(
+                &mut exec,
+                format!(
+                    "Não foi possível criar o diretório temporário do plano de automação do ZAP em {}: {error}",
+                    plan.display()
+                ),
+            );
+        }
+        let _plan_dir = PlanDirectory(plan.clone());
+        let plan_file = plan.join("scan.yaml");
+        if let Err(error) = std::fs::write(&plan_file, crate::tools::zap::automation_plan(target)) {
+            return self.fail_zap(
+                &mut exec,
+                format!(
+                    "Não foi possível gravar o plano de automação do ZAP em {}: {error}",
+                    plan_file.display()
+                ),
+            );
+        }
+
+        let output = match sandbox::WritableOutput::new(
+            crate::tools::zap::ZAP_OUTPUT_DIR,
+            crate::tools::zap::ZAP_REPORT_FILE,
+        ) {
+            Ok(output) => output
+                .with_memory(crate::tools::zap::ZAP_MEMORY_LIMIT)
+                .with_tmpfs(crate::tools::zap::ZAP_HOME_TMPFS),
+            Err(error) => {
+                // A mensagem do erro já é acionável e nomeia a regra violada.
+                return self.fail_zap(&mut exec, error.to_string());
+            }
+        };
+
+        let executor = self.podman_executor();
+        let result = executor
+            .execute_with_artifact(
+                &tool.manifest.image,
+                &crate::tools::zap::container_arguments(target),
+                &[(plan, crate::tools::zap::ZAP_AUTOMATION_DIR.to_string())],
+                &output,
+            )
+            .await;
+
+        match result {
+            Ok(result) => {
+                exec.podman_trace = result.trace.clone();
+                exec.status = execution_status(&result.status);
+                exec.duration_ms = result.duration.as_millis();
+                exec.stderr = sanitize(&result.stderr);
+                let succeeded =
+                    result.status == ExecutionStatus::Succeeded && result.cleanup_error.is_none();
+                // O relatório coletado é a saída estruturada da ferramenta; o
+                // plano de automação e o trace ficam no log operacional.
+                let diagnostic = podman_output(result.clone());
+                if succeeded {
+                    match result.artifact {
+                        Some(report) => exec.output = report,
+                        None => {
+                            // Artefato ausente não é varredura limpa.
+                            let message = result.artifact_error.unwrap_or_else(|| {
+                                "o ZAP não produziu relatório JSON; a execução precisa ser revisada"
+                                    .to_string()
+                            });
+                            exec.status = "failed".to_string();
+                            exec.execution_error = Some(message);
+                            exec.output = diagnostic;
+                        }
+                    }
+                } else {
+                    exec.execution_error = Some(diagnostic.clone());
+                    exec.output = diagnostic;
+                }
+            }
+            Err(error) => {
+                let message = format!(
+                    "Não foi possível iniciar a varredura real de {}: {error:#}",
+                    tool.manifest.name
+                );
+                exec.status = "failed".to_string();
+                exec.execution_error = Some(message.clone());
+                exec.output = format!("[ERRO] {message}");
+            }
+        }
+        self.execution_history.push(exec.clone());
+        exec
+    }
+
+    /// Registra uma falha de preparação do ZAP sem chamar o Podman.
+    fn fail_zap(&mut self, exec: &mut SecurityTool, message: String) -> SecurityTool {
+        exec.status = "failed".to_string();
+        exec.execution_error = Some(message.clone());
+        exec.output = format!("[ERRO] {message}");
+        self.execution_history.push(exec.clone());
+        exec.clone()
     }
 
     /// Executa o `command_template` do manifesto no executor Podman rootless.
@@ -169,6 +360,68 @@ impl Orchestrator {
                 );
                 exec.output = format!("[ERRO] {message}");
                 exec.execution_error = Some(message);
+            }
+        }
+        self.execution_history.push(exec.clone());
+        exec
+    }
+
+    /// Executa um runner `repository`: o alvo é um repositório, não um host.
+    ///
+    /// O repositório local é canonicalizado e montado **somente leitura** em um
+    /// ponto fixo do container; um alvo remoto autorizado é repassado como URI
+    /// e não gera mount algum. Nenhum caminho do host atravessa o comando, e o
+    /// repositório analisado nunca é montado para escrita nem recebe o resultado
+    /// da varredura.
+    async fn execute_repository(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
+        let repository = match crate::tools::repository::resolve(target) {
+            Ok(repository) => repository,
+            Err(message) => {
+                let mut exec = SecurityTool::new(&tool.manifest.name, target);
+                exec.tool_version = Some(tool.manifest.version.clone());
+                exec.image = Some(tool.manifest.image.clone());
+                exec.executed_at = now_iso8601();
+                exec.status = "failed".to_string();
+                exec.output = format!("[ERRO] {message}");
+                exec.execution_error = Some(message);
+                self.execution_history.push(exec.clone());
+                return exec;
+            }
+        };
+        let container_path = repository.container_path().unwrap_or_default();
+        let arguments =
+            crate::tools::trufflehog::container_arguments(&repository.source_uri(), container_path);
+        let mut exec = SecurityTool::new(&tool.manifest.name, &arguments.join(" "));
+        exec.tool_version = Some(tool.manifest.version.clone());
+        exec.image = Some(tool.manifest.image.clone());
+        exec.executed_at = now_iso8601();
+        let executor = self.podman_executor();
+        let mounts = repository.mounts();
+        match executor
+            .execute_with_mounts(&tool.manifest.image, &arguments, &mounts)
+            .await
+        {
+            Ok(result) => {
+                exec.podman_trace = result.trace.clone();
+                exec.status = execution_status(&result.status);
+                exec.duration_ms = result.duration.as_millis();
+                exec.stderr = sanitize(&result.stderr);
+                let output = podman_output(result);
+                if exec.status != "succeeded" {
+                    exec.execution_error = Some(output.clone());
+                }
+                exec.output = output;
+            }
+            Err(error) => {
+                exec.status = "failed".to_string();
+                exec.execution_error = Some(format!(
+                    "Não foi possível iniciar a varredura real de {}: {error:#}",
+                    tool.manifest.name
+                ));
+                exec.output = format!(
+                    "[ERRO] {}",
+                    exec.execution_error.as_deref().unwrap_or_default()
+                );
             }
         }
         self.execution_history.push(exec.clone());
@@ -295,12 +548,92 @@ impl Orchestrator {
         exec
     }
 
+    /// Interpreta os achados com o serviço único de análise da IA.
+    ///
+    /// Único caminho para a IA interpretar logs, usado pela TUI e pelo modo
+    /// headless. Concentrar a chamada aqui impede que os dois modos voltem a
+    /// divergir (issue #23) e garante que consentimento, teto de 45 s (RNF04),
+    /// validação da resposta e fallback sejam sempre os mesmos.
+    ///
+    /// O serviço é um campo do orquestrador, e não uma instância criada por
+    /// chamada: os dois modos de execução recebem a mesma configuração de prazo,
+    /// o que torna a unificação observável em vez de apenas declarada.
+    pub async fn analyze_findings(&mut self) -> AnalysisResult {
+        let result = self
+            .analysis_service
+            .analyze(&mut self.agent, &self.findings)
+            .await;
+        self.last_log = result.text.clone();
+        self.last_analysis_result = Some(result.clone());
+        result
+    }
+
+    /// Executa a fase do agente de código, depois dos scanners.
+    ///
+    /// A fase é **best effort** por desenho: ela roda depois que os achados já
+    /// estão construídos e não pode impedir o relatório de ser gravado. Se o
+    /// diretório do projeto não puder ser aberto, ou se o provedor não
+    /// suportar tool calling, cada achado recebe "localização não determinada"
+    /// com o motivo registrado, e o pipeline segue para o relatório.
+    ///
+    /// `run_command` **não** recebe allowlist aqui: o agente entra em modo
+    /// somente leitura por padrão, e a execução de comandos exigiria um opt-in
+    /// explícito que não existe no contrato da configuração atual. A ferramenta
+    /// permanece registrada e é recusada com mensagem acionável.
+    pub async fn analyze_code(&mut self) -> CodeAnalysisReport {
+        let project_dir = self.config.effective_project_dir();
+        let report = match CodeAnalysisService::open(
+            &project_dir,
+            crate::code_agent::CodeAgentLimits::default(),
+            Vec::new(),
+        ) {
+            Ok(service) => {
+                let model = self.agent.model.clone();
+                let label = self.agent.configured_provider_label();
+                // RNF10 é consultado **antes** do primeiro turno: o consentimento
+                // que a issue #23 já exige para enviar logs é o mesmo que
+                // precisa cobrir trechos do código do alvo, que são o ativo mais
+                // sensível do cliente. Sem esta checagem, um provedor remoto sem
+                // consentimento receberia o código-fonte auditado.
+                if !self.agent.allows_target_data() {
+                    CodeAnalysisReport::blocked_by_consent(&self.findings, &model, &label)
+                } else {
+                    service
+                        .analyze(self.agent.provider_handle(), &model, &label, &self.findings)
+                        .await
+                }
+            }
+            Err(error) => CodeAnalysisReport::unavailable(&project_dir, &error.to_string()),
+        };
+        self.apply_code_report(&report);
+        self.last_code_report = Some(report);
+        self.last_code_report.clone().unwrap_or_default()
+    }
+
+    /// Escreve a localização e a correção no contrato de cada achado.
+    ///
+    /// O índice do relatório casa com a posição do achado na lista original, e
+    /// é essa correspondência que permite gravar o resultado **sem** reordenar
+    /// nem reclassificar: a severidade continua exatamente a que o scanner
+    /// produziu.
+    fn apply_code_report(&mut self, report: &CodeAnalysisReport) {
+        for analysis in &report.findings {
+            let Some(finding) = self.findings.get_mut(analysis.finding_index) else {
+                continue;
+            };
+            finding.code_location = analysis.location.clone();
+            finding.code_remediation = analysis.remediation.clone();
+        }
+    }
+
     async fn request_nuclei_plan(&mut self, target: &str) -> Option<String> {
         let prompt = nuclei_plan_prompt(
             target,
             self.latest_nmap_output.as_deref().unwrap_or_default(),
         );
-        self.agent.execute_with_fallback(&prompt).await.ok()
+        self.analysis_service
+            .request(&mut self.agent, &prompt)
+            .await
     }
 
     /// Constrói os achados reais a partir da execução dos scanners.
@@ -367,9 +700,58 @@ impl Orchestrator {
                         exec.status = "failed".to_string();
                     }
                 }
+                ParserKind::SqlmapText => {
+                    let (parsed, errors) =
+                        crate::orchestrator::sqlmap_parser::parse_sqlmap_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
+                ParserKind::TruffleHogJsonl => {
+                    let (parsed, errors) =
+                        crate::orchestrator::trufflehog_parser::parse_trufflehog_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
+                ParserKind::ZapJson => {
+                    let (parsed, errors) =
+                        crate::orchestrator::zap_parser::parse_zap_findings_with_errors(
+                            &exec.output,
+                            &target,
+                        );
+                    real_findings.extend(parsed);
+                    if exec.execution_error.is_none() && !errors.is_empty() {
+                        exec.execution_error = Some(errors.join("; "));
+                        exec.status = "failed".to_string();
+                    }
+                }
             }
         }
         self.findings = real_findings;
+    }
+
+    /// Correlaciona os achados e enriquece cada grupo com os dados da NVD.
+    ///
+    /// Roda depois de [`build_findings`](Self::build_findings). A indisponibilidade
+    /// da NVD não impede o resultado: os achados voltam consolidados e a causa
+    /// fica em `self.enrichment.nvd`, visível na TUI, no headless e no relatório.
+    pub async fn correlate_and_enrich_findings(&mut self) {
+        let client = NvdClient::new().ok();
+        let (findings, summary) =
+            correlate_and_enrich(self.findings.clone(), client.as_ref()).await;
+        self.findings = findings;
+        self.enrichment = summary;
     }
 
     fn nuclei_templates_path(&self) -> PathBuf {
@@ -384,6 +766,12 @@ impl Orchestrator {
             })
     }
 
+    /// Executa as ferramentas selecionados respeitando pausa, retomada,
+    /// cancelamento e a regra automática de interrupção.
+    ///
+    /// O cancelamento encerra o container em execução de forma cooperativa pelo
+    /// canal compartilhado; a pausa e a retomada viram `podman pause` e
+    /// `podman unpause` no container real, não apenas uma pausa do laço.
     #[allow(dead_code)]
     pub async fn run_full_pipeline(
         &mut self,
@@ -391,25 +779,45 @@ impl Orchestrator {
     ) -> Result<Vec<Vulnerability>, anyhow::Error> {
         let target = self.config.target_url.clone();
         for tool in selected {
-            if self.cancelled {
+            if self.control.wait_while_paused().await == RunControl::Cancelled {
                 break;
             }
-            if self.paused {
-                loop {
-                    if !self.paused || self.cancelled {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
+            if let Some(reason) = self.interrupt_after_findings(tool.name.as_str()) {
+                self.record_interruption(reason);
+                break;
             }
             let _exec = self.execute_tool(tool, &target).await;
         }
 
         self.build_findings();
+        self.correlate_and_enrich_findings().await;
 
-        let analysis = self.agent.analyze_logs(&self.findings).await;
-        self.last_log = analysis;
+        let analysis = self.analyze_findings().await;
+        self.last_log = analysis.text;
         Ok(self.findings.clone())
+    }
+
+    /// Avalia a regra automática de interrupção (REQ05) antes da próxima
+    /// ferramenta, contando os achados das execuções já concluídas.
+    ///
+    /// Avaliar **entre** ferramentas evita matar o container que acabou de
+    /// produzir a evidência: o relatório preserva tudo o que foi coletado.
+    pub fn interrupt_after_findings(&mut self, tool_name: &str) -> Option<InterruptionReason> {
+        if self.control.is_cancelled() {
+            return None;
+        }
+        let threshold = self.config.max_critical_findings;
+        if threshold == 0 {
+            return None;
+        }
+        self.build_findings();
+        let critical = self
+            .findings
+            .iter()
+            .filter(|finding| finding.severity == crate::domain::Severity::Critical)
+            .count();
+        (critical >= threshold)
+            .then(|| InterruptionReason::max_critical_findings(critical, threshold, tool_name))
     }
 
     pub fn persist_scan_log(&self) -> anyhow::Result<std::path::PathBuf> {
@@ -465,7 +873,19 @@ impl Orchestrator {
                 .iter()
                 .map(DecisionRecord::sanitized)
                 .collect(),
+            enrichment: self.enrichment.clone(),
+            interruption: self.control.interruption(),
             ..metadata
+        };
+        let metadata = match &self.last_analysis_result {
+            Some(result) => metadata.with_analysis(result),
+            None => metadata,
+        };
+        let metadata = match &self.last_code_report {
+            Some(report) => {
+                metadata.with_code_analysis(report, &self.config.effective_project_dir())
+            }
+            None => metadata,
         };
         crate::orchestrator::scan_logger::save_scan_log(&metadata)
     }
@@ -473,6 +893,32 @@ impl Orchestrator {
 
 fn now_iso8601() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// Diretório temporário que recebe o plano de automação do ZAP.
+///
+/// O plano é gerado em memória e gravado aqui; o executor o monta em somente
+/// leitura no container. O diretório vive no `TMPDIR` do host, é específico
+/// desta execução e é removido ao final.
+fn zap_plan_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "smartsec-zap-plano-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
+}
+
+/// Remove o diretório do plano de automação ao final da execução, inclusive nos
+/// caminhos de erro e de cancelamento.
+struct PlanDirectory(std::path::PathBuf);
+
+impl Drop for PlanDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn podman_output(result: ExecutionResult) -> String {
@@ -497,6 +943,10 @@ fn podman_output(result: ExecutionResult) -> String {
             "[ERRO] O container {} excedeu o tempo limite de 15 minutos.{}",
             result.container_id, cleanup_error
         ),
+        ExecutionStatus::Cancelled => format!(
+            "Execução cancelada: o container {} foi interrompido e removido.{}",
+            result.container_id, cleanup_error
+        ),
     }
 }
 
@@ -514,6 +964,7 @@ fn execution_status(status: &ExecutionStatus) -> String {
             code.map_or_else(|| "unknown".to_string(), |c| c.to_string())
         ),
         ExecutionStatus::TimedOut => "timeout".to_string(),
+        ExecutionStatus::Cancelled => "cancelled".to_string(),
     }
 }
 
@@ -609,15 +1060,15 @@ mod tests {
     fn build_findings_dispatches_the_parser_registered_for_the_tool() {
         let mut config = make_config();
         config.tools.push(ToolManifest {
-            name: "ZAP".to_string(),
+            name: "ScannerExemplo".to_string(),
             description: "Scanner de servidores web".to_string(),
             category: "DAST".to_string(),
-            image: "example/zap:1".to_string(),
+            image: "example/scanner:1".to_string(),
             version: "1.0".to_string(),
             runner: crate::tools::registry::RUNNER_GENERIC.to_string(),
             parser: crate::tools::registry::PARSER_GENERIC_TEXT.to_string(),
             command_template: vec![
-                "zap".to_string(),
+                "scanner".to_string(),
                 "-host".to_string(),
                 "{target}".to_string(),
             ],
@@ -625,15 +1076,345 @@ mod tests {
             enabled: true,
         });
         let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
-        let mut execution = SecurityTool::new("ZAP", "zap -host http://test.local");
+        let mut execution = SecurityTool::new("ScannerExemplo", "scanner -host http://test.local");
         execution.output = "Servidor expõe /admin sem autenticação\n".to_string();
         orch.execution_history.push(execution);
 
         orch.build_findings();
 
         assert_eq!(orch.findings.len(), 1);
-        assert_eq!(orch.findings[0].tool, "ZAP");
+        assert_eq!(orch.findings[0].tool, "ScannerExemplo");
         assert_eq!(orch.findings[0].severity, crate::domain::Severity::Info);
+    }
+
+    fn critical_finding(tool: &str, title: &str) -> Vulnerability {
+        Vulnerability {
+            title: title.to_string(),
+            severity: crate::domain::Severity::Critical,
+            description: "Descrição".to_string(),
+            tool: tool.to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: crate::domain::vulnerability::FindingSource::Real,
+            target: "http://test.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
+            ..Default::default()
+        }
+    }
+
+    /// Orquestrador com uma execução real do parser que produz severidade
+    /// `critical` a partir da saída do próprio scanner.
+    fn recording_orchestrator(threshold: usize, tool_name: &str) -> Orchestrator {
+        let mut config = make_config();
+        config.max_critical_findings = threshold;
+        config.tools.push(ToolManifest {
+            name: tool_name.to_string(),
+            description: "Scanner de teste".to_string(),
+            category: "DAST".to_string(),
+            image: "example/scanner:1".to_string(),
+            version: "1.0".to_string(),
+            runner: crate::tools::registry::RUNNER_GENERIC.to_string(),
+            parser: crate::tools::registry::PARSER_NUCLEI_JSONL.to_string(),
+            command_template: vec!["scan".to_string(), "{target}".to_string()],
+            output_format: "jsonl".to_string(),
+            enabled: true,
+        });
+        let mut orchestrator = Orchestrator::new(config).expect("configuração de teste válida");
+        let mut execution = SecurityTool::new(tool_name, "scan http://test.local");
+        execution.status = "succeeded".to_string();
+        execution.output = concat!(
+            r#"{"template-id":"CVE-2021-44228","info":{"name":"Log4Shell RCE","severity":"critical"},"matched-at":"http://test.local/","matcher-name":"jndi-injection"}"#,
+            "\n"
+        )
+        .to_string();
+        orchestrator.execution_history.push(execution);
+        orchestrator
+    }
+
+    #[test]
+    fn the_automatic_rule_fires_at_the_threshold_and_records_the_reason() {
+        let mut orch = recording_orchestrator(1, "ScannerExemplo");
+
+        let reason = orch
+            .interrupt_after_findings("Nikto")
+            .expect("um achado crítico com limiar 1 deve interromper");
+
+        assert_eq!(reason.rule, "max_critical_findings");
+        assert_eq!(reason.threshold, Some(1));
+        assert_eq!(reason.critical_count, 1);
+        assert_eq!(reason.tool.as_deref(), Some("Nikto"));
+        assert!(reason.message.contains("limite de 1"), "{}", reason.message);
+        assert!(!orch.is_cancelled(), "a regra não vira cancelamento");
+    }
+
+    #[test]
+    fn the_automatic_rule_does_not_fire_below_the_threshold_or_when_disabled() {
+        // Limiar 2 com um achado crítico: nada acontece.
+        assert!(recording_orchestrator(2, "ScannerExemplo")
+            .interrupt_after_findings("Nikto")
+            .is_none());
+
+        // Limiar 0 significa regra desativada (padrão retrocompatível).
+        let mut disabled = recording_orchestrator(0, "ScannerExemplo");
+        assert!(disabled.interrupt_after_findings("Nikto").is_none());
+    }
+
+    #[test]
+    fn the_first_interruption_reason_is_the_one_kept_for_audit() {
+        let mut orch = recording_orchestrator(1, "ScannerExemplo");
+        let rule = orch
+            .interrupt_after_findings("Nikto")
+            .expect("a regra deve disparar");
+        orch.record_interruption(rule);
+        let user = crate::orchestrator::control::InterruptionReason::user_cancelled();
+        orch.record_interruption(user.clone());
+
+        let recorded = orch
+            .interruption()
+            .expect("o motivo precisa ser preservado");
+        assert_eq!(recorded.rule, "max_critical_findings");
+        assert_ne!(recorded.rule, user.rule);
+    }
+
+    #[test]
+    fn the_recorded_reason_is_recoverable_from_the_persisted_scan_log() {
+        let mut orch = recording_orchestrator(1, "ScannerExemplo");
+        let reason = orch
+            .interrupt_after_findings("Nikto")
+            .expect("a regra deve disparar");
+        orch.record_interruption(reason);
+        orch.findings = vec![critical_finding("ScannerExemplo", "Achado crítico")];
+
+        let metadata = crate::orchestrator::scan_logger::ScanMetadata {
+            interruption: orch.interruption(),
+            ..crate::orchestrator::scan_logger::ScanMetadata::new(
+                "scan_regra".to_string(),
+                "http://test.local".to_string(),
+                "2026-09-30T12:00:00Z".to_string(),
+                "2026-09-30T12:05:00Z".to_string(),
+                "Auto".to_string(),
+                "Ollama".to_string(),
+                Vec::new(),
+                orch.findings.clone(),
+                "análise".to_string(),
+            )
+        };
+
+        let json = serde_json::to_string(&metadata).expect("serialização do log");
+        let restored: crate::orchestrator::scan_logger::ScanMetadata =
+            serde_json::from_str(&json).expect("leitura do log");
+        let interruption = restored
+            .interruption
+            .expect("o motivo precisa ser persistido");
+        assert_eq!(interruption.rule, "max_critical_findings");
+        assert_eq!(interruption.threshold, Some(1));
+        assert!(interruption.message.contains("limite de 1"));
+    }
+
+    #[test]
+    fn a_scan_log_written_before_this_feature_still_loads() {
+        let metadata = crate::orchestrator::scan_logger::ScanMetadata::new(
+            "scan_legacy".to_string(),
+            "http://test.local".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+            "2026-01-01T00:05:00Z".to_string(),
+            "Auto".to_string(),
+            "Ollama".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "análise".to_string(),
+        );
+        let mut legacy = serde_json::to_value(&metadata).unwrap();
+        legacy.as_object_mut().unwrap().remove("interruption");
+
+        let restored: crate::orchestrator::scan_logger::ScanMetadata =
+            serde_json::from_value(legacy).expect("histórico antigo precisa continuar legível");
+
+        assert!(restored.interruption.is_none());
+    }
+
+    /// A fase do agente de código grava a origem no achado sem reordenar a lista
+    /// nem reclassificar a severidade.
+    ///
+    /// É o contrato público da issue #76: o scanner continua sendo a
+    /// autoridade da severidade (TCC_SPEC, seção 7) e o agente apenas aponta
+    /// onde corrigir. Um teste que passasse mesmo reordenando os achados não
+    /// provaria nada.
+    #[tokio::test]
+    async fn the_code_phase_writes_the_location_without_touching_severity() {
+        use crate::domain::vulnerability::CodeLocation;
+        use crate::domain::vulnerability::FindingSource;
+
+        let mut config = make_config();
+        config.project_dir = Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/codebase")
+                .display()
+                .to_string(),
+        );
+        let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
+
+        let mut first = Vulnerability {
+            title: "Autenticação fraca".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "Descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: FindingSource::Real,
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
+        };
+        let mut second = first.clone();
+        first.title = "Primeiro achado".to_string();
+        second.title = "Segundo achado".to_string();
+        second.severity = crate::domain::Severity::Info;
+        orch.findings = vec![first, second];
+
+        // Relatório sintético da fase: reproduz o que o agente produz sem
+        // depender de provedor, e exercita a escrita no contrato de findings.
+        let report = crate::code_agent::agent::CodeAnalysisReport {
+            findings: vec![
+                crate::code_agent::agent::FindingCodeAnalysis {
+                    finding_index: 1,
+                    location: Some(CodeLocation {
+                        file: "src/nested/deep.py".to_string(),
+                        line: 2,
+                        snippet: "def login():".to_string(),
+                    }),
+                    remediation: vec!["Encadeie a auditoria".to_string()],
+                    reason: None,
+                    model: "gpt-4o".to_string(),
+                    provider: "OpenAI".to_string(),
+                    tool_calls: 2,
+                    fallback_used: false,
+                },
+                crate::code_agent::agent::FindingCodeAnalysis {
+                    finding_index: 0,
+                    location: None,
+                    remediation: Vec::new(),
+                    reason: Some("o provedor não implementa tool calling".to_string()),
+                    model: "gpt-4o".to_string(),
+                    provider: "OpenAI".to_string(),
+                    tool_calls: 0,
+                    fallback_used: true,
+                },
+            ],
+            tool_calls: Vec::new(),
+            unavailable_reason: None,
+        };
+        orch.apply_code_report(&report);
+
+        // A ordem original é preservada e cada resultado foi para o índice certo.
+        assert_eq!(orch.findings[0].title, "Primeiro achado");
+        assert_eq!(orch.findings[1].title, "Segundo achado");
+        assert!(orch.findings[0].code_location.is_none());
+        assert!(orch.findings[0].code_remediation.is_empty());
+        assert_eq!(
+            orch.findings[1]
+                .code_location
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("src/nested/deep.py:2")
+        );
+        assert_eq!(
+            orch.findings[1].code_remediation,
+            vec!["Encadeie a auditoria".to_string()]
+        );
+
+        // A severidade do scanner não muda.
+        assert_eq!(orch.findings[0].severity, crate::domain::Severity::High);
+        assert_eq!(orch.findings[1].severity, crate::domain::Severity::Info);
+    }
+
+    /// Um `--project` que não existe não pode derrubar o scan: a fase registra
+    /// o motivo e o fluxo segue até o relatório.
+    #[tokio::test]
+    async fn an_unreadable_project_reports_the_reason_without_failing_the_scan() {
+        let mut config = make_config();
+        config.project_dir = Some("/caminho/que/nao/existe".to_string());
+        let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
+        orch.findings = vec![Vulnerability {
+            title: "Achado".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "Descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: crate::domain::vulnerability::FindingSource::Real,
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
+        }];
+
+        let report = orch.analyze_code().await;
+
+        let reason = report
+            .unavailable_reason
+            .as_deref()
+            .expect("a fase precisa registrar o motivo");
+        assert!(reason.contains("/caminho/que/nao/existe"), "{reason}");
+        assert!(orch.findings[0].code_location.is_none());
+        assert_eq!(report.located_count(), 0);
+    }
+
+    /// Sem consentimento remoto, a fase não abre turno nenhum e diz por quê.
+    ///
+    /// O provedor configurado é um Ollama local por padrão, o que não exige
+    /// consentimento; o teste força um provedor remoto sem consentimento.
+    #[tokio::test]
+    async fn a_remote_provider_without_consent_blocks_the_code_phase() {
+        let mut config = make_config();
+        config.llm = crate::config::llm_config::LlmConfig {
+            provider: crate::config::llm_config::LlmProviderKind::OpenAI,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key: "chave-de-teste".to_string(),
+            remote_consent: false,
+            ..crate::config::llm_config::LlmConfig::default()
+        };
+        // `validate` exigiria consentimento para um provedor remoto; o
+        // orquestrador é construído direto para reproduzir o estado herdado de
+        // uma configuração remota sem consentimento.
+        let mut orch = Orchestrator::with_registry(
+            config,
+            ToolRegistry::with_configured(&[]).expect("catálogo padrão"),
+        );
+        orch.findings = vec![Vulnerability {
+            title: "Segredo no código".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "Descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: crate::domain::vulnerability::FindingSource::Real,
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
+        }];
+
+        let report = orch.analyze_code().await;
+
+        assert_eq!(report.tool_calls.len(), 0, "nenhuma ferramenta pode rodar");
+        assert!(orch.findings[0].code_location.is_none());
+        assert_eq!(report.findings.len(), 1);
+        assert!(
+            report.findings[0]
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("RNF10")),
+            "{:?}",
+            report.findings[0].reason
+        );
     }
 
     #[tokio::test]
@@ -753,6 +1534,127 @@ mod tests {
         let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
         let timeout = "[ERRO] O container smartsec-abc excedeu o tempo limite de 15 minutos.";
         let mut execution = nikto_execution(timeout, "timeout");
+        execution.execution_error = Some(timeout.to_string());
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        let stored = &orch.execution_history[0];
+        assert_eq!(stored.status, "timeout");
+        assert!(stored
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("tempo limite")));
+        assert!(orch.findings.is_empty());
+    }
+
+    fn zap_execution(output: &str, status: &str) -> SecurityTool {
+        let mut execution = SecurityTool::new(
+            "ZAP",
+            "zap.sh -Xmx1024m -cmd -autorun /zap/automation/scan.yaml -config spider.scope=http://test.local",
+        );
+        execution.output = output.to_string();
+        execution.status = status.to_string();
+        execution
+    }
+
+    #[test]
+    fn build_findings_uses_the_zap_parser_registered_for_the_builtin_tool() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let report = include_str!("../../tests/fixtures/zap/relatorio.json");
+        orch.execution_history
+            .push(zap_execution(report, "succeeded"));
+
+        orch.build_findings();
+
+        assert_eq!(orch.findings.len(), 4);
+        assert!(orch.findings.iter().all(|f| f.tool == "ZAP"));
+        assert!(orch
+            .findings
+            .iter()
+            .all(|f| f.source == crate::domain::vulnerability::FindingSource::Real));
+        // A severidade vem do riskcode do ZAP, não do texto do alerta.
+        assert_eq!(orch.findings[0].severity, crate::domain::Severity::Medium);
+        assert_eq!(orch.findings[2].severity, crate::domain::Severity::Low);
+        assert!(orch.findings[0]
+            .evidence
+            .contains("url: http://169.254.1.2:3000/"));
+        assert!(orch
+            .execution_history
+            .iter()
+            .all(|execution| execution.execution_error.is_none()));
+    }
+
+    #[test]
+    fn invalid_zap_output_marks_the_execution_as_failed() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let invalid = include_str!("../../tests/fixtures/zap/invalido.json");
+        orch.execution_history
+            .push(zap_execution(invalid, "succeeded"));
+
+        orch.build_findings();
+
+        assert!(orch.findings.is_empty());
+        let execution = &orch.execution_history[0];
+        assert_eq!(execution.status, "failed");
+        assert!(execution
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("JSON do ZAP inválido")));
+    }
+
+    #[test]
+    fn a_zap_missing_artifact_is_kept_as_an_execution_error() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let mut execution = zap_execution(
+            "artefato /smartsec-out/zap-report.json não coletado",
+            "failed",
+        );
+        execution.execution_error = Some(
+            "o container /smartsec-out/zap-report.json não gerou o relatório; revise o trace do Podman e o plano de automação da ferramenta"
+                .to_string(),
+        );
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        let stored = &orch.execution_history[0];
+        assert_eq!(stored.status, "failed");
+        assert!(stored
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("não gerou o relatório")));
+        // Uma saída que não é relatório nunca vira varredura limpa.
+        assert!(orch.findings.is_empty());
+    }
+
+    #[test]
+    fn a_zap_failure_keeps_the_original_execution_error() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let mut execution = zap_execution(
+            "[ERRO] O container smartsec-abc encerrou com status 125",
+            "failed:125",
+        );
+        execution.execution_error =
+            Some("O container smartsec-abc encerrou com status 125".to_string());
+        orch.execution_history.push(execution);
+
+        orch.build_findings();
+
+        let stored = &orch.execution_history[0];
+        assert_eq!(stored.status, "failed:125");
+        assert!(stored
+            .execution_error
+            .as_deref()
+            .is_some_and(|error| error.contains("encerrou com status 125")));
+        assert!(orch.findings.is_empty());
+    }
+
+    #[test]
+    fn a_zap_timeout_is_kept_as_timeout_and_produces_no_findings() {
+        let mut orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+        let timeout = "[ERRO] O container smartsec-abc excedeu o tempo limite de 15 minutos.";
+        let mut execution = zap_execution(timeout, "timeout");
         execution.execution_error = Some(timeout.to_string());
         orch.execution_history.push(execution);
 

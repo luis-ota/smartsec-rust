@@ -82,6 +82,7 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect, title: &str) {
         AppStep::Execution => "03",
         AppStep::Analysis => "04",
         AppStep::Results => "05",
+        AppStep::History => "06",
     };
     let left = format!(" SmartSec  /  {title}");
     let target_width = area.width.saturating_sub(left.width() as u16 + 10) as usize;
@@ -97,7 +98,7 @@ fn render_header(app: &AppState, frame: &mut Frame, area: Rect, title: &str) {
         ),
         Span::styled(" / ", Style::default().fg(BORDER)),
         Span::styled(title.to_string(), Style::default().fg(TEXT).bold()),
-        Span::styled(format!("  {step}/05"), Style::default().fg(MUTED)),
+        Span::styled(format!("  {step}/06"), Style::default().fg(MUTED)),
         Span::styled(format!("  {target}"), Style::default().fg(MUTED)),
     ]);
     let block = Block::default()

@@ -47,6 +47,20 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return dispatch_action(app, SemanticAction::OpenTraceability);
     }
 
+    // Atalhos de pausa, retomada e cancelamento durante a execução. Fica antes
+    // das camadas sobrepostas para que elas continuem capturando as teclas.
+    if app.step == AppStep::Execution && !app.has_blocking_layer() {
+        match key.code {
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                return dispatch_action(app, execution_toggle_pause(app));
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                return dispatch_action(app, SemanticAction::CancelRun);
+            }
+            _ => {}
+        }
+    }
+
     if app.show_trace_overlay {
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return dispatch_action(app, SemanticAction::OpenCommandPalette);
@@ -80,7 +94,21 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return dispatch_action(app, SemanticAction::OpenHelp);
     }
 
+    if key.code == KeyCode::Char('h') && !accepts_text(app) && app.step != AppStep::Execution {
+        return dispatch_action(app, SemanticAction::OpenHistory);
+    }
+
     key_action(app, key).is_some_and(|action| dispatch_action(app, action))
+}
+
+/// Alterna pausa e retomada na tela de execução; pausa vira `podman pause` e
+/// retomada vira `podman unpause` no container real.
+fn execution_toggle_pause(app: &AppState) -> SemanticAction {
+    if app.exec_paused {
+        SemanticAction::ResumeRun
+    } else {
+        SemanticAction::PauseRun
+    }
 }
 
 fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
@@ -152,6 +180,7 @@ fn accepts_text(app: &AppState) -> bool {
                     | SettingsField::Retries
                     | SettingsField::FallbackBaseUrl
                     | SettingsField::FallbackModel
+                    | SettingsField::ProjectDir
             )
         );
     }
@@ -205,6 +234,8 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::RunTools => run_tools(app),
         SemanticAction::ScrollUp => scroll(app, false, 3),
         SemanticAction::ScrollDown => scroll(app, true, 3),
+        SemanticAction::PauseRun => pause_execution(app),
+        SemanticAction::ResumeRun => resume_execution(app),
         SemanticAction::CancelRun => cancel_execution(app),
         SemanticAction::OpenVulnerability(index) => open_vulnerability(app, index),
         SemanticAction::ExportMarkdown => export_markdown(app),
@@ -229,6 +260,8 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::DeleteBackward => delete_backward(app),
         SemanticAction::ClearText => clear_text(app),
         SemanticAction::OpenHelp => open_help(app),
+        SemanticAction::OpenHistory => app.open_history(),
+        SemanticAction::OpenHistoryRecord(index) => app.open_history_record(index),
         SemanticAction::OpenReportViewer => open_report_viewer(app),
         SemanticAction::OpenTraceability => open_traceability(app),
         SemanticAction::OpenCommandPalette => open_command_palette(app),
@@ -282,7 +315,11 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
             FocusTarget::ToolBack,
             FocusTarget::ToolRun,
         ],
-        AppStep::Execution => vec![FocusTarget::ExecutionLogs, FocusTarget::ExecutionCancel],
+        AppStep::Execution => vec![
+            FocusTarget::ExecutionLogs,
+            FocusTarget::ExecutionPause,
+            FocusTarget::ExecutionCancel,
+        ],
         AppStep::Analysis => vec![FocusTarget::AnalysisCancel],
         AppStep::Results if app.result_detail_vuln.is_some() => {
             vec![
@@ -297,6 +334,13 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
             FocusTarget::ResultsExport,
             FocusTarget::ResultsDidactic,
         ],
+        AppStep::History => {
+            if app.history_detail.is_some() {
+                vec![FocusTarget::HistoryDetail, FocusTarget::HistoryBack]
+            } else {
+                vec![FocusTarget::HistoryList, FocusTarget::HistoryBack]
+            }
+        }
     }
 }
 
@@ -321,6 +365,8 @@ fn move_vertical(app: &mut AppState, down: bool) {
             move_result_cursor(app, down)
         }
         FocusTarget::ResultsDetail => scroll_detail(app, down, 1),
+        FocusTarget::HistoryList => move_history_cursor(app, down),
+        FocusTarget::HistoryDetail => scroll_history_detail(app, down, 1),
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent | FocusTarget::ReportClose => {
             scroll(app, down, 1)
         }
@@ -355,12 +401,18 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::ToolBack
         | FocusTarget::AnalysisCancel
         | FocusTarget::ResultsBack
-        | FocusTarget::DidacticBack => SemanticAction::Back,
+        | FocusTarget::DidacticBack
+        | FocusTarget::HistoryBack => SemanticAction::Back,
         FocusTarget::ToolRun => SemanticAction::RunTools,
+        FocusTarget::ExecutionPause if !app.exec_cancelled => execution_toggle_pause(app),
+        FocusTarget::ExecutionPause => return,
         FocusTarget::ExecutionCancel if !app.exec_cancelled => SemanticAction::CancelRun,
         FocusTarget::ExecutionCancel => return,
-        FocusTarget::ExecutionLogs | FocusTarget::DidacticContent => return,
+        FocusTarget::ExecutionLogs | FocusTarget::DidacticContent | FocusTarget::HistoryDetail => {
+            return
+        }
         FocusTarget::ResultsList => SemanticAction::OpenVulnerability(app.result_cursor),
+        FocusTarget::HistoryList => SemanticAction::OpenHistoryRecord(app.history_cursor),
         FocusTarget::ResultsDetail => return,
         FocusTarget::ResultsNewScan => SemanticAction::NewScan,
         FocusTarget::ResultsExport => SemanticAction::ExportMarkdown,
@@ -419,7 +471,6 @@ fn go_back(app: &mut AppState) -> bool {
         app.focus = FocusTarget::ResultsList;
         return false;
     }
-
     match app.step {
         AppStep::Splash => return true,
         AppStep::ToolSelect => new_scan(app),
@@ -429,12 +480,26 @@ fn go_back(app: &mut AppState) -> bool {
             app.focus = FocusTarget::ToolList;
         }
         AppStep::Analysis => {
-            app.orchestrator.cancelled = true;
+            app.cancel_run();
             app.step = AppStep::ToolSelect;
-            app.tool_detecting = false;
             app.focus = FocusTarget::ToolList;
         }
         AppStep::Results => new_scan(app),
+        AppStep::History => {
+            if app.history_detail.is_some() {
+                app.history_detail = None;
+                app.history_detail_scroll = 0;
+                app.history_detail_max_scroll = 0;
+                app.focus = FocusTarget::HistoryList;
+            } else {
+                app.step = app.history_return_step;
+                app.focus = if app.step == AppStep::Results {
+                    FocusTarget::ResultsList
+                } else {
+                    FocusTarget::SplashTarget
+                };
+            }
+        }
     }
     false
 }
@@ -442,30 +507,23 @@ fn go_back(app: &mut AppState) -> bool {
 fn start_scan(app: &mut AppState) {
     app.config.target_url = app.config.target_url.trim().to_string();
     if let Err(error) = app.config.validate_target() {
-        app.run_error = Some(error);
+        app.record_run_issue(crate::tui::state::RunIssueScope::Validation, error);
         app.focus = FocusTarget::SplashTarget;
         return;
     }
-    app.run_error = None;
+    app.clear_run_issues();
     app.step = AppStep::ToolSelect;
-    app.tool_detecting = true;
-    app.tool_detect_tick = 0;
     app.focus = FocusTarget::ToolList;
 }
 
 fn run_tools(app: &mut AppState) {
-    if app.step == AppStep::ToolSelect
-        && !app.tool_detecting
-        && app.tools.iter().any(|tool| tool.selected)
-    {
-        app.step = AppStep::Execution;
-        app.focus = FocusTarget::ExecutionLogs;
-        app.init_execution();
+    if app.step == AppStep::ToolSelect && app.tools.iter().any(|tool| tool.selected) {
+        app.start_selected_tools();
     }
 }
 
 fn toggle_tool(app: &mut AppState, index: usize) {
-    if app.step == AppStep::ToolSelect && !app.tool_detecting {
+    if app.step == AppStep::ToolSelect {
         if let Some(tool) = app.tools.get_mut(index) {
             tool.selected = !tool.selected;
             app.tool_cursor = index;
@@ -565,6 +623,16 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
                 move_tool_cursor(app, down);
             }
         }
+        AppStep::History => {
+            if app.history_detail.is_some() {
+                scroll_history_detail(app, down, amount);
+            } else {
+                for _ in 0..amount {
+                    move_history_cursor(app, down);
+                }
+                app.focus = FocusTarget::HistoryList;
+            }
+        }
         AppStep::Execution => {
             app.focus = FocusTarget::ExecutionLogs;
             let max_scroll = app.log_max_scroll();
@@ -596,6 +664,30 @@ fn scroll_detail(app: &mut AppState, down: bool, amount: usize) {
             .min(app.detail_max_scroll)
     } else {
         app.detail_scroll.saturating_sub(amount)
+    };
+}
+
+fn move_history_cursor(app: &mut AppState, down: bool) {
+    let count = app.history.records.len();
+    if count == 0 {
+        app.history_cursor = 0;
+        app.history_scroll = 0;
+        return;
+    }
+    if down {
+        app.history_cursor = (app.history_cursor + 1).min(count - 1);
+    } else {
+        app.history_cursor = app.history_cursor.saturating_sub(1);
+    }
+}
+
+fn scroll_history_detail(app: &mut AppState, down: bool, amount: usize) {
+    app.history_detail_scroll = if down {
+        app.history_detail_scroll
+            .saturating_add(amount)
+            .min(app.history_detail_max_scroll)
+    } else {
+        app.history_detail_scroll.saturating_sub(amount)
     };
 }
 
@@ -681,31 +773,62 @@ fn execute_command(app: &mut AppState, index: usize) -> bool {
     dispatch_action(app, item.action)
 }
 
-fn cancel_execution(app: &mut AppState) {
+fn pause_execution(app: &mut AppState) {
     if app.step == AppStep::Execution {
+        app.pause_run();
+    }
+}
+
+fn resume_execution(app: &mut AppState) {
+    if app.step == AppStep::Execution {
+        app.resume_run();
+    }
+}
+
+fn cancel_execution(app: &mut AppState) {
+    if matches!(app.step, AppStep::Execution | AppStep::Analysis) {
         app.cancel_run();
-    } else if app.step == AppStep::Analysis {
-        app.orchestrator.cancelled = true;
         app.step = AppStep::ToolSelect;
         app.focus = FocusTarget::ToolList;
     }
 }
 
+/// Exporta o relatório nos caminhos pedidos por `output_file`/`output_dir`.
+///
+/// A TUI usava antes um `smartsec-report.md` fixo no diretório atual e ignorava
+/// a configuração; agora ela compartilha `report::resolve_report_path` com o
+/// modo headless, para que os dois modos gravem onde o usuário pediu.
 fn export_markdown(app: &mut AppState) {
     if app.step == AppStep::Results {
-        match std::fs::write("smartsec-report.md", app.export_md()) {
-            Ok(()) => {
+        let report = app.export_md();
+        let exported = (|| -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+            let markdown = crate::report::resolve_report_path(&app.config)?;
+            let pdf = crate::report::resolve_pdf_path(&markdown);
+            crate::report::ReportGenerator::export_to_markdown(
+                &report,
+                &markdown.to_string_lossy(),
+            )?;
+            crate::report::ReportGenerator::export_to_pdf(&report, &pdf.to_string_lossy())?;
+            Ok((markdown, pdf))
+        })();
+        match exported {
+            Ok((markdown, pdf)) => {
                 app.md_exported = true;
-                app.exported_report_path = Some(
-                    std::env::current_dir()
-                        .map(|dir| dir.join("smartsec-report.md"))
-                        .unwrap_or_else(|_| std::path::PathBuf::from("smartsec-report.md")),
-                );
+                app.exported_pdf_path = Some(pdf);
+                let absolute = std::env::current_dir()
+                    .map(|dir| dir.join(&markdown))
+                    .unwrap_or(markdown);
+                app.exported_report_path = Some(absolute);
             }
             Err(error) => {
                 app.md_exported = false;
                 app.exported_report_path = None;
-                app.run_error = Some(format!("Falha ao exportar relatório: {error}"));
+                app.record_run_issue(
+                    crate::tui::state::RunIssueScope::Export,
+                    format!("Falha ao exportar relatório: {error}"),
+                );
+                app.exported_pdf_path = None;
+                app.run_error = Some(format!("Falha ao exportar relatório: {error:#}"));
             }
         }
         app.focus = FocusTarget::ResultsExport;
@@ -720,6 +843,7 @@ fn new_scan(app: &mut AppState) {
     app.show_didactic = false;
     app.md_exported = false;
     app.exported_report_path = None;
+    app.exported_pdf_path = None;
     app.show_report_viewer = false;
     app.report_content = String::new();
     app.report_scroll = 0;
@@ -774,7 +898,7 @@ fn insert_text(app: &mut AppState, text: &str) {
     match app.focus {
         FocusTarget::SplashTarget => {
             app.config.target_url.push_str(text);
-            app.run_error = None;
+            app.clear_run_issues();
         }
         FocusTarget::SettingsField(SettingsField::BaseUrl) => {
             app.settings_input_base_url.push_str(text)
@@ -803,6 +927,9 @@ fn insert_text(app: &mut AppState, text: &str) {
         FocusTarget::SettingsField(SettingsField::FallbackModel) => {
             app.settings_input_fallback_model.push_str(text)
         }
+        FocusTarget::SettingsField(SettingsField::ProjectDir) => {
+            app.settings_input_project_dir.push_str(text)
+        }
         _ => {}
     }
     if app.show_settings {
@@ -814,7 +941,7 @@ fn delete_backward(app: &mut AppState) {
     match app.focus {
         FocusTarget::SplashTarget => {
             app.config.target_url.pop();
-            app.run_error = None;
+            app.clear_run_issues();
         }
         FocusTarget::SettingsField(SettingsField::BaseUrl) => {
             app.settings_input_base_url.pop();
@@ -841,6 +968,9 @@ fn delete_backward(app: &mut AppState) {
         FocusTarget::SettingsField(SettingsField::FallbackModel) => {
             app.settings_input_fallback_model.pop();
         }
+        FocusTarget::SettingsField(SettingsField::ProjectDir) => {
+            app.settings_input_project_dir.pop();
+        }
         _ => {}
     }
     if app.show_settings {
@@ -863,6 +993,11 @@ fn clear_text(app: &mut AppState) {
         }
         FocusTarget::SettingsField(SettingsField::FallbackModel) => {
             app.settings_input_fallback_model.clear()
+        }
+        // Limpar o diretório não significa "não analisar": o valor vazio
+        // significa diretório atual, e é esse o padrão do agente de código.
+        FocusTarget::SettingsField(SettingsField::ProjectDir) => {
+            app.settings_input_project_dir.clear()
         }
         _ => return,
     }
@@ -893,6 +1028,10 @@ mod tests {
             target: "https://exemplo.local".to_string(),
             evidence: "evidência".to_string(),
             detected_at: "2026-09-04T14:00:00Z".to_string(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
+            ..Default::default()
         }
     }
 
@@ -955,12 +1094,10 @@ mod tests {
     fn keyboard_and_mouse_toggle_the_same_tool() {
         let mut keyboard = app();
         keyboard.step = AppStep::ToolSelect;
-        keyboard.tool_detecting = false;
         keyboard.focus = FocusTarget::ToolList;
         keyboard.tool_cursor = 1;
         let mut mouse = app();
         mouse.step = AppStep::ToolSelect;
-        mouse.tool_detecting = false;
         mouse.tool_cursor = 1;
         render_app(&mut mouse, 80, 16);
 
@@ -1224,7 +1361,6 @@ mod tests {
 
         let mut app = app();
         app.step = AppStep::ToolSelect;
-        app.tool_detecting = false;
         app.tool_cursor = 1;
         app.tool_scroll = 0;
         render_app(&mut app, 80, 16);
@@ -1283,6 +1419,51 @@ mod tests {
             .hit_regions
             .iter()
             .any(|region| region.action == SemanticAction::Back));
+    }
+
+    /// RNF07 sob carga: com milhares de linhas de log, teclado, mouse e
+    /// renderização em 80x24 continuam respondendo.
+    #[test]
+    fn the_tui_stays_responsive_under_a_full_log() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        app.exec_logs = (0..5000)
+            .map(|index| format!("[Nmap] linha {index} {}", "x".repeat(120)))
+            .collect();
+
+        let screen = render_app(&mut app, 80, 24);
+        assert!(
+            screen.contains("linha 4999"),
+            "o fim do log fica visível no auto-follow\n{screen}"
+        );
+
+        app.log_follow = false;
+        app.log_scroll = 0;
+        let top = render_app(&mut app, 80, 24);
+        assert!(top.contains("linha 0"), "o topo continua alcançável\n{top}");
+
+        click_action(
+            &mut app,
+            &SemanticAction::SetFocus(FocusTarget::ExecutionLogs),
+        );
+        assert_eq!(app.focus, FocusTarget::ExecutionLogs);
+        assert_eq!(app.log_scroll, 0, "o clique não move o histórico");
+
+        let before = app.log_scroll;
+        press(&mut app, KeyCode::Down);
+        assert!(app.log_scroll > before, "o teclado continua rolando");
+        assert!(
+            app.log_scroll <= app.log_max_scroll(),
+            "a rolagem respeita o limite de linhas visuais"
+        );
+        assert!(!app.log_follow);
+
+        let after = render_app(&mut app, 80, 24);
+        assert!(
+            after.contains("SmartSec"),
+            "a tela continua sendo renderizada"
+        );
     }
 
     #[test]
@@ -1373,7 +1554,9 @@ mod tests {
     fn disabled_palette_command_does_not_execute_or_close() {
         let mut app = app();
         app.step = AppStep::ToolSelect;
-        app.tool_detecting = true;
+        for tool in &mut app.tools {
+            tool.selected = false;
+        }
         dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
         let run_index = command_items(&app)
             .iter()
@@ -1407,6 +1590,93 @@ mod tests {
     }
 
     #[test]
+    fn p_toggles_pause_and_c_cancels_with_keyboard_and_mouse_parity() {
+        let mut keyboard = app();
+        keyboard.step = AppStep::Execution;
+        keyboard.focus = FocusTarget::ExecutionPause;
+        keyboard.tools[0].status = crate::tui::state::ToolStatus::Running;
+        let mut mouse = app();
+        mouse.step = AppStep::Execution;
+        mouse.focus = FocusTarget::ExecutionPause;
+        mouse.tools[0].status = crate::tui::state::ToolStatus::Running;
+        render_app(&mut mouse, 80, 24);
+
+        press(&mut keyboard, KeyCode::Char('p'));
+        click_action(&mut mouse, &SemanticAction::PauseRun);
+
+        assert!(keyboard.orchestrator.control.is_paused());
+        assert!(mouse.orchestrator.control.is_paused());
+        assert_eq!(
+            keyboard.tools[0].status,
+            crate::tui::state::ToolStatus::Paused
+        );
+        assert_eq!(mouse.tools[0].status, keyboard.tools[0].status);
+
+        // A mesma tecla retoma: o rótulo do botão acompanha o estado real.
+        press(&mut keyboard, KeyCode::Char('p'));
+        assert!(!keyboard.orchestrator.control.is_paused());
+
+        press(&mut keyboard, KeyCode::Char('c'));
+        assert!(keyboard.orchestrator.is_cancelled());
+        assert!(keyboard.exec_cancelled);
+    }
+
+    #[test]
+    fn pause_and_cancel_shortcuts_are_ignored_inside_overlays() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        dispatch_action(&mut app, SemanticAction::OpenHelp);
+
+        press(&mut app, KeyCode::Char('p'));
+        press(&mut app, KeyCode::Char('c'));
+
+        assert!(
+            app.show_help_overlay,
+            "a ajuda precisa continuar capturando as teclas"
+        );
+        assert!(!app.orchestrator.control.is_paused());
+        assert!(!app.orchestrator.is_cancelled());
+    }
+
+    #[test]
+    fn the_execution_palette_exposes_pause_resume_and_cancel() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+
+        let items = command_items(&app);
+        let pause = items
+            .iter()
+            .position(|item| item.action == SemanticAction::PauseRun)
+            .expect("a pausa precisa estar na paleta");
+        assert_eq!(items[pause].shortcut, "p");
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(pause));
+        assert!(app.orchestrator.control.is_paused());
+
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+        let items = command_items(&app);
+        let resume = items
+            .iter()
+            .position(|item| item.action == SemanticAction::ResumeRun)
+            .expect("a retomada precisa estar na paleta depois da pausa");
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(resume));
+        assert!(!app.orchestrator.control.is_paused());
+
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+        let cancel = items_index(&app, SemanticAction::CancelRun);
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(cancel));
+        assert!(app.orchestrator.is_cancelled());
+    }
+
+    fn items_index(app: &AppState, action: SemanticAction) -> usize {
+        command_items(app)
+            .iter()
+            .position(|item| item.action == action)
+            .expect("a ação precisa estar na paleta")
+    }
+
+    #[test]
     fn help_blocks_scroll_and_cancelled_actions_stay_disabled() {
         let mut app = app();
         app.step = AppStep::Execution;
@@ -1424,20 +1694,206 @@ mod tests {
         assert!(app.exec_cancelled);
     }
 
+    #[test]
+    fn history_opens_with_h_outside_text_input_and_lists_recorded_runs() {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec_historico_eventos_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::orchestrator::scan_logger::save_scan_log_to_dir(
+            &crate::orchestrator::scan_logger::ScanMetadata {
+                scan_id: "scan_1757000000000000001".to_string(),
+                target_url: "http://alvo.local".to_string(),
+                started_at: "2026-09-06T10:00:00Z".to_string(),
+                completed_at: "2026-09-06T10:05:00Z".to_string(),
+                execution_type: "Auto".to_string(),
+                llm_provider: "Ollama".to_string(),
+                tools_executed: Vec::new(),
+                findings_count: 0,
+                critical_count: 0,
+                high_count: 0,
+                medium_count: 0,
+                low_count: 0,
+                info_count: 0,
+                findings: Vec::new(),
+                agent_analysis: "Análise".to_string(),
+                decisions: Vec::new(),
+                enrichment: Default::default(),
+                interruption: None,
+                ..Default::default()
+            },
+            &dir,
+        )
+        .expect("gravação do registro de teste");
+
+        let mut app = app();
+        app.history_dir = dir.clone();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsList;
+
+        assert!(!press(&mut app, KeyCode::Char('h')));
+        assert_eq!(app.step, AppStep::History);
+        assert_eq!(app.focus, FocusTarget::HistoryList);
+        assert_eq!(app.history.records.len(), 1);
+        assert_eq!(app.history_cursor, 0);
+
+        // Enter abre o detalhe e Esc volta para a tela de origem.
+        assert!(!press(&mut app, KeyCode::Enter));
+        assert!(app.history_detail.is_some());
+        assert_eq!(app.focus, FocusTarget::HistoryDetail);
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(app.history_detail.is_none());
+        assert_eq!(app.focus, FocusTarget::HistoryList);
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert_eq!(app.step, AppStep::Results, "Esc devolve à tela de origem");
+        assert_eq!(app.focus, FocusTarget::ResultsList);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn typing_h_on_the_splash_fills_the_target_instead_of_opening_history() {
+        let mut app = app();
+        app.config.target_url = "https://".to_string();
+        app.focus = FocusTarget::SplashTarget;
+
+        press(&mut app, KeyCode::Char('h'));
+
+        assert_eq!(app.config.target_url, "https://h");
+        assert_eq!(app.step, AppStep::Splash);
+    }
+
+    #[test]
+    fn history_list_navigates_and_the_mouse_opens_the_row_under_the_pointer() {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec_historico_mouse_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (index, completed_at) in ["2026-09-06T10:05:00Z", "2026-09-07T10:05:00Z"]
+            .iter()
+            .enumerate()
+        {
+            crate::orchestrator::scan_logger::save_scan_log_to_dir(
+                &crate::orchestrator::scan_logger::ScanMetadata {
+                    scan_id: format!("scan_175700000000000000{index}"),
+                    target_url: "http://alvo.local".to_string(),
+                    started_at: "2026-09-06T10:00:00Z".to_string(),
+                    completed_at: completed_at.to_string(),
+                    execution_type: "Auto".to_string(),
+                    llm_provider: "Ollama".to_string(),
+                    tools_executed: Vec::new(),
+                    findings_count: 0,
+                    critical_count: 0,
+                    high_count: 0,
+                    medium_count: 0,
+                    low_count: 0,
+                    info_count: 0,
+                    findings: Vec::new(),
+                    agent_analysis: "Análise".to_string(),
+                    decisions: Vec::new(),
+                    enrichment: Default::default(),
+                    interruption: None,
+                    ..Default::default()
+                },
+                &dir,
+            )
+            .expect("gravação do registro de teste");
+        }
+
+        let mut app = app();
+        app.history_dir = dir.clone();
+        app.step = AppStep::History;
+        app.focus = FocusTarget::HistoryList;
+        app.load_history();
+        assert_eq!(app.history.records.len(), 2);
+
+        // A ordem é da mais recente para a mais antiga, então o índice 1 é a mais antiga.
+        assert_eq!(app.history.records[0].scan_id, "scan_1757000000000000001");
+        assert_eq!(app.history.records[1].scan_id, "scan_1757000000000000000");
+
+        dispatch_action(&mut app, SemanticAction::MoveDown);
+        assert_eq!(app.history_cursor, 1);
+        for _ in 0..5 {
+            dispatch_action(&mut app, SemanticAction::MoveDown);
+        }
+        assert_eq!(
+            app.history_cursor, 1,
+            "a navegação satura no último registro"
+        );
+        dispatch_action(&mut app, SemanticAction::MoveUp);
+        assert_eq!(app.history_cursor, 0);
+
+        render_app(&mut app, 80, 24);
+        assert!(
+            !click_action(&mut app, &SemanticAction::OpenHistoryRecord(0)),
+            "o clique não deve encerrar o ciclo de eventos"
+        );
+        assert_eq!(app.focus, FocusTarget::HistoryDetail);
+        assert_eq!(
+            app.history_detail
+                .as_ref()
+                .map(|meta| meta.scan_id.as_str()),
+            Some("scan_1757000000000000001"),
+            "o clique precisa abrir a execução da linha apontada"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_a_corrupted_record_keeps_the_list_with_an_actionable_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec_historico_corrompido_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("scan_1757000000000000001.json"), "{quebrado").unwrap();
+
+        let mut app = app();
+        app.history_dir = dir.clone();
+        app.step = AppStep::History;
+        app.focus = FocusTarget::HistoryList;
+        app.load_history();
+
+        assert!(
+            app.history.records.is_empty(),
+            "registro corrompido não lista"
+        );
+        assert_eq!(app.history.unreadable.len(), 1);
+
+        app.open_history_record(0);
+        assert!(
+            app.history_detail.is_none(),
+            "não há registro selecionável quando a leitura falha"
+        );
+        assert_eq!(app.focus, FocusTarget::HistoryList);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn blocking_layers_suspend_and_resume_underlying_transitions() {
         let mut app = app();
         app.set_mode(ExecutionType::Auto);
         app.step = AppStep::ToolSelect;
         app.focus = FocusTarget::ToolList;
-        app.tool_detecting = true;
-        app.tool_detect_tick = 50;
         dispatch_action(&mut app, SemanticAction::OpenSettings);
 
         app.tick();
         app.step_tick().await;
-        assert_eq!(app.step, AppStep::ToolSelect);
-        assert_eq!(app.tool_detect_tick, 50);
+        assert_eq!(
+            app.step,
+            AppStep::ToolSelect,
+            "a execução não começa por baixo de uma camada sobreposta"
+        );
         dispatch_action(&mut app, SemanticAction::CloseSettings);
         assert_eq!(app.focus, FocusTarget::ToolList);
         app.tick();
@@ -1445,18 +1901,29 @@ mod tests {
 
         app.step = AppStep::Analysis;
         app.focus = FocusTarget::AnalysisCancel;
-        app.analysis_phase = crate::tui::state::AnalysisPhase::Complete;
-        app.analysis_tick = 31;
         dispatch_action(&mut app, SemanticAction::OpenHelp);
         app.tick();
         app.step_tick().await;
-        assert_eq!(app.step, AppStep::Analysis);
-        assert_eq!(app.analysis_tick, 31);
+        assert_eq!(
+            app.step,
+            AppStep::Analysis,
+            "a análise em curso continua enquanto a ajuda está aberta"
+        );
         dispatch_action(&mut app, SemanticAction::Back);
         assert_eq!(app.focus, FocusTarget::AnalysisCancel);
         app.step_tick().await;
-        assert_eq!(app.step, AppStep::Results);
-        assert_eq!(app.focus, FocusTarget::ResultsList);
+        assert_eq!(
+            app.step,
+            AppStep::Analysis,
+            "só o cancelamento encerra a análise, e ele é explícito"
+        );
+        dispatch_action(&mut app, SemanticAction::Back);
+        app.step_tick().await;
+        assert_eq!(app.step, AppStep::ToolSelect);
+        assert_eq!(app.focus, FocusTarget::ToolList);
+        if let Some(path) = app.audit_log_path.clone() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]

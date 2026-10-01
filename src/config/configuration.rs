@@ -25,6 +25,16 @@ pub struct Configuration {
     pub tools: Vec<ToolManifest>,
     pub output_file: Option<String>,
     pub output_dir: Option<String>,
+    /// Limiar da regra automática de interrupção (REQ05): quantidade de
+    /// vulnerabilidades críticas que interrompe a varredura. `0` desativa.
+    pub max_critical_findings: usize,
+    /// Diretório do projeto analisado pelo agente de código (issue #76).
+    ///
+    /// `None` significa "diretório atual": o SmartSec é uma CLI e espera ser
+    /// iniciado no workdir da aplicação auditada. Mesmo quando ausente, o valor
+    /// efetivo é canonicalizado e registrado no log estruturado e no relatório,
+    /// para que a auditoria saiba qual árvore foi lida.
+    pub project_dir: Option<String>,
     pub show_help: bool,
     pub show_version: bool,
 }
@@ -72,6 +82,20 @@ impl Configuration {
                 }
                 "--output-dir" => {
                     self.output_dir = Some(next_argument(args, &mut index, "--output-dir")?);
+                }
+                "--max-critical-findings" => {
+                    let value = next_argument(args, &mut index, "--max-critical-findings")?;
+                    self.max_critical_findings = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "--max-critical-findings exige um número inteiro de 0 em diante (0 desativa a regra)"
+                            )
+                        })?;
+                }
+                "--project" => {
+                    self.project_dir = Some(next_argument(args, &mut index, "--project")?);
                 }
                 "-p" | "--provider" => {
                     let provider = next_argument(args, &mut index, "--provider")?;
@@ -145,6 +169,20 @@ impl Configuration {
         let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
         base.join("smartsec")
     }
+
+    /// Diretório do projeto analisado, com padrão no diretório atual.
+    ///
+    /// O caminho devolvido é o que o agente de código vai canonicalizar e abrir
+    /// como raiz do sandbox; a validação real acontece em
+    /// `code_agent::workspace::Workspace::open`, que exige um diretório
+    /// existente e legível.
+    pub fn effective_project_dir(&self) -> PathBuf {
+        self.project_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map_or_else(|| PathBuf::from("."), PathBuf::from)
+    }
 }
 
 impl Default for Configuration {
@@ -181,6 +219,8 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             tools: p.tools,
             output_file: p.output_file,
             output_dir: p.output_dir,
+            max_critical_findings: p.max_critical_findings,
+            project_dir: p.project_dir,
             show_help: false,
             show_version: false,
         }
@@ -270,10 +310,10 @@ mod tests {
             "target_url = \"http://test.local\"\n\
              [llm]\nprovider = \"ollama\"\n\
              [[tools]]\n\
-             name = \"ZAP\"\n\
+             name = \"ScannerExemplo\"\n\
              description = \"Scanner de servidores web\"\n\
              category = \"DAST\"\n\
-             image = \"example/zap:1\"\n\
+             image = \"example/scanner:1\"\n\
              version = \"1.0\"\n\
              runner = \"generic\"\n\
              parser = \"generic-text\"\n\
@@ -285,7 +325,7 @@ mod tests {
         let config = Configuration::load_from_path(&path).unwrap();
 
         assert_eq!(config.tools.len(), 1);
-        assert_eq!(config.tools[0].name, "ZAP");
+        assert_eq!(config.tools[0].name, "ScannerExemplo");
         std::fs::remove_file(&path).ok();
     }
 
@@ -300,7 +340,7 @@ mod tests {
             "target_url = \"http://test.local\"\n\
              [llm]\nprovider = \"ollama\"\n\
              [[tools]]\n\
-             name = \"ZAP\n\
+             name = \"ScannerExemplo\n\
              runner = \"generic\"\n",
         )
         .unwrap();

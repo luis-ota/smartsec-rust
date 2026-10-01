@@ -49,6 +49,16 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
         "",
         SemanticAction::OpenSettings,
     ));
+    items.push(
+        CommandItem::new(
+            "Consultar histórico de execuções",
+            "h",
+            SemanticAction::OpenHistory,
+        )
+        // Interromper uma execução em andamento para ler o histórico tiraria o
+        // foco da varredura; por isso a consulta só é oferecida fora dela.
+        .enabled(matches!(app.step, AppStep::Splash | AppStep::Results)),
+    );
 
     match app.step {
         AppStep::Splash => items.extend([
@@ -67,11 +77,17 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
         ]),
         AppStep::ToolSelect => items.extend([
             CommandItem::new("Executar ferramentas", "enter", SemanticAction::RunTools)
-                .enabled(!app.tool_detecting && app.tools.iter().any(|tool| tool.selected)),
+                .enabled(app.tools.iter().any(|tool| tool.selected)),
             CommandItem::new("Voltar ao início", "esc", SemanticAction::Back),
         ]),
         AppStep::Execution => items.extend([
-            CommandItem::new("Cancelar execução", "", SemanticAction::CancelRun)
+            if app.exec_paused {
+                CommandItem::new("Retomar execução", "p", SemanticAction::ResumeRun)
+            } else {
+                CommandItem::new("Pausar execução", "p", SemanticAction::PauseRun)
+            }
+            .enabled(!app.exec_cancelled),
+            CommandItem::new("Cancelar execução", "c", SemanticAction::CancelRun)
                 .enabled(!app.exec_cancelled),
             CommandItem::new("Voltar às ferramentas", "esc", SemanticAction::Back),
         ]),
@@ -103,6 +119,15 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
                 ]);
             }
         }
+        AppStep::History => items.extend([
+            CommandItem::new(
+                "Abrir execução selecionada",
+                "enter",
+                SemanticAction::OpenHistoryRecord(app.history_cursor),
+            )
+            .enabled(app.history_detail.is_none() && !app.history.records.is_empty()),
+            CommandItem::new("Voltar", "esc", SemanticAction::Back),
+        ]),
     }
     items
 }

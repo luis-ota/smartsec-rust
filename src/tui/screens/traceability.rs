@@ -10,6 +10,7 @@ use ratatui::{
     Frame,
 };
 
+#[derive(Debug)]
 pub struct RequirementRow {
     pub id: &'static str,
     pub title: &'static str,
@@ -24,7 +25,116 @@ pub fn requirement_rows(app: &AppState) -> Vec<RequirementRow> {
         orchestration_row(app),
         logs_row(app),
         ai_row(app),
+        control_row(app),
+        interruption_row(app),
+        code_row(app),
     ]
+}
+
+/// Evidência de pausa, retomada ou cancelamento aplicados ao container real.
+///
+/// Só conta como verificado quando o trace do Podman mostra o comando
+/// correspondente: um botão pressionado não é evidência de que o container foi
+/// de fato pausado.
+fn control_row(app: &AppState) -> RequirementRow {
+    let mut applied: Vec<&str> = Vec::new();
+    for execution in &app.orchestrator.execution_history {
+        for line in &execution.podman_trace {
+            if line.contains("$ podman pause ") {
+                push_unique(&mut applied, "pausa");
+            } else if line.contains("$ podman unpause ") {
+                push_unique(&mut applied, "retomada");
+            } else if line.contains("$ podman stop ") {
+                push_unique(&mut applied, "cancelamento");
+            }
+        }
+    }
+    RequirementRow {
+        id: "REQ14",
+        title: "Pausa, retomada e cancelamento",
+        detail: if applied.is_empty() {
+            "aguardando pausa (p), retomada (p) ou cancelamento (c)".to_string()
+        } else {
+            format!("{} aplicados ao container real", applied.join(" · "))
+        },
+        evidenced: !applied.is_empty(),
+    }
+}
+
+/// Evidência da regra automática de interrupção (REQ05).
+fn interruption_row(app: &AppState) -> RequirementRow {
+    let limit = app.config.max_critical_findings;
+    match app.orchestrator.interruption() {
+        Some(reason) if reason.rule == crate::orchestrator::control::RULE_MAX_CRITICAL_FINDINGS => {
+            RequirementRow {
+                id: "REQ05",
+                title: "Regra automática de interrupção",
+                detail: format!(
+                    "{} · limite de {}",
+                    reason.message,
+                    reason.threshold.unwrap_or_default()
+                ),
+                evidenced: true,
+            }
+        }
+        _ => RequirementRow {
+            id: "REQ05",
+            title: "Regra automática de interrupção",
+            detail: if limit == 0 {
+                "regra desativada (max_critical_findings = 0)".to_string()
+            } else {
+                format!("limite de {limit} críticos; a varredura não atingiu o limite")
+            },
+            evidenced: false,
+        },
+    }
+}
+
+fn push_unique(values: &mut Vec<&'static str>, value: &'static str) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+/// Linha REQ16 da matriz: onde a origem de cada achado foi localizada.
+///
+/// A linha distingue as duas situations que se confundem na tela — a fase rodou
+/// e não achou origem, ou a fase nunca rodou. Sem essa distinção, uma varredura
+/// sem análise de código pareceria igual a uma análise que não localizou nada.
+fn code_row(app: &AppState) -> RequirementRow {
+    let findings = &app.orchestrator.findings;
+    let located = findings
+        .iter()
+        .filter(|finding| finding.code_location.is_some())
+        .count();
+    let report = app.orchestrator.last_code_report.as_ref();
+    let (evidenced, detail) = match report {
+        Some(report) => {
+            let base = format!(
+                "projeto {} · {located}/{} com origem no código · {} chamada(s) de ferramenta",
+                app.project_dir_label(),
+                findings.len(),
+                report.tool_calls.len()
+            );
+            match report.unavailable_reason.as_deref() {
+                Some(reason) => (false, format!("{base} · fase indisponível: {reason}")),
+                None => (true, base),
+            }
+        }
+        None => (
+            false,
+            format!(
+                "aguardando análise de código · projeto {}",
+                app.project_dir_label()
+            ),
+        ),
+    };
+    RequirementRow {
+        id: "REQ16",
+        title: "Origem no código e correção",
+        detail,
+        evidenced,
+    }
 }
 
 fn cli_row(app: &AppState) -> RequirementRow {
@@ -133,7 +243,8 @@ fn logs_row(app: &AppState) -> RequirementRow {
 
 fn ai_row(app: &AppState) -> RequirementRow {
     let decision = app.orchestrator.decision_history.last();
-    let evidenced = decision.is_some();
+    let analysis = app.orchestrator.last_analysis_result.as_ref();
+    let evidenced = decision.is_some() || analysis.is_some();
     let detail = match decision {
         Some(record) => {
             let source = match record.source {
@@ -167,13 +278,22 @@ fn ai_row(app: &AppState) -> RequirementRow {
             {
                 detail.push_str(" · orientações da IA aplicadas");
             }
+            if let Some(analysis) = analysis {
+                detail.push_str(&analysis_provenance(analysis));
+            }
             detail
         }
-        None => format!(
-            "provedor {} · {} · decisão pendente",
-            app.config.llm.provider.label(),
-            app.config.llm.model
-        ),
+        None => {
+            let mut detail = format!(
+                "provedor {} · {} · decisão pendente",
+                app.config.llm.provider.label(),
+                app.config.llm.model
+            );
+            if let Some(analysis) = analysis {
+                detail.push_str(&analysis_provenance(analysis));
+            }
+            detail
+        }
     };
     RequirementRow {
         id: "REQ10",
@@ -181,6 +301,17 @@ fn ai_row(app: &AppState) -> RequirementRow {
         detail,
         evidenced,
     }
+}
+
+/// Proveniência da análise exibida na matriz: o resultado precisa dizer modelo,
+/// provedor efetivo e horário, em vez de apresentar a IA como caixa-preta.
+///
+/// Reaproveita `AnalysisResult::provenance`, o mesmo texto que o modo headless
+/// imprime e que vai para o log estruturado. A matriz montava a frase por
+/// conta própria e já mostrava menos que o headless — que é exatamente a
+/// divergência que a issue #23 elimina.
+fn analysis_provenance(analysis: &crate::ai::analysis_service::AnalysisResult) -> String {
+    format!(" · análise: {}", analysis.provenance())
 }
 
 fn status_label(status: &str) -> &'static str {
@@ -196,12 +327,14 @@ fn status_label(status: &str) -> &'static str {
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     app.hit_regions.clear();
     let rows = requirement_rows(app);
-    let popup = super::overlays::centered_fixed(area, 76, 15);
+    // Duas linhas por requisito, mais o cabeçalho, a linha em branco, o
+    // rodapé e as duas bordas.
+    let popup = super::overlays::centered_fixed(area, 76, (rows.len() as u16 * 2 + 6).min(22));
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
-        .title(" Rastreabilidade · Sprint 1 ")
+        .title(" Rastreabilidade · Sprint 1 e 2 ")
         .title_style(Style::default().fg(Color::White).bold())
         .style(Style::default().bg(SURFACE));
     let inner = block.inner(popup);
@@ -265,13 +398,54 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code_agent::agent::{CodeAnalysisReport, FindingCodeAnalysis, ToolCallRecord};
     use crate::config::Configuration;
     use crate::domain::security_tool::SecurityTool;
+    use crate::domain::vulnerability::CodeLocation;
     use crate::orchestrator::decision::{DecisionRecord, NucleiPlan, NucleiTemplateProfile};
     use std::collections::BTreeMap;
 
     fn app() -> AppState {
         AppState::new(Configuration::default()).expect("configuração de teste válida")
+    }
+
+    /// Relatório sintético da fase de código, com `located` achados localizados
+    /// e `total` achados analisados.
+    fn code_report(located: usize, total: usize) -> CodeAnalysisReport {
+        CodeAnalysisReport {
+            findings: (0..total)
+                .map(|index| FindingCodeAnalysis {
+                    finding_index: index,
+                    location: None,
+                    remediation: Vec::new(),
+                    reason: Some("sem origem".to_string()),
+                    model: "llama3.2:1b".to_string(),
+                    provider: "Ollama".to_string(),
+                    tool_calls: 1,
+                    fallback_used: true,
+                })
+                .take(located)
+                .map(|mut analysis| {
+                    analysis.location = Some(CodeLocation {
+                        file: "src/app.py".to_string(),
+                        line: 4,
+                        snippet: "raise ValueError".to_string(),
+                    });
+                    analysis.reason = None;
+                    analysis.fallback_used = false;
+                    analysis
+                })
+                .collect(),
+            tool_calls: vec![ToolCallRecord {
+                finding_index: 0,
+                iteration: 0,
+                tool: "read_file".to_string(),
+                arguments: r#"{"path":"src/app.py"}"#.to_string(),
+                outcome: "ok".to_string(),
+                summary: "4 | raise ValueError".to_string(),
+            }],
+            unavailable_reason: None,
+        }
     }
 
     fn nmap_execution() -> SecurityTool {
@@ -311,22 +485,137 @@ mod tests {
     }
 
     #[test]
-    fn pending_session_reports_every_requirement_as_waiting() {
-        let rows = requirement_rows(&app());
+    fn analysis_provenance_is_reported_even_without_a_nuclei_decision() {
+        use crate::ai::analysis_service::{AnalysisResult, AnalysisSource};
 
-        assert_eq!(rows.len(), 5);
-        assert_eq!(
-            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
-            vec!["UC01", "RNF01", "REQ06", "REQ09", "REQ10"]
+        let mut app = app();
+        app.orchestrator.last_analysis_result = Some(AnalysisResult {
+            text: "Análise concluída.".to_string(),
+            model: "llama3.1:8b".to_string(),
+            provider: "Ollama".to_string(),
+            configured_provider: "OpenAI".to_string(),
+            source: AnalysisSource::FallbackProvider,
+            fallback_used: true,
+            failure_reason: Some("a LLM principal falhou".to_string()),
+            analyzed_at: "2026-09-30T12:04:59Z".to_string(),
+            neutralized_snippets: 1,
+        });
+
+        let rows = requirement_rows(&app);
+        let ai = rows.iter().find(|row| row.id == "REQ10").unwrap();
+
+        assert!(ai.evidenced);
+        assert!(ai.detail.contains("provedor efetivo Ollama"), "{ai:?}");
+        assert!(ai.detail.contains("modelo llama3.1:8b"), "{ai:?}");
+        assert!(ai.detail.contains("2026-09-30T12:04:59Z"), "{ai:?}");
+        assert!(ai.detail.contains("alternativa local"), "{ai:?}");
+        // A causa da queda também aparece na TUI: um fallback sem motivo na
+        // interface seria o mesmo mascaramento que o log estruturado evita.
+        assert!(ai.detail.contains("motivo:"), "{ai:?}");
+    }
+
+    /// A TUI e o modo headless precisam descrever a análise com o mesmo texto.
+    ///
+    /// A matriz de rastreabilidade já montava a frase por conta própria e
+    /// mostrava menos que o headless. Este teste trava as duas pontas no mesmo
+    /// `AnalysisResult` para que a divergência não volte a aparecer.
+    #[test]
+    fn traceability_shows_the_same_provenance_line_as_the_headless_mode() {
+        use crate::ai::analysis_service::{AnalysisResult, AnalysisSource};
+
+        let analysis = AnalysisResult {
+            text: "Análise concluída.".to_string(),
+            model: "llama3.1:8b".to_string(),
+            provider: "Ollama".to_string(),
+            configured_provider: "OpenAI".to_string(),
+            source: AnalysisSource::FallbackProvider,
+            fallback_used: true,
+            failure_reason: Some("a LLM principal falhou".to_string()),
+            analyzed_at: "2026-09-30T12:04:59Z".to_string(),
+            neutralized_snippets: 1,
+        };
+
+        let mut app = app();
+        app.orchestrator.last_analysis_result = Some(analysis.clone());
+        let rows = requirement_rows(&app);
+        let ai = rows.iter().find(|row| row.id == "REQ10").unwrap();
+
+        // A linha exibida é a do próprio resultado, que é a que o headless
+        // imprime e a que o log estruturado registra.
+        assert!(
+            ai.detail.contains(&analysis.provenance()),
+            "TUI: {}\nheadless: {}",
+            ai.detail,
+            analysis.provenance()
         );
-        assert!(rows.iter().all(|row| !row.evidenced));
-        assert!(rows
-            .iter()
-            .all(|row| row.detail.contains("aguardando") || row.detail.contains("pendente")));
     }
 
     #[test]
-    fn completed_session_evidences_all_five_requirements() {
+    fn pending_session_reports_every_requirement_as_waiting() {
+        let rows = requirement_rows(&app());
+
+        assert_eq!(rows.len(), 8);
+        assert_eq!(
+            rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec!["UC01", "RNF01", "REQ06", "REQ09", "REQ10", "REQ14", "REQ05", "REQ16"]
+        );
+        assert!(rows.iter().all(|row| !row.evidenced));
+        assert!(rows.iter().all(|row| {
+            row.detail.contains("aguardando")
+                || row.detail.contains("pendente")
+                || row.detail.contains("desativada")
+        }));
+    }
+
+    #[test]
+    fn the_pause_and_the_automatic_rule_only_count_with_real_evidence() {
+        let mut app = app();
+        // Uma pausa pedida na tela, sem `podman pause` no trace, não é evidência.
+        app.pause_run();
+        let rows = requirement_rows(&app);
+        let control = rows.iter().find(|row| row.id == "REQ14").unwrap();
+        assert!(!control.evidenced, "{}", control.detail);
+        assert!(control.detail.contains("aguardando"), "{}", control.detail);
+
+        // Com o comando no trace do Podman, a REQUIREMENT fica verificada.
+        let mut execution = nmap_execution();
+        execution
+            .podman_trace
+            .push("[16:00:00] $ podman pause container-123".to_string());
+        app.orchestrator.execution_history.push(execution);
+        app.orchestrator.resume_execution();
+        let control = requirement_rows(&app)
+            .into_iter()
+            .find(|row| row.id == "REQ14")
+            .unwrap();
+        assert!(control.evidenced, "{}", control.detail);
+        assert!(control.detail.contains("pausa"), "{}", control.detail);
+    }
+
+    #[test]
+    fn the_automatic_rule_reports_the_threshold_and_the_reason() {
+        let mut app = app();
+        app.config.max_critical_findings = 2;
+        let idle = requirement_rows(&app)
+            .into_iter()
+            .find(|row| row.id == "REQ05")
+            .unwrap();
+        assert!(!idle.evidenced);
+        assert!(idle.detail.contains("limite de 2"), "{}", idle.detail);
+
+        app.orchestrator.record_interruption(
+            crate::orchestrator::control::InterruptionReason::max_critical_findings(2, 2, "Nuclei"),
+        );
+        let fired = requirement_rows(&app)
+            .into_iter()
+            .find(|row| row.id == "REQ05")
+            .unwrap();
+        assert!(fired.evidenced, "{}", fired.detail);
+        assert!(fired.detail.contains("limite de 2"), "{}", fired.detail);
+    }
+
+    #[test]
+    fn completed_session_evidences_all_six_requirements() {
         let mut app = app();
         app.config.target_url = "http://169.254.1.2:3000".to_string();
         app.orchestrator.execution_history.push(nmap_execution());
@@ -337,10 +626,15 @@ mod tests {
         app.orchestrator.last_log =
             "Análise concluída.\n\nOrientações complementares da IA (sem alterar as classificações):\n- Valide a exposição."
                 .to_string();
+        app.orchestrator.last_code_report = Some(code_report(1, 1));
 
         let rows = requirement_rows(&app);
+        // REQ14 e REQ05 exigem evidência de pausa, cancelamento ou disparo da
+        // regra: uma sessão sem esses eventos não pode declará-los verificados.
         assert!(
-            rows.iter().all(|row| row.evidenced),
+            rows.iter()
+                .filter(|row| !matches!(row.id, "REQ14" | "REQ05"))
+                .all(|row| row.evidenced),
             "pendentes: {:?}",
             rows.iter()
                 .filter(|row| !row.evidenced)
