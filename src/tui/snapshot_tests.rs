@@ -141,6 +141,57 @@ fn the_zap_is_selectable_in_the_tool_catalog_of_the_tui() {
 }
 
 #[test]
+fn the_paused_execution_state_is_legible_in_80x24() {
+    let mut app = app();
+    app.step = AppStep::Execution;
+    app.focus = FocusTarget::ExecutionLogs;
+    app.tools[0].status = ToolStatus::Running;
+    app.orchestrator.pause_execution();
+    app.exec_paused = true;
+    app.tools[0].status = ToolStatus::Paused;
+    app.exec_logs = vec![
+        "[14:02:11] [Nmap] container abc123 pausado".to_string(),
+        "[14:02:12] [Nmap] $ podman pause abc123".to_string(),
+    ];
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Execução PAUSADA",
+            "pausada",
+            "Retomar varredura",
+            "Cancelar varredura",
+        ],
+    );
+    // RNF07: a pausa precisa ser legível, e o botão precisa ser clicável.
+    assert!(snapshot.contains("p retoma"), "{snapshot}");
+    assert!(app
+        .hit_regions
+        .iter()
+        .any(|region| { region.action == SemanticAction::ResumeRun }));
+    assert!(app
+        .hit_regions
+        .iter()
+        .any(|region| { region.action == SemanticAction::CancelRun }));
+}
+
+#[test]
+fn the_running_execution_state_offers_the_pause_button() {
+    let mut app = app();
+    app.step = AppStep::Execution;
+    app.tools[0].status = ToolStatus::Running;
+
+    assert_snapshot(
+        &mut app,
+        &["executando", "Pausar varredura", "Cancelar varredura"],
+    );
+    assert!(app
+        .hit_regions
+        .iter()
+        .any(|region| region.action == SemanticAction::PauseRun));
+}
+
+#[test]
 fn execution_states_match_80x24_snapshots() {
     let mut app = app();
     app.step = AppStep::Execution;
@@ -248,7 +299,9 @@ fn traceability_overlay_matches_80x24_snapshots() {
             "REQ06",
             "REQ09",
             "REQ10",
-            "0/5 verificados",
+            "REQ14",
+            "REQ05",
+            "0/7 verificados",
         ],
     );
 
@@ -270,7 +323,7 @@ fn traceability_overlay_matches_80x24_snapshots() {
     let snapshot = assert_snapshot(
         &mut app,
         &[
-            "4/5 verificados",
+            "4/7 verificados",
             "alvo validado",
             "rootless confirmado",
             "Nmap ok",
@@ -279,6 +332,8 @@ fn traceability_overlay_matches_80x24_snapshots() {
         ],
     );
     assert!(snapshot.contains("○ REQ10"), "{snapshot}");
+    assert!(snapshot.contains("○ REQ14"), "{snapshot}");
+    assert!(snapshot.contains("○ REQ05"), "{snapshot}");
 }
 
 #[test]
@@ -360,6 +415,7 @@ fn seed_history(label: &str, count: usize) -> std::path::PathBuf {
             agent_analysis: "A superfície web expõe serviços antigos.".to_string(),
             enrichment: Default::default(),
             decisions: Vec::new(),
+            interruption: None,
         };
         crate::orchestrator::scan_logger::save_scan_log_to_dir(&metadata, &dir)
             .expect("gravação do registro de teste");

@@ -82,6 +82,10 @@ pub struct ScanMetadata {
     pub agent_analysis: String,
     #[serde(default)]
     pub decisions: Vec<DecisionRecord>,
+    /// Motivo da interrupção automática (REQ05) ou do cancelamento (REQ14).
+    /// Ausente em logs gravados antes da feature, que continuam legíveis.
+    #[serde(default)]
+    pub interruption: Option<crate::orchestrator::control::InterruptionReason>,
     /// Resumo da correlação e do enriquecimento CVE/NVD (issue #19).
     ///
     /// `#[serde(default)]` porque logs gravados antes da issue #19 não têm
@@ -244,6 +248,7 @@ impl ScanMetadata {
             agent_analysis: crate::utils::redaction::sanitize_text(&agent_analysis),
             decisions: Vec::new(),
             enrichment: crate::orchestrator::enrichment::EnrichmentSummary::default(),
+            interruption: None,
         }
     }
 
@@ -294,6 +299,14 @@ impl ScanMetadata {
                         .collect(),
                 },
             },
+            interruption: self.interruption.as_ref().map(|reason| {
+                let mut reason = reason.clone();
+                reason.rule = sanitize(&reason.rule);
+                reason.message = sanitize(&reason.message);
+                reason.tool = reason.tool.as_deref().map(sanitize);
+                reason.recorded_at = sanitize(&reason.recorded_at);
+                reason
+            }),
         }
     }
 }
@@ -629,6 +642,7 @@ mod tests {
             agent_analysis: "Analise local".to_string(),
             decisions: Vec::new(),
             enrichment: Default::default(),
+            interruption: None,
         }
     }
 

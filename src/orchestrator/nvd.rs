@@ -673,6 +673,20 @@ mod tests {
       ]
     }"#;
 
+    /// Teste de integração real contra a API pública da NVD.
+    ///
+    /// Não roda por padrão: o limite público da NVD é de 5 requisições a cada
+    /// 30 segundos, e a suíte emite mais que isso, então o resultado passa a
+    /// depender do momento em que a suíte roda. Com o limite atingido, a
+    /// resposta vira `Unavailable` e o teste falha **sem que nada tenha mudado
+    /// no código** — o sinal se perde e a reprodutibilidade quebrada.
+    ///
+    /// Para executar sob demanda:
+    /// `cargo test -- --ignored consulta_real_na_nvd`
+    ///
+    /// A degradação por limite de taxa, que é o comportamento mais importante
+    /// deste módulo, tem cobertura offline por mock HTTP.
+    #[ignore = "consulta a API publica da NVD; sujeita ao limite de taxa"]
     #[tokio::test]
     async fn consulta_real_na_nvd_persiste_cve_cvss_referencia_e_data() {
         let client = NvdClient::with_cache_dir(temp_cache_dir()).expect("cliente");
@@ -837,6 +851,20 @@ mod tests {
         assert!(matches!(resultado, NvdOutcome::Enriched(_)));
     }
 
+    /// Teste de integração real contra a API pública da NVD.
+    ///
+    /// Não roda por padrão: o limite público da NVD é de 5 requisições a cada
+    /// 30 segundos, e a suíte emite mais que isso, então o resultado passa a
+    /// depender do momento em que a suíte roda. Com o limite atingido, a
+    /// resposta vira `Unavailable` e o teste falha **sem que nada tenha mudado
+    /// no código** — o sinal se perde e a reprodutibilidade quebrada.
+    ///
+    /// Para executar sob demanda:
+    /// `cargo test -- --ignored consulta_real_na_nvd`
+    ///
+    /// A degradação por limite de taxa, que é o comportamento mais importante
+    /// deste módulo, tem cobertura offline por mock HTTP.
+    #[ignore = "consulta a API publica da NVD; sujeita ao limite de taxa"]
     #[tokio::test]
     async fn cve_inexistente_vem_como_nao_encontrado_e_nao_como_erro() {
         let client = NvdClient::with_cache_dir(temp_cache_dir()).expect("cliente");

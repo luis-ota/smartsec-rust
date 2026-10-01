@@ -141,6 +141,8 @@ cargo run -- history
 | 0 | nenhuma vulnerabilidade crítica |
 | 1 | vulnerabilidade crítica encontrada |
 | 2 | erro de configuração, de execução ou de consulta ao histórico |
+| 130 | cancelado por `SIGINT` (Ctrl+C) |
+| 143 | cancelado por `SIGTERM` |
 
 O relatório e o log estruturado são gravados antes da mensagem final. Falha de
 scanner retorna `2` mesmo que o relatório preserve achados; achado crítico
@@ -150,6 +152,46 @@ Na consulta ao histórico, `history` retorna `0` mesmo vazio (a listagem foi
 executada) e `show <SCAN_ID>` retorna `2` para identificador inválido ou
 inexistente — um id errado em automação é erro de uso, não varredura limpa.
 Registros ilegíveis entre registros legíveis geram aviso, não erro.
+
+`Ctrl+C` e `SIGTERM` cancelam a varredura: o container em execução é encerrado
+com `podman stop` e removido com `podman rm --force --ignore`, e o relatório e o
+log estruturado são gravados **antes** de sair. O cancelamento tem código
+próprio (130/143) para não ser confundido com erro interno.
+
+### Pausar, retomar e cancelar durante a execução
+
+Na tela de execução:
+
+| Controle | Teclado | Mouse |
+|---|---|---|
+| Pausar / retomar | `p` | botão *Pausar varredura* / *Retomar varredura* |
+| Cancelar | `c` | botão *Cancelar varredura* |
+
+As duas ações também estão na paleta de comandos (`Ctrl+P`) e na ajuda (`F1`).
+Pausar e retomar atuam no **container real** (`podman pause` e `podman unpause`);
+cancelar encerra o processo dentro do container e remove o container, sem
+deixar órfão. Depois do cancelamento, a execução sintética `cancelled` é
+gravada no log estruturado para que a auditoria registre qual ferramenta
+estava em andamento.
+
+### Regra automática de interrupção
+
+`max_critical_findings` no TOML (ou `--max-critical-findings` na CLI, que tem
+precedência) interrompe a varredura ao atingir a quantidade configurada de
+vulnerabilidades críticas. `0`, o padrão, mantém a regra desativada.
+
+```toml
+max_critical_findings = 3
+```
+
+```bash
+cargo run -- scan --target http://169.254.1.2:3000 --max-critical-findings 3
+```
+
+A avaliação acontece entre ferramentas, para preservar a evidência recém-coletada
+e não matar o container que acabou de produzir o achado. O motivo fica gravado
+em `interruption` no log estruturado, com a regra, a ferramenta, a contagem
+observada e o limiar.
 
 ### Arquivo de configuração TOML
 
@@ -226,6 +268,8 @@ src/
 | Enter     | Confirmar / Iniciar / Rodar |
 | Espaco    | Selecionar/deselecionar ferramenta |
 | Esc       | Sair / Voltar            |
+| P         | Pausar / retomar a execução (tela de execução) |
+| C         | Cancelar a execução (tela de execução) |
 | F1        | Abrir ajuda               |
 | Ctrl+P    | Abrir paleta de comandos  |
 | Ctrl+V    | Colar do clipboard       |

@@ -25,6 +25,9 @@ pub struct Configuration {
     pub tools: Vec<ToolManifest>,
     pub output_file: Option<String>,
     pub output_dir: Option<String>,
+    /// Limiar da regra automática de interrupção (REQ05): quantidade de
+    /// vulnerabilidades críticas que interrompe a varredura. `0` desativa.
+    pub max_critical_findings: usize,
     pub show_help: bool,
     pub show_version: bool,
 }
@@ -72,6 +75,17 @@ impl Configuration {
                 }
                 "--output-dir" => {
                     self.output_dir = Some(next_argument(args, &mut index, "--output-dir")?);
+                }
+                "--max-critical-findings" => {
+                    let value = next_argument(args, &mut index, "--max-critical-findings")?;
+                    self.max_critical_findings = value
+                        .trim()
+                        .parse()
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "--max-critical-findings exige um número inteiro de 0 em diante (0 desativa a regra)"
+                            )
+                        })?;
                 }
                 "-p" | "--provider" => {
                     let provider = next_argument(args, &mut index, "--provider")?;
@@ -181,6 +195,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             tools: p.tools,
             output_file: p.output_file,
             output_dir: p.output_dir,
+            max_critical_findings: p.max_critical_findings,
             show_help: false,
             show_version: false,
         }
