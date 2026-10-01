@@ -212,10 +212,16 @@ fn the_only_writable_mount_is_the_smartsec_output_dir_and_it_is_cleaned_up() {
     );
 
     // Os diretórios criados por esta execução não sobram no host.
+    //
+    // O prefixo vem do `TMPDIR` do processo, e não de "/tmp" fixo: o CI
+    // monta a tmpfs de trabalho em outro caminho justamente porque o `/tmp`
+    // do runner é `ext4`, e um prefixo fixo encontra zero diretórios lá e
+    // reprova um teste cujo requisito — a limpeza — foi cumprido.
+    let prefix = format!("{}/smartsec-", std::env::temp_dir().display());
     let temporaries: Vec<&str> = volumes
         .iter()
         .filter_map(|mount| mount.split_whitespace().next())
-        .filter(|host| host.starts_with("/tmp/smartsec-"))
+        .filter(|host| host.starts_with(&prefix))
         .map(|host| host.split(':').next().unwrap_or(host))
         .collect();
     assert_eq!(temporaries.len(), 2, "{create}");
