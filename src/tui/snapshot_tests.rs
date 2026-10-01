@@ -227,7 +227,8 @@ fn traceability_overlay_matches_80x24_snapshots() {
             "REQ06",
             "REQ09",
             "REQ10",
-            "0/5 verificados",
+            "REQ16",
+            "0/6 verificados",
         ],
     );
 
@@ -249,7 +250,7 @@ fn traceability_overlay_matches_80x24_snapshots() {
     let snapshot = assert_snapshot(
         &mut app,
         &[
-            "4/5 verificados",
+            "4/6 verificados",
             "alvo validado",
             "rootless confirmado",
             "Nmap ok",
@@ -258,6 +259,14 @@ fn traceability_overlay_matches_80x24_snapshots() {
         ],
     );
     assert!(snapshot.contains("○ REQ10"), "{snapshot}");
+    // REQ16 fica pendente porque a fase de código ainda não rodou: é isso que
+    // distingue "análise de código não executou" de "executou e não achou
+    // origem", e a linha precisa dizer qual dos dois é o caso.
+    assert!(snapshot.contains("○ REQ16"), "{snapshot}");
+    assert!(
+        snapshot.contains("aguardando análise de código"),
+        "{snapshot}"
+    );
 }
 
 #[test]

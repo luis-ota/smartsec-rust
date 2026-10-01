@@ -25,7 +25,49 @@ pub fn requirement_rows(app: &AppState) -> Vec<RequirementRow> {
         orchestration_row(app),
         logs_row(app),
         ai_row(app),
+        code_row(app),
     ]
+}
+
+/// Linha REQ16 da matriz: onde a origem de cada achado foi localizada.
+///
+/// A linha distingue as duas situations que se confundem na tela — a fase rodou
+/// e não achou origem, ou a fase nunca rodou. Sem essa distinção, uma varredura
+/// sem análise de código pareceria igual a uma análise que não localizou nada.
+fn code_row(app: &AppState) -> RequirementRow {
+    let findings = &app.orchestrator.findings;
+    let located = findings
+        .iter()
+        .filter(|finding| finding.code_location.is_some())
+        .count();
+    let report = app.orchestrator.last_code_report.as_ref();
+    let (evidenced, detail) = match report {
+        Some(report) => {
+            let base = format!(
+                "projeto {} · {located}/{} com origem no código · {} chamada(s) de ferramenta",
+                app.project_dir_label(),
+                findings.len(),
+                report.tool_calls.len()
+            );
+            match report.unavailable_reason.as_deref() {
+                Some(reason) => (false, format!("{base} · fase indisponível: {reason}")),
+                None => (true, base),
+            }
+        }
+        None => (
+            false,
+            format!(
+                "aguardando análise de código · projeto {}",
+                app.project_dir_label()
+            ),
+        ),
+    };
+    RequirementRow {
+        id: "REQ16",
+        title: "Origem no código e correção",
+        detail,
+        evidenced,
+    }
 }
 
 fn cli_row(app: &AppState) -> RequirementRow {
@@ -218,7 +260,9 @@ fn status_label(status: &str) -> &'static str {
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     app.hit_regions.clear();
     let rows = requirement_rows(app);
-    let popup = super::overlays::centered_fixed(area, 76, 15);
+    // A matriz ganhou a linha REQ16 com a fase de código; a altura acompanha a
+    // contagem de linhas para que nenhuma seja cortada em 80x24.
+    let popup = super::overlays::centered_fixed(area, 76, 17);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -287,13 +331,54 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code_agent::agent::{CodeAnalysisReport, FindingCodeAnalysis, ToolCallRecord};
     use crate::config::Configuration;
     use crate::domain::security_tool::SecurityTool;
+    use crate::domain::vulnerability::CodeLocation;
     use crate::orchestrator::decision::{DecisionRecord, NucleiPlan, NucleiTemplateProfile};
     use std::collections::BTreeMap;
 
     fn app() -> AppState {
         AppState::new(Configuration::default()).expect("configuração de teste válida")
+    }
+
+    /// Relatório sintético da fase de código, com `located` achados localizados
+    /// e `total` achados analisados.
+    fn code_report(located: usize, total: usize) -> CodeAnalysisReport {
+        CodeAnalysisReport {
+            findings: (0..total)
+                .map(|index| FindingCodeAnalysis {
+                    finding_index: index,
+                    location: None,
+                    remediation: Vec::new(),
+                    reason: Some("sem origem".to_string()),
+                    model: "llama3.2:1b".to_string(),
+                    provider: "Ollama".to_string(),
+                    tool_calls: 1,
+                    fallback_used: true,
+                })
+                .take(located)
+                .map(|mut analysis| {
+                    analysis.location = Some(CodeLocation {
+                        file: "src/app.py".to_string(),
+                        line: 4,
+                        snippet: "raise ValueError".to_string(),
+                    });
+                    analysis.reason = None;
+                    analysis.fallback_used = false;
+                    analysis
+                })
+                .collect(),
+            tool_calls: vec![ToolCallRecord {
+                finding_index: 0,
+                iteration: 0,
+                tool: "read_file".to_string(),
+                arguments: r#"{"path":"src/app.py"}"#.to_string(),
+                outcome: "ok".to_string(),
+                summary: "4 | raise ValueError".to_string(),
+            }],
+            unavailable_reason: None,
+        }
     }
 
     fn nmap_execution() -> SecurityTool {
@@ -402,10 +487,10 @@ mod tests {
     fn pending_session_reports_every_requirement_as_waiting() {
         let rows = requirement_rows(&app());
 
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 6);
         assert_eq!(
             rows.iter().map(|row| row.id).collect::<Vec<_>>(),
-            vec!["UC01", "RNF01", "REQ06", "REQ09", "REQ10"]
+            vec!["UC01", "RNF01", "REQ06", "REQ09", "REQ10", "REQ16"]
         );
         assert!(rows.iter().all(|row| !row.evidenced));
         assert!(rows
@@ -414,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_session_evidences_all_five_requirements() {
+    fn completed_session_evidences_all_six_requirements() {
         let mut app = app();
         app.config.target_url = "http://169.254.1.2:3000".to_string();
         app.orchestrator.execution_history.push(nmap_execution());
@@ -425,6 +510,7 @@ mod tests {
         app.orchestrator.last_log =
             "Análise concluída.\n\nOrientações complementares da IA (sem alterar as classificações):\n- Valide a exposição."
                 .to_string();
+        app.orchestrator.last_code_report = Some(code_report(1, 1));
 
         let rows = requirement_rows(&app);
         assert!(
