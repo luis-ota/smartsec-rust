@@ -61,11 +61,7 @@ impl OpenAIProvider {
     /// Monta o corpo da requisição. Sem ferramentas declaradas, o campo
     /// `tools` é omitido para que o caminho de análise de logs continue
     /// idêntico ao anterior (e aceito por provedores sem tool calling).
-    fn chat_body(
-        model: &str,
-        messages: Vec<Value>,
-        tools: Option<Vec<Value>>,
-    ) -> ChatRequest {
+    fn chat_body(model: &str, messages: Vec<Value>, tools: Option<Vec<Value>>) -> ChatRequest {
         ChatRequest {
             model: model.to_string(),
             messages,
@@ -193,9 +189,7 @@ impl LLMProvider for OpenAIProvider {
                     let retryable = status.is_server_error()
                         || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
                     if !retryable || attempt == self.max_retries {
-                        return Err(anyhow::anyhow!(
-                            "A API da LLM retornou o status {status}"
-                        ));
+                        return Err(anyhow::anyhow!("A API da LLM retornou o status {status}"));
                     }
                 }
                 Err(error) if attempt == self.max_retries => return Err(error.into()),

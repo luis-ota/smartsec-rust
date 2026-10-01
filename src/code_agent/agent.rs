@@ -125,7 +125,12 @@ pub struct ToolCallRecord {
 
 impl ToolCallRecord {
     /// Resumo de uma chamada bem-sucedida.
-    fn ok(finding_index: usize, iteration: usize, call: &ToolCall, result: &ToolCallResult) -> Self {
+    fn ok(
+        finding_index: usize,
+        iteration: usize,
+        call: &ToolCall,
+        result: &ToolCallResult,
+    ) -> Self {
         Self {
             finding_index,
             iteration,
@@ -213,11 +218,7 @@ impl CodeAnalysisReport {
     /// a diferença é que aqui o dado protegido é o **código do alvo**, e não
     /// apenas a saída do scanner. Nenhum turno é aberto — nem mesmo um turno
     /// sem ferramentas — porque qualquer ida ao provedor já seria o envio.
-    pub fn blocked_by_consent(
-        findings: &[Vulnerability],
-        model: &str,
-        provider: &str,
-    ) -> Self {
+    pub fn blocked_by_consent(findings: &[Vulnerability], model: &str, provider: &str) -> Self {
         let reason = "o envio de trechos do código do alvo a um provedor remoto exige \
                       consentimento explícito, que não está configurado (RNF10); a localização \
                       no código não foi determinada"
@@ -240,19 +241,6 @@ impl CodeAnalysisReport {
     /// Quantos achados receberam localização verificada.
     pub fn located_count(&self) -> usize {
         self.findings.iter().filter(|item| item.located()).count()
-    }
-
-    /// Modelos distintos que conduziram os laços desta fase.
-    pub fn models(&self) -> Vec<&str> {
-        let mut models: Vec<&str> = self
-            .findings
-            .iter()
-            .map(|item| item.model.as_str())
-            .filter(|model| !model.is_empty())
-            .collect();
-        models.sort_unstable();
-        models.dedup();
-        models
     }
 }
 
@@ -279,16 +267,6 @@ impl CodeAnalysisService {
             LocalToolRegistry::new(workspace, limits, command_allowlist),
             limits,
         ))
-    }
-
-    /// Workspace analisado, para inspeção e testes.
-    pub fn workspace(&self) -> &Workspace {
-        self.registry.workspace()
-    }
-
-    /// Limites operacionais em vigor.
-    pub fn limits(&self) -> CodeAgentLimits {
-        self.limits
     }
 
     /// Executa a fase para todos os achados, respeitando o teto de tempo por
@@ -456,11 +434,7 @@ impl CodeAnalysisService {
                         ToolCallRecord::ok(finding_index, iteration, call, &result)
                     }
                     SEARCH_CODE => {
-                        observe_search_hits(
-                            observed,
-                            self.registry.workspace(),
-                            &result.output,
-                        );
+                        observe_search_hits(observed, self.registry.workspace(), &result.output);
                         ToolCallRecord::ok(finding_index, iteration, call, &result)
                     }
                     _ => ToolCallRecord::ok(finding_index, iteration, call, &result),
@@ -490,7 +464,11 @@ impl CodeAnalysisService {
     /// Converte um caminho informado pelo modelo na forma relativa à raiz,
     /// rejeitando qualquer alvo fora do workspace.
     fn relative_path(&self, requested: &str) -> Result<String, ()> {
-        let resolved = self.registry.workspace().resolve(requested).map_err(|_| ())?;
+        let resolved = self
+            .registry
+            .workspace()
+            .resolve(requested)
+            .map_err(|_| ())?;
         let root = self.registry.workspace().root();
         Ok(resolved
             .strip_prefix(root)
@@ -543,10 +521,7 @@ fn finish(
         let reason = "a resposta do modelo não trouxe a localização no formato JSON \
                       esperado (localizacao.arquivo, localizacao.linha e passos)"
             .to_string();
-        return with_calls(
-            undetermined(finding_index, model, provider, reason),
-            calls,
-        );
+        return with_calls(undetermined(finding_index, model, provider, reason), calls);
     };
 
     let Some(answer_location) = answer.localizacao else {
@@ -619,10 +594,7 @@ fn finish(
 /// O total vem do registro acumulado e não de um contador paralelo: assim o
 /// número exibido na TUI, no relatório e no log estruturado é o mesmo que o
 /// número de linhas que o log realmente gravou.
-fn with_calls(
-    mut analysis: FindingCodeAnalysis,
-    calls: &[ToolCallRecord],
-) -> FindingCodeAnalysis {
+fn with_calls(mut analysis: FindingCodeAnalysis, calls: &[ToolCallRecord]) -> FindingCodeAnalysis {
     analysis.tool_calls = calls.len();
     analysis
 }
@@ -654,11 +626,7 @@ fn observe_read_lines(observed: &mut Vec<ObservedLine>, file: &str, output: &str
 /// origem precisa ter vindo de uma leitura real do sandbox. Sem esta checagem,
 /// um `..` no resultado da busca viraria uma origem declarada que nenhuma
 /// leitura teria produzido.
-fn observe_search_hits(
-    observed: &mut Vec<ObservedLine>,
-    workspace: &Workspace,
-    output: &str,
-) {
+fn observe_search_hits(observed: &mut Vec<ObservedLine>, workspace: &Workspace, output: &str) {
     for line in output.lines() {
         let mut parts = line.splitn(3, ':');
         let (Some(file), Some(number), Some(text)) = (parts.next(), parts.next(), parts.next())
@@ -833,7 +801,11 @@ mod tests {
 
     #[async_trait]
     impl LLMProvider for ScriptedProvider {
-        async fn execute_prompt(&self, _prompt: &str, _model: &str) -> Result<String, anyhow::Error> {
+        async fn execute_prompt(
+            &self,
+            _prompt: &str,
+            _model: &str,
+        ) -> Result<String, anyhow::Error> {
             Ok("resposta do provedor fake".to_string())
         }
 
@@ -929,7 +901,10 @@ mod tests {
                 &provider,
                 "gpt-4o",
                 "OpenAI",
-                &[finding("Autenticação fraca em /api/login", "matched-at: /api/login")],
+                &[finding(
+                    "Autenticação fraca em /api/login",
+                    "matched-at: /api/login",
+                )],
             )
             .await;
 
@@ -937,7 +912,10 @@ mod tests {
         let location = analysis.location.as_ref().expect("localização esperada");
         assert_eq!(location.file, "src/app.py");
         assert_eq!(location.line, 4);
-        assert!(location.snippet.contains("raise ValueError"), "{location:?}");
+        assert!(
+            location.snippet.contains("raise ValueError"),
+            "{location:?}"
+        );
         assert_eq!(
             analysis.remediation,
             vec![
@@ -981,10 +959,7 @@ mod tests {
         let wire = sent[0].to_wire();
         assert_eq!(wire[0]["role"], "system");
         assert_eq!(wire[1]["role"], "user");
-        assert!(sent[0]
-            .tools
-            .iter()
-            .any(|spec| spec.name == "search_code"));
+        assert!(sent[0].tools.iter().any(|spec| spec.name == "search_code"));
     }
 
     #[tokio::test]
@@ -1095,8 +1070,7 @@ mod tests {
             .await;
 
         assert!(!report.findings[0].located());
-        assert!(report
-            .findings[0]
+        assert!(report.findings[0]
             .reason
             .as_deref()
             .is_some_and(|reason| reason.contains("não foi lida pelo agente")));
@@ -1142,14 +1116,19 @@ mod tests {
 
         assert_eq!(report.tool_calls.len(), 3);
         assert_eq!(report.tool_calls[0].outcome, "failed");
-        assert!(report.tool_calls[0].summary.contains("fora da raiz do workspace"));
+        assert!(report.tool_calls[0]
+            .summary
+            .contains("fora da raiz do workspace"));
         assert_eq!(report.tool_calls[1].outcome, "denied");
         assert!(report.tool_calls[1].summary.contains("allowlist"));
         assert_eq!(report.tool_calls[2].outcome, "ok");
 
         let analysis = &report.findings[0];
         assert_eq!(
-            analysis.location.as_ref().map(|l| (l.file.as_str(), l.line)),
+            analysis
+                .location
+                .as_ref()
+                .map(|l| (l.file.as_str(), l.line)),
             Some(("src/config.py", 2))
         );
         // A linha lida existe e o trecho já saiu mascarado do arquivo de teste.
@@ -1455,6 +1434,164 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("src/app.py", 1), ("src/app.py", 4)]
         );
+    }
+
+    /// A fase nunca escreve no projeto analisado.
+    ///
+    /// Este é o teste que sustenta a promessa de "read-only" do módulo. Ele
+    /// compara o conteúdo e a lista de arquivos do workspace **antes e depois**
+    /// de um laço completo, no mesmo registro que o pipeline real usa: sem
+    /// allowlist de comandos.
+    ///
+    /// O modelo é instruído a criar um arquivo (`touch`) e também a ler um
+    /// arquivo comum. A criação é recusada pela allowlist vazia; sem isso, o
+    /// teste passaria mesmo com uma implementação que escrevesse, porque
+    /// nenhuma ferramenta tentaria hacerlo.
+    #[tokio::test]
+    async fn the_phase_never_writes_in_the_analyzed_project() {
+        let root = std::env::temp_dir().join(format!(
+            "smartsec-code-agent-readonly-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("app.py"), "def login(user):\n    return user\n").unwrap();
+        std::fs::write(
+            root.join("segredo.txt"),
+            "EXEMPLO_SECRET=valor-de-exemplo\n",
+        )
+        .unwrap();
+
+        let snapshot = || {
+            let mut entries: Vec<String> = std::fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    format!(
+                        "{}:{}",
+                        entry.file_name().to_string_lossy(),
+                        std::fs::read_to_string(entry.path()).unwrap_or_default()
+                    )
+                })
+                .collect();
+            entries.sort();
+            entries
+        };
+        let before = snapshot();
+
+        let marker = root.join("criado-pelo-agente.txt");
+        // Registro exatamente como `Orchestrator::analyze_code` monta: o
+        // pipeline não concede allowlist, então `run_command` nasce recusado.
+        let service = CodeAnalysisService::open(&root, CodeAgentLimits::default(), Vec::new())
+            .expect("o workspace deve abrir");
+        let provider = ScriptedProvider::new(
+            vec![
+                ToolTurn {
+                    content: String::new(),
+                    tool_calls: vec![tool_call(
+                        "c1",
+                        "run_command",
+                        serde_json::json!({
+                            "program": "touch",
+                            "args": [marker.to_string_lossy()],
+                        }),
+                    )],
+                },
+                ToolTurn {
+                    content: String::new(),
+                    tool_calls: vec![tool_call(
+                        "c2",
+                        "read_file",
+                        serde_json::json!({"path": "app.py"}),
+                    )],
+                },
+                ToolTurn {
+                    content: r#"{"localizacao": {"arquivo": "app.py", "linha": 1}, "passos": ["valide"]}"#
+                        .to_string(),
+                    tool_calls: Vec::new(),
+                },
+            ],
+            true,
+        );
+
+        let report = service
+            .analyze(&provider, "gpt-4o", "OpenAI", &[finding("Achado", "api")])
+            .await;
+
+        assert_eq!(snapshot(), before, "o projeto analisado foi modificado");
+        assert!(
+            !marker.exists(),
+            "run_command criou um arquivo dentro do projeto analisado"
+        );
+        assert_eq!(report.tool_calls[0].outcome, "denied");
+        // A recusa precisa ser visível na auditoria, senão o log mostraria uma
+        // análise que "não achou nada" quando na verdade tentou escrever.
+        assert!(report.tool_calls[0].summary.contains("allowlist vazia"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Consentimento remoto ausente bloqueia a fase **antes** de qualquer turno.
+    ///
+    /// O teste falha se o provedor receber uma requisição sequer: um turno sem
+    /// ferramentas ainda carregaria as pistas do alvo, e as pistas vêm do
+    /// scanner rodado contra o sistema do cliente.
+    #[tokio::test]
+    async fn remote_consent_blocks_the_phase_before_any_turn() {
+        let provider = ScriptedProvider::new(
+            vec![ToolTurn {
+                content:
+                    r#"{"localizacao": {"arquivo": "src/app.py", "linha": 1}, "passos": ["x"]}"#
+                        .to_string(),
+                tool_calls: Vec::new(),
+            }],
+            true,
+        );
+        let findings = [finding(
+            "Segredo no código",
+            "Authorization: Bearer segredo-real",
+        )];
+
+        let report = CodeAnalysisReport::blocked_by_consent(&findings, "gpt-4o", "OpenAI");
+
+        assert!(report.tool_calls.is_empty());
+        assert_eq!(report.findings.len(), 1);
+        let analysis = &report.findings[0];
+        assert!(!analysis.located(), "nenhuma origem pode ser declarada");
+        assert!(analysis.remediation.is_empty());
+        assert!(
+            analysis
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("RNF10")),
+            "{:?}",
+            analysis.reason
+        );
+        assert!(analysis.fallback_used);
+        // O provedor fake não pode ter sido consultado.
+        assert!(
+            provider.requests.lock().expect("requisições").is_empty(),
+            "nenhum turno pode ser aberto sem consentimento"
+        );
+    }
+
+    /// Uma fase que não pôde começar precisa dizer isso, e não parecer uma
+    /// execução que não achou nada.
+    #[test]
+    fn an_unavailable_phase_reports_why_it_did_not_run() {
+        let report = CodeAnalysisReport::unavailable(
+            std::path::Path::new("/caminho/inexistente"),
+            "caminho não encontrado no workspace",
+        );
+
+        let reason = report
+            .unavailable_reason
+            .as_deref()
+            .expect("o motivo precisa estar registrado");
+        assert!(reason.contains("/caminho/inexistente"), "{reason}");
+        assert!(reason.contains("caminho não encontrado"), "{reason}");
+        assert_eq!(report.located_count(), 0);
+        assert!(report.tool_calls.is_empty());
     }
 
     #[test]

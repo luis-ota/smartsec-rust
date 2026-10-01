@@ -24,8 +24,6 @@ pub trait LLMProvider: Send + Sync {
         &self,
         _request: &ToolTurnRequest,
     ) -> Result<ToolTurn, anyhow::Error> {
-        Err(anyhow::anyhow!(
-            "o provedor não implementa tool calling",
-        ))
+        Err(anyhow::anyhow!("o provedor não implementa tool calling",))
     }
 }

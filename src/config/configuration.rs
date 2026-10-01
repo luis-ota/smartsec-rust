@@ -167,10 +167,7 @@ impl Configuration {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map_or_else(
-                || PathBuf::from("."),
-                |value| PathBuf::from(value),
-            )
+            .map_or_else(|| PathBuf::from("."), PathBuf::from)
     }
 }
 

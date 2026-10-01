@@ -440,7 +440,10 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if let Some(index) = app.result_detail_vuln {
         if let Some(item) = vulnerabilities.get(index) {
-            lines.push(Line::styled(item.title.clone(), Style::default().fg(TEXT).bold()));
+            lines.push(Line::styled(
+                item.title.clone(),
+                Style::default().fg(TEXT).bold(),
+            ));
             lines.push(Line::from(""));
             append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
         }
@@ -451,7 +454,10 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         ));
     } else {
         for item in &vulnerabilities {
-            lines.push(Line::styled(item.title.clone(), Style::default().fg(TEXT).bold()));
+            lines.push(Line::styled(
+                item.title.clone(),
+                Style::default().fg(TEXT).bold(),
+            ));
             append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
             lines.push(Line::from(""));
         }
@@ -499,7 +505,10 @@ fn append_code_location(
     // relatório da fase é reconstruído a cada execução, então as poucas strings
     // envolvidas são clonadas em vez de emprestarem o lifetime do vetor de
     // achados.
-    lines.push(Line::styled("Localização no código", Style::default().fg(TEXT).bold()));
+    lines.push(Line::styled(
+        "Localização no código",
+        Style::default().fg(TEXT).bold(),
+    ));
     match location {
         Some((file, line)) => {
             lines.push(Line::from(vec![
@@ -518,8 +527,7 @@ fn append_code_location(
                 for (index, step) in remediation.iter().enumerate() {
                     let prefix = format!("{}. ", index + 1);
                     let step_width = width.saturating_sub(prefix.len());
-                    for (offset, part) in
-                        wrap_text(step, step_width.max(1)).into_iter().enumerate()
+                    for (offset, part) in wrap_text(step, step_width.max(1)).into_iter().enumerate()
                     {
                         let text = if offset == 0 {
                             format!("{prefix}{part}")
@@ -532,14 +540,11 @@ fn append_code_location(
             }
         }
         None => {
-            let reason = app.code_reason_fallback().unwrap_or_else(|| {
-                "a origem no código não foi determinada".to_string()
-            });
+            let reason = app
+                .code_reason_fallback()
+                .unwrap_or_else(|| "a origem no código não foi determinada".to_string());
             lines.push(Line::from(vec![
-                Span::styled(
-                    "arquivo  ",
-                    Style::default().fg(MUTED),
-                ),
+                Span::styled("arquivo  ", Style::default().fg(MUTED)),
                 Span::styled(
                     "localização não determinada",
                     Style::default().fg(WARNING).bold(),
@@ -580,5 +585,118 @@ fn severity_color(severity: Severity) -> Color {
         Severity::Medium => WARNING,
         Severity::Low => ACCENT,
         Severity::Info => MUTED,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Configuration;
+    use crate::domain::vulnerability::{CodeLocation, FindingSource, Vulnerability};
+    use crate::tui::state::{AppState, AppStep};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn finding(title: &str) -> Vulnerability {
+        Vulnerability {
+            title: title.to_string(),
+            severity: Severity::High,
+            description: "Descrição do achado".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise a configuração".to_string(),
+            didactic: "Explicação".to_string(),
+            source: FindingSource::Real,
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn draw(app: &mut AppState, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(app, frame, frame.area()))
+            .unwrap();
+        terminal.backend().to_string()
+    }
+
+    /// Critério de aceite da issue #76: a TUI exibe a localização e a correção
+    /// sugerida por achado, legíveis em 80x24 (RNF07).
+    #[test]
+    fn the_detail_shows_the_location_and_the_remediation_at_80x24() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        let mut item = finding("Autenticação fraca em /api/login");
+        item.code_location = Some(CodeLocation {
+            file: "src/app.py".to_string(),
+            line: 4,
+            snippet: "raise ValueError".to_string(),
+        });
+        item.code_remediation = vec![
+            "Valide o usuário antes de prosseguir".to_string(),
+            "Adicione teste de regressão".to_string(),
+        ];
+        app.orchestrator.findings.push(item);
+        app.step = AppStep::Results;
+        app.result_detail_vuln = Some(0);
+        app.focus = crate::tui::interaction::FocusTarget::ResultsDetail;
+
+        let screen = draw(&mut app, 80, 24);
+
+        assert!(screen.contains("Localização no código"), "{screen}");
+        assert!(screen.contains("src/app.py"), "{screen}");
+        assert!(screen.contains("linha 4"), "{screen}");
+        assert!(screen.contains("Correção sugerida"), "{screen}");
+        assert!(screen.contains("Valide o usuário"), "{screen}");
+    }
+
+    /// Sem origem, a TUI diz isso e mostra o motivo — nunca um caminho ou uma
+    /// linha que o agente não leu.
+    #[test]
+    fn the_detail_says_when_the_location_was_not_determined() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.orchestrator.findings.push(finding("Cabeçalho ausente"));
+        app.step = AppStep::Results;
+        app.result_detail_vuln = Some(0);
+        app.focus = crate::tui::interaction::FocusTarget::ResultsDetail;
+
+        let screen = draw(&mut app, 80, 24);
+
+        assert!(screen.contains("localização não determinada"), "{screen}");
+    }
+
+    /// O resumo exibe o diretório do projeto ao lado do alvo, para que o
+    /// operador saiba qual código foi analisado sem abrir o relatório.
+    #[test]
+    fn the_summary_shows_the_analyzed_project_at_80x24() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.config.target_url = "http://alvo.local".to_string();
+        app.orchestrator.findings.push(finding("Achado"));
+        app.step = AppStep::Results;
+
+        let screen = draw(&mut app, 80, 24);
+
+        assert!(screen.contains("código"), "{screen}");
+    }
+
+    /// A linha de auditoria não pode ser sacrificada para caber o diretório do
+    /// projeto: em 80x24, o painel de resumo precisa continuar mostrando as
+    /// duas informações.
+    #[test]
+    fn the_summary_keeps_both_the_target_and_the_audit_line_at_80x24() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.config.target_url = "http://alvo.local".to_string();
+        app.orchestrator.findings.push(finding("Achado"));
+        app.step = AppStep::Results;
+
+        let screen = draw(&mut app, 80, 24);
+
+        assert!(screen.contains("alvo"), "{screen}");
+        assert!(screen.contains("código"), "{screen}");
+        assert!(
+            screen.contains("auditoria"),
+            "a linha de auditoria sumiu em 80x24: {screen}"
+        );
     }
 }
