@@ -429,18 +429,15 @@ fn print_code_report(
                 // posição do achado: sem ele, o operador veria apenas
                 // "localização não determinada" e não saberia se o agente
                 // falhou, recusou ou se o provedor não suporta tool calling.
-                let reason = report
+                let analysis = report
                     .findings
                     .iter()
-                    .find(|item| item.finding_index == index)
-                    .and_then(|item| item.reason.clone())
-                    .unwrap_or_else(|| {
-                        crate::code_agent::agent::UNDETERMINED_LABEL.to_string()
-                    });
-                println!(
-                    "    código: {} · {reason}",
-                    crate::code_agent::agent::UNDETERMINED_LABEL
+                    .find(|item| item.finding_index == index);
+                let reason = analysis.map_or_else(
+                    || crate::code_agent::agent::UNDETERMINED_LABEL.to_string(),
+                    |item| item.summary(),
                 );
+                println!("    {reason}");
             }
         }
     }

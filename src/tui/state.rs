@@ -1181,7 +1181,7 @@ mod tests {
             target: "http://target.local".to_string(),
             evidence: "porta aberta".to_string(),
             detected_at: "2026-09-04T14:00:00Z".to_string(),
-        ..Default::default()
+            ..Default::default()
         });
         orchestrator.last_log = "Análise real".to_string();
         let audit_path = PathBuf::from("/tmp/scan.json");

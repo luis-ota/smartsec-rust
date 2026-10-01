@@ -84,10 +84,6 @@ impl LocalToolRegistry {
         &self.workspace
     }
 
-    pub fn limits(&self) -> CodeAgentLimits {
-        self.limits
-    }
-
     /// Especificações das ferramentas `list_dir`, `read_file`, `search_code` e
     /// `run_command`.
     pub fn specs(&self) -> Vec<ToolSpec> {

@@ -387,6 +387,71 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
+    fn draw(app: &mut AppState, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(app, frame, frame.area()))
+            .unwrap();
+        terminal.backend().to_string()
+    }
+
+    /// O campo do projeto precisa aparecer na tela de configuração com o valor
+    /// efetivo, para que o operador veja qual árvore será analisada.
+    #[test]
+    fn shows_the_project_directory_field_with_its_effective_value() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+
+        let screen = draw(&mut app, 80, 24);
+
+        assert!(screen.contains("Projeto analisado"), "{screen}");
+        assert!(
+            screen.contains("read-only"),
+            "a dica precisa deixar claro que o agente só lê o projeto: {screen}"
+        );
+        assert!(
+            screen.lines().any(|line| line.contains('.')),
+            "o valor padrão precisa ser o diretório atual"
+        );
+    }
+
+    /// O campo do projeto é navegável por mouse como os demais (RNF07).
+    #[test]
+    fn the_project_field_exposes_a_mouse_region() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+
+        draw(&mut app, 80, 24);
+
+        assert!(app.hit_regions.iter().any(|region| {
+            region.action == SemanticAction::SelectSettingsField(SettingsField::ProjectDir)
+        }));
+    }
+
+    /// Um caminho que a fase do agente rejeitaria não pode ser salvo pela TUI.
+    #[test]
+    fn an_invalid_project_directory_is_refused_with_an_actionable_message() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.show_settings = true;
+        app.settings_input_project_dir = "/caminho/que/nao/existe".to_string();
+
+        let error = app.apply_settings().unwrap_err();
+
+        assert!(error.contains("Diretório do projeto inválido"), "{error}");
+        assert!(error.contains("não encontrado"), "{error}");
+    }
+
+    /// O campo volta ao valor efetivo ao reabrir a tela, para que o operador
+    /// veja o padrão real e não um vazio enganoso.
+    #[test]
+    fn reopening_the_settings_shows_the_effective_project_directory() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.settings_input_project_dir = "/outro/caminho".to_string();
+
+        app.reset_settings_draft();
+
+        assert_eq!(app.settings_input_project_dir, ".");
+    }
+
     #[test]
     fn masks_api_key_and_hides_remote_fields_for_local_provider() {
         let config = Configuration {

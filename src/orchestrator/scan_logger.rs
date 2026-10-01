@@ -438,7 +438,7 @@ mod tests {
                     target: "http://target.local".to_string(),
                     evidence: "test evidence".to_string(),
                     detected_at: "2026-08-31T12:01:00Z".to_string(),
-                ..Default::default()
+                    ..Default::default()
                 },
                 Vulnerability {
                     title: "Informational finding".to_string(),
@@ -451,7 +451,7 @@ mod tests {
                     target: "http://target.local".to_string(),
                     evidence: "port open".to_string(),
                     detected_at: "2026-08-31T12:01:00Z".to_string(),
-                ..Default::default()
+                    ..Default::default()
                 },
             ],
             "AI Analysis text".to_string(),
@@ -699,6 +699,173 @@ mod tests {
         assert_eq!(restored.llm_analyzed_at, "");
         assert_eq!(restored.llm_neutralized_snippets, 0);
         assert_eq!(restored.llm_provider, "Ollama");
+    }
+
+    /// Um log gravado **antes** da issue #76 precisa continuar carregando.
+    ///
+    /// A falha seria silenciosa em produção: o histórico é aberto por um
+    /// operador, semanas depois, muito longe do commit que quebrou a leitura.
+    /// Por isso o teste desserializa um JSON com a forma real de um arquivo
+    /// antigo — sem nenhum dos campos novos, nem no cabeçalho nem dentro do
+    /// achado.
+    #[test]
+    fn a_scan_log_written_before_the_code_agent_still_loads() {
+        let legacy = r#"{
+            "scan_id": "scan_legado",
+            "target_url": "http://alvo.local",
+            "started_at": "2026-08-31T12:00:00Z",
+            "completed_at": "2026-08-31T12:05:00Z",
+            "execution_type": "Auto",
+            "llm_provider": "Ollama",
+            "tools_executed": [],
+            "findings_count": 1,
+            "critical_count": 0,
+            "high_count": 1,
+            "medium_count": 0,
+            "low_count": 0,
+            "findings": [
+                {
+                    "title": "Achado antigo",
+                    "severity": "High",
+                    "description": "Descrição",
+                    "tool": "Nuclei",
+                    "recommendation": "Revise",
+                    "didactic": "Explicação",
+                    "source": "Real",
+                    "target": "http://alvo.local",
+                    "evidence": "evidência",
+                    "detected_at": "2026-08-31T12:01:00Z"
+                }
+            ],
+            "agent_analysis": "Análise concluída: 1 achados"
+        }"#;
+
+        let restored: ScanMetadata = serde_json::from_str(legacy).expect("histórico antigo");
+
+        assert_eq!(restored.scan_id, "scan_legado");
+        assert_eq!(restored.llm_provider, "Ollama");
+        assert_eq!(restored.code_project_dir, "");
+        assert_eq!(restored.code_located_count, 0);
+        assert_eq!(restored.code_tool_calls_count, 0);
+        assert!(restored.code_tool_calls.is_empty());
+        assert!(restored.code_unavailable_reason.is_none());
+
+        // O achado antigo não tem origem no código, e isso precisa sobreviver
+        // como `None` — nunca como um caminho inventado pela desserialização.
+        let finding: crate::domain::vulnerability::Vulnerability =
+            serde_json::from_value(restored.findings[0].clone()).expect("achado legado");
+        assert!(finding.code_location.is_none());
+        assert!(finding.code_remediation.is_empty());
+    }
+
+    /// A fase do agente de código precisa ser auditável: diretório lido,
+    /// contagens e o registro de cada chamada de ferramenta.
+    #[test]
+    fn the_code_agent_phase_is_recorded_with_its_audit_trail() {
+        use crate::code_agent::agent::{CodeAnalysisReport, FindingCodeAnalysis, ToolCallRecord};
+
+        let report = CodeAnalysisReport {
+            findings: vec![FindingCodeAnalysis {
+                finding_index: 0,
+                location: Some(crate::domain::vulnerability::CodeLocation {
+                    file: "src/app.py".to_string(),
+                    line: 4,
+                    snippet: "raise ValueError".to_string(),
+                }),
+                remediation: vec!["Valide o usuário".to_string()],
+                reason: None,
+                model: "gpt-4o".to_string(),
+                provider: "OpenAI".to_string(),
+                tool_calls: 1,
+                fallback_used: false,
+            }],
+            tool_calls: vec![ToolCallRecord {
+                finding_index: 0,
+                iteration: 0,
+                tool: "read_file".to_string(),
+                arguments: r#"{"path":"src/app.py"}"#.to_string(),
+                outcome: "ok".to_string(),
+                summary: "4 | raise ValueError".to_string(),
+            }],
+            unavailable_reason: None,
+        };
+        let project = std::path::Path::new("/tmp/projeto-auditavel");
+
+        let metadata = ScanMetadata::new(
+            "scan-codigo".to_string(),
+            "http://alvo.local".to_string(),
+            "2026-09-30T12:00:00Z".to_string(),
+            "2026-09-30T12:05:00Z".to_string(),
+            "Auto".to_string(),
+            "OpenAI".to_string(),
+            vec![],
+            vec![],
+            "Análise concluída".to_string(),
+        )
+        .with_code_analysis(&report, project);
+
+        assert_eq!(metadata.code_project_dir, "/tmp/projeto-auditavel");
+        assert_eq!(metadata.code_located_count, 1);
+        assert_eq!(metadata.code_tool_calls_count, 1);
+        assert_eq!(metadata.code_tool_calls[0].tool, "read_file");
+        assert_eq!(metadata.code_tool_calls[0].outcome, "ok");
+        assert!(metadata.code_unavailable_reason.is_none());
+    }
+
+    /// O `snippet` lido do código do alvo e os argumentos de um comando podem
+    /// conter segredo; o log estruturado sobrevive ao scan e não pode vazar.
+    #[test]
+    fn the_code_agent_audit_trail_is_sanitized_before_persistence() {
+        use crate::code_agent::agent::{CodeAnalysisReport, FindingCodeAnalysis, ToolCallRecord};
+
+        let report = CodeAnalysisReport {
+            findings: vec![FindingCodeAnalysis {
+                finding_index: 0,
+                location: None,
+                remediation: vec![],
+                reason: None,
+                model: "gpt-4o".to_string(),
+                provider: "OpenAI".to_string(),
+                tool_calls: 1,
+                fallback_used: false,
+            }],
+            tool_calls: vec![ToolCallRecord {
+                finding_index: 0,
+                iteration: 0,
+                tool: "run_command".to_string(),
+                arguments: r#"{"program":"env","args":["API_KEY=sk-secreto-real"]}"#.to_string(),
+                outcome: "ok".to_string(),
+                summary: "EXEMPLO_SECRET=valor-de-exemplo".to_string(),
+            }],
+            unavailable_reason: None,
+        };
+        let metadata = ScanMetadata::new(
+            "scan-segredo".to_string(),
+            "http://alvo.local".to_string(),
+            "2026-09-30T12:00:00Z".to_string(),
+            "2026-09-30T12:05:00Z".to_string(),
+            "Auto".to_string(),
+            "OpenAI".to_string(),
+            vec![],
+            vec![],
+            "Análise concluída".to_string(),
+        )
+        .with_code_analysis(&report, std::path::Path::new("/tmp/projeto"));
+
+        // A garantia é sobre o **arquivo gravado**, não sobre a struct em
+        // memória: a sanitização acontece em `sanitized()`, no caminho de
+        // escrita. Testar a struct passaria mesmo com a sanitização removida.
+        let dir =
+            std::env::temp_dir().join(format!("smartsec-audit-segredo-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = save_scan_log_to_dir(&metadata, &dir).expect("save should succeed");
+        let serialized = fs::read_to_string(&path).unwrap();
+
+        assert!(!serialized.contains("sk-secreto-real"), "{serialized}");
+        assert!(!serialized.contains("valor-de-exemplo"), "{serialized}");
+        assert!(serialized.contains("[REDACTED]"), "{serialized}");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
