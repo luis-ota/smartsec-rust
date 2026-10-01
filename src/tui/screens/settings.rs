@@ -391,18 +391,41 @@ mod tests {
     /// Criterio de aceite 2: salvar uma configuracao valida remove o aviso.
     /// Sem isso, o operador corrigiria o problema e a interface continuaria
     /// anunciando que ele existe.
+    ///
+    /// Verifica o `commit_settings` e nao o `apply_settings` por um motivo
+    /// concreto: `apply_settings` termina em `save`, que grava em
+    /// `~/.config/smartsec/config.toml` e escreve no keyring do sistema. Um
+    /// teste que passa por ali apaga a configuracao real de quem roda
+    /// `cargo test` e depende de haver um servico de segredos na maquina — foi
+    /// exatamente o que quebrou no CI. O `commit` e onde o aviso decide, e nao
+    /// depende do ambiente.
     #[test]
     fn saving_a_valid_configuration_clears_the_opening_warning() {
         let mut app = app();
         app.set_config_warning(Some("IA: credenciais obrigatórias".to_string()));
         assert!(app.config_warning.is_some());
 
-        // Preenche a chave remota que faltava, que e o que faltava no aviso.
-        app.settings_input_api_key = "chave-de-teste-nao-e-real".to_string();
-        app.apply_settings()
-            .expect("a configuração corrigida deve ser válida");
+        app.commit_settings(Configuration::default());
+
+        assert!(
+            app.config_warning.is_none(),
+            "o aviso de abertura sobreviveu a uma configuracao valida: {:?}",
+            app.config_warning
+        );
+        assert!(!app.show_settings, "a tela de configuracao deveria fechar");
+    }
+
+    /// Um aviso vazio nao e aviso. Sem esta guarda, um `set_config_warning("")`
+    /// deixaria a linha de status exibindo um espaco em branco com a cor de
+    /// erro, que e pior do que nao exibir nada.
+    #[test]
+    fn a_blank_warning_is_treated_as_no_warning() {
+        let mut app = app();
+
+        app.set_config_warning(Some("   \n  ".to_string()));
 
         assert!(app.config_warning.is_none());
+        assert!(app.settings_status_error().is_none());
     }
 
     /// O aviso de abertura e o erro de salvamento disputam a mesma linha, e o

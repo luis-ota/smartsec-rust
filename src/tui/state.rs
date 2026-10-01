@@ -1176,13 +1176,24 @@ impl AppState {
             .map_err(|error| format!("Diretório do projeto inválido: {error}"))?;
         candidate.project_dir = Some(project);
         candidate.save()?;
+        self.commit_settings(candidate);
+        Ok(())
+    }
+
+    /// Aplica uma configuração já validada e persistida.
+    ///
+    /// Separado de [`Self::apply_settings`] porque `save` toca o disco do
+    /// usuário e o keyring do sistema: misturar as duas coisas tornaria
+    /// impossível verificar o efeito no estado sem uma máquina de verdade.
+    pub(crate) fn commit_settings(&mut self, candidate: Configuration) {
         self.config = candidate;
         self.reset_settings_draft();
         self.show_settings = false;
         // Uma configuracao valida foi salva: o aviso de abertura perdeu o
-        // objeto e sai, para que a proxima execucao comece limpa.
+        // objeto e sai, para que a proxima execucao comece limpa. Se o `save`
+        // falhar, ele nem chega aqui — e o aviso continuar e o correto,
+        // porque o problema nao foi corrigido em lugar nenhum.
         self.config_warning = None;
-        Ok(())
     }
 
     pub fn reset_settings_draft(&mut self) {
