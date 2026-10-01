@@ -1,3 +1,4 @@
+use crate::orchestrator::control::{ControlChannel, RunControl};
 use crate::orchestrator::tmpfs;
 use anyhow::{anyhow, Context};
 use std::path::{Path, PathBuf};
@@ -7,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const PODMAN_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -136,6 +138,8 @@ pub enum ExecutionStatus {
     Succeeded,
     Failed(Option<i32>),
     TimedOut,
+    /// O container foi encerrado a pedido (REQ14) e removido sem órfão.
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -165,6 +169,218 @@ pub struct PodmanExecutor {
     binary: PathBuf,
     timeout: Duration,
     log_sink: Option<mpsc::UnboundedSender<String>>,
+    /// Canal de pausa/retomada/cancelamento (REQ14). Quando ausente, o
+    /// executor se comporta como antes e só obedece ao timeout.
+    control: Option<watch::Receiver<RunControl>>,
+}
+
+/// Mensagem do controlador do container para o laço de execução.
+enum ControlMessage {
+    /// Mudança observada no container real.
+    Event(ContainerControlEvent),
+    /// Linha do trace operacional, carimbada pelo laço principal.
+    Trace(String),
+}
+
+/// Evento do controlador do container, reencaminhado ao laço de execução.
+enum ContainerControlEvent {
+    Paused,
+    Resumed,
+    /// O `podman stop` foi emitido e o encerramento está em andamento.
+    Cancelling,
+    /// O processo dentro do container morreu; o laço pode seguir para a limpeza.
+    Stopped,
+    Failure(String),
+}
+
+/// Desfecho de um comando do Podman sujeito a timeout e cancelamento.
+enum AwaitOutcome {
+    Finished(std::io::Result<std::process::Output>),
+    TimedOut,
+    Cancelled,
+}
+
+/// Tarefa que reage ao canal de controle e age sobre o container real.
+///
+/// Roda ao lado do `podman start --attach`: a pausa vira `podman pause` e a
+/// retomada vira `podman unpause`, e não uma bandeira local.
+async fn container_control_loop(
+    binary: PathBuf,
+    container_id: String,
+    mut control: watch::Receiver<RunControl>,
+    messages: mpsc::UnboundedSender<ControlMessage>,
+) {
+    // O estado corrente é aplicado primeiro: uma pausa que chegou durante o
+    // `create` precisa ser honrada assim que o container existir. O valor é
+    // copiado antes de qualquer `await` para não segurar o lock do `watch`.
+    let current = *control.borrow_and_update();
+    let mut paused = match current {
+        RunControl::Running => false,
+        RunControl::Paused => {
+            let _ = messages.send(ControlMessage::Trace(format!(
+                "$ podman pause {container_id}"
+            )));
+            podman_control(&binary, &["pause", &container_id])
+                .await
+                .is_ok()
+        }
+        RunControl::Cancelled => {
+            let _ = messages.send(ControlMessage::Event(ContainerControlEvent::Cancelling));
+            stop_container(&binary, &container_id, &messages).await;
+            let _ = messages.send(ControlMessage::Event(ContainerControlEvent::Stopped));
+            return;
+        }
+    };
+    loop {
+        if control.changed().await.is_err() {
+            return;
+        }
+        let next = *control.borrow_and_update();
+        match next {
+            RunControl::Running if paused => {
+                let _ = messages.send(ControlMessage::Trace(format!(
+                    "$ podman unpause {container_id}"
+                )));
+                match podman_control(&binary, &["unpause", &container_id]).await {
+                    Ok(()) => {
+                        paused = false;
+                        let _ =
+                            messages.send(ControlMessage::Event(ContainerControlEvent::Resumed));
+                    }
+                    Err(error) => {
+                        // Sem unpause bem-sucedido o container continua
+                        // pausado; repetir o comando é seguro.
+                        let _ = messages
+                            .send(ControlMessage::Event(ContainerControlEvent::Failure(error)));
+                    }
+                }
+            }
+            RunControl::Paused if !paused => {
+                let _ = messages.send(ControlMessage::Trace(format!(
+                    "$ podman pause {container_id}"
+                )));
+                match podman_control(&binary, &["pause", &container_id]).await {
+                    Ok(()) => {
+                        paused = true;
+                        let _ = messages.send(ControlMessage::Event(ContainerControlEvent::Paused));
+                    }
+                    Err(error) => {
+                        let _ = messages
+                            .send(ControlMessage::Event(ContainerControlEvent::Failure(error)));
+                    }
+                }
+            }
+            RunControl::Cancelled => {
+                let _ = messages.send(ControlMessage::Event(ContainerControlEvent::Cancelling));
+                stop_container(&binary, &container_id, &messages).await;
+                let _ = messages.send(ControlMessage::Event(ContainerControlEvent::Stopped));
+                return;
+            }
+            // Pausa repetida e retomada sem pausa são inofensivas.
+            RunControl::Running | RunControl::Paused => {}
+        }
+    }
+}
+
+/// Aguarda a próxima mensagem do controlador do container.
+///
+/// Sem controlador, o futuro nunca resolve: o laço de execução fica sob
+/// observação apenas do processo do Podman e do timeout.
+async fn next_control_message(
+    messages: &mut Option<mpsc::UnboundedReceiver<ControlMessage>>,
+) -> Option<ControlMessage> {
+    match messages {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Resolve quando o cancelamento chega, ignorando pausa e retomada.
+///
+/// Um canal encerrado conta como cancelamento: sem ninguém capaz de retomar,
+/// a execução em voo seria indefinida.
+async fn wait_for_cancellation(control: &mut watch::Receiver<RunControl>) {
+    loop {
+        if control.changed().await.is_err() || *control.borrow_and_update() == RunControl::Cancelled
+        {
+            return;
+        }
+    }
+}
+
+/// Executa um comando de controle curto do Podman com prazo fixo.
+async fn podman_control(binary: &Path, args: &[&str]) -> Result<(), String> {
+    let mut command = Command::new(binary);
+    command.args(args).stdin(Stdio::null()).kill_on_drop(true);
+    match tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) if output.status.success() => Ok(()),
+        Ok(Ok(output)) => Err(format!(
+            "podman {} falhou: {}",
+            args.join(" "),
+            output_message(&output.stderr)
+        )),
+        Ok(Err(error)) => Err(format!(
+            "podman {} não pôde ser executado: {error}",
+            args.join(" ")
+        )),
+        Err(_) => Err(format!(
+            "podman {} não respondeu em até 10 segundos",
+            args.join(" ")
+        )),
+    }
+}
+
+/// Encerra o container de forma cooperativa: `stop` e, se preciso, `kill`.
+///
+/// O `rm --force` é responsabilidade do laço principal, que já o emite para
+/// todo caminho de saída; aqui só é garantido que o processo dentro do
+/// container morre antes disso.
+async fn stop_container(
+    binary: &Path,
+    container_id: &str,
+    messages: &mpsc::UnboundedSender<ControlMessage>,
+) {
+    let _ = messages.send(ControlMessage::Trace(format!(
+        "$ podman stop --time 5 {container_id}"
+    )));
+    let mut command = Command::new(binary);
+    command
+        .args(["stop", "--time", "5", container_id])
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    // O `stop` tem prazo maior que os demais comandos: ele espera o scanner
+    // reagir ao SIGTERM antes de devolver.
+    let stop_timeout = PODMAN_CONTROL_TIMEOUT + Duration::from_secs(5);
+    let stopped = matches!(
+        tokio::time::timeout(stop_timeout, command.output()).await,
+        Ok(Ok(output)) if output.status.success()
+    );
+    if !stopped {
+        let mut kill = Command::new(binary);
+        kill.args(["kill", container_id])
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        let _ = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, kill.output()).await;
+    }
+}
+
+/// Resultado de uma execução encerrada por cancelamento.
+fn cancelled_result(
+    container_id: String,
+    cleanup_error: Option<String>,
+    trace: Vec<String>,
+) -> ExecutionResult {
+    ExecutionResult {
+        stdout: String::new(),
+        stderr: String::new(),
+        status: ExecutionStatus::Cancelled,
+        duration: Duration::ZERO,
+        container_id,
+        cleanup_error,
+        trace,
+        artifact: None,
+        artifact_error: None,
+    }
 }
 
 /// Opções de uma execução: recursos do container, montagens e saída gravável.
@@ -218,11 +434,18 @@ impl PodmanExecutor {
             binary: PathBuf::from("podman"),
             timeout,
             log_sink: None,
+            control: None,
         }
     }
 
     pub fn with_log_sink(mut self, sink: mpsc::UnboundedSender<String>) -> Self {
         self.log_sink = Some(sink);
+        self
+    }
+
+    /// Conecta o executor ao canal de controle compartilhado.
+    pub fn with_control(mut self, control: &ControlChannel) -> Self {
+        self.control = Some(control.subscribe());
         self
     }
 
@@ -232,6 +455,7 @@ impl PodmanExecutor {
             binary,
             timeout,
             log_sink: None,
+            control: None,
         }
     }
 
@@ -317,6 +541,24 @@ impl PodmanExecutor {
             CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
         let mut cleanup_guard = ContainerCleanup::new(self.binary.clone(), &name);
+
+        // Janela de corrida antes do `create`: um cancelamento que já chegou
+        // não deve criar container algum. A limpeza é tentada mesmo assim, por
+        // nome, para não depender do estado do guard.
+        if let Some(control) = self.control.clone() {
+            let mut control = control;
+            if *control.borrow_and_update() == RunControl::Cancelled {
+                trace.emit("cancelamento recebido antes de criar o container");
+                let cleanup_error = self.remove_container(&name, &mut trace).await.err();
+                cleanup_guard.disarm();
+                return Ok(cancelled_result(
+                    name,
+                    cleanup_error.map(|error| format!("{error:#}")),
+                    trace.lines,
+                ));
+            }
+        }
+
         let mut create_args: Vec<String> = vec![
             "create".to_owned(),
             "--name".to_owned(),
@@ -356,10 +598,28 @@ impl PodmanExecutor {
         trace.emit(format!("$ podman {}", create_args.join(" ")));
         let mut create_command = self.podman_command();
         create_command.args(&create_args);
-        let create_output = match tokio::time::timeout(self.timeout, create_command.output()).await
+        // O `create` pode levar minutos (pull da imagem). O cancelamento
+        // durante essa janela interrompe o comando do Podman e limpa pelo nome.
+        let create_output = match self
+            .await_or_cancel(self.timeout, create_command.output())
+            .await
         {
-            Ok(output) => output.with_context(|| self.unavailable_message())?,
-            Err(_) => {
+            AwaitOutcome::Finished(output) => output.with_context(|| self.unavailable_message())?,
+            AwaitOutcome::Cancelled => {
+                trace.emit(format!(
+                    "cancelamento recebido durante a criação de '{name}'"
+                ));
+                let cleanup = self.remove_container(&name, &mut trace).await.err();
+                if cleanup.is_none() {
+                    cleanup_guard.disarm();
+                }
+                return Ok(cancelled_result(
+                    name,
+                    cleanup.map(|error| format!("{error:#}")),
+                    trace.lines,
+                ));
+            }
+            AwaitOutcome::TimedOut => {
                 trace.emit(format!(
                     "tempo limite de {:.0?} excedido ao criar o container '{name}'",
                     self.timeout
@@ -520,25 +780,98 @@ impl PodmanExecutor {
         let stderr_task = tokio::spawn(async move { read_stream_live(stderr, sink).await });
         let started_at = Instant::now();
 
-        let status = match tokio::time::timeout(self.timeout, child.wait()).await {
-            Ok(wait_result) => {
-                let exit = wait_result.context("falha ao aguardar o processo do Podman")?;
-                if exit.success() {
-                    ExecutionStatus::Succeeded
-                } else {
-                    ExecutionStatus::Failed(exit.code())
+        // Acompanha o processo do Podman enquanto reage ao canal de controle.
+        // O timeout continua valendo mesmo pausado, para que uma pausa não
+        // vire uma execução indefinida.
+        let (mut messages, controller) = match self.control.clone() {
+            Some(control) => {
+                let (sender, receiver) = mpsc::unbounded_channel();
+                let controller = tokio::spawn(container_control_loop(
+                    self.binary.clone(),
+                    container_id.to_owned(),
+                    control,
+                    sender,
+                ));
+                (Some(receiver), Some(controller))
+            }
+            None => (None, None),
+        };
+        let deadline = tokio::time::Instant::now() + self.timeout;
+
+        // O `wait` fica preso ao processo do Podman; qualquer saída do laço
+        // encerra o laço e libera o `child` para o `kill` cooperativo.
+        let status = {
+            let wait = child.wait();
+            tokio::pin!(wait);
+            loop {
+                let message = tokio::select! {
+                    result = &mut wait => break Self::status_from(result),
+                    () = tokio::time::sleep_until(deadline) => {
+                        trace.emit(format!(
+                            "tempo limite excedido; interrompendo o container {container_id}"
+                        ));
+                        let mut kill = self.podman_command();
+                        kill.args(["kill", container_id]);
+                        let _ =
+                            tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, kill.output()).await;
+                        break ExecutionStatus::TimedOut;
+                    }
+                    message = next_control_message(&mut messages) => message,
+                };
+                match message {
+                    Some(ControlMessage::Trace(line)) => trace.emit(line),
+                    Some(ControlMessage::Event(ContainerControlEvent::Paused)) => {
+                        trace.emit(format!("container {container_id} pausado"));
+                    }
+                    Some(ControlMessage::Event(ContainerControlEvent::Resumed)) => {
+                        trace.emit(format!("container {container_id} retomado"));
+                    }
+                    Some(ControlMessage::Event(ContainerControlEvent::Failure(error))) => {
+                        trace.emit(format!(
+                            "controle do container {container_id} falhou: {error}"
+                        ));
+                    }
+                    Some(ControlMessage::Event(ContainerControlEvent::Cancelling)) => {
+                        trace.emit(format!(
+                            "cancelamento recebido; encerrando o container {container_id}"
+                        ));
+                    }
+                    // Só sai depois do `stop`/`kill`: sair antes deixaria o
+                    // scanner rodando no container durante o `rm`.
+                    Some(ControlMessage::Event(ContainerControlEvent::Stopped)) => {
+                        break ExecutionStatus::Cancelled;
+                    }
+                    // O controlador terminou sem cancelar: a execucao segue
+                    // sob observacao apenas do timeout e do processo.
+                    None => messages = None,
                 }
             }
-            Err(_) => {
+        };
+        if matches!(
+            status,
+            ExecutionStatus::Cancelled | ExecutionStatus::TimedOut
+        ) {
+            // O `podman stop`/`kill` roda na tarefa do controlador; encerrar o
+            // processo local do Podman aqui libera os pipes de stdout/stderr.
+            let _ = child.kill().await;
+        }
+        if let Some(controller) = controller {
+            controller.abort();
+        }
+        // Corrida entre o fim do processo e o aviso do controlador: quando o
+        // `podman stop` mata o scanner, o `start --attach` pode encerrar antes
+        // de a mensagem chegar. O cancelamento pedido continua sendo o motivo,
+        // e não uma falha do scanner.
+        let status = match (&self.control, &status) {
+            (Some(control), ExecutionStatus::Failed(_))
+                if *control.borrow() == RunControl::Cancelled =>
+            {
                 trace.emit(format!(
-                    "tempo limite excedido; interrompendo o container {container_id}"
+                    "container {container_id} encerrado por cancelamento solicitado"
                 ));
-                let _ = child.kill().await;
-                let mut kill_command = self.podman_command();
-                kill_command.args(["kill", container_id]);
-                let _ = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, kill_command.output()).await;
-                ExecutionStatus::TimedOut
+                ExecutionStatus::Cancelled
             }
+            _ => status,
         };
 
         let (stdout, stdout_lines) = stdout_task
@@ -562,6 +895,11 @@ impl PodmanExecutor {
             ExecutionStatus::TimedOut => {
                 trace.emit(format!("container {container_id} interrompido"));
             }
+            ExecutionStatus::Cancelled => {
+                trace.emit(format!(
+                    "container {container_id} encerrado por cancelamento"
+                ));
+            }
         }
 
         Ok((
@@ -570,6 +908,41 @@ impl PodmanExecutor {
             status,
             started_at.elapsed(),
         ))
+    }
+
+    /// Traduz o fim do processo do Podman em status de execução.
+    fn status_from(wait: std::io::Result<std::process::ExitStatus>) -> ExecutionStatus {
+        match wait {
+            Ok(exit) if exit.success() => ExecutionStatus::Succeeded,
+            Ok(exit) => ExecutionStatus::Failed(exit.code()),
+            Err(_) => ExecutionStatus::Failed(None),
+        }
+    }
+
+    /// Espera o futuro respeitando o timeout e o cancelamento do canal.
+    ///
+    /// Uma pausa **não** interrompe a espera: só o cancelamento encerra o
+    /// comando em voo, para que o container não fique em estado indefinido.
+    async fn await_or_cancel<F>(&self, timeout: Duration, future: F) -> AwaitOutcome
+    where
+        F: std::future::Future<Output = std::io::Result<std::process::Output>>,
+    {
+        let Some(control) = self.control.clone() else {
+            return match tokio::time::timeout(timeout, future).await {
+                Ok(result) => AwaitOutcome::Finished(result),
+                Err(_) => AwaitOutcome::TimedOut,
+            };
+        };
+        let mut control = control;
+        // Marca o estado atual como visto: só uma ordem *nova* interrompe.
+        let _ = control.borrow_and_update();
+        let deadline = tokio::time::Instant::now() + timeout;
+        tokio::pin!(future);
+        tokio::select! {
+            output = &mut future => AwaitOutcome::Finished(output),
+            () = tokio::time::sleep_until(deadline) => AwaitOutcome::TimedOut,
+            () = wait_for_cancellation(&mut control) => AwaitOutcome::Cancelled,
+        }
     }
 
     async fn remove_container(
@@ -826,6 +1199,41 @@ mod tests {
         }
 
         fn with_scripts(create_script: &str, start_script: &str, cleanup_script: &str) -> Self {
+            Self::with_fixture(
+                "fake_podman",
+                create_script,
+                start_script,
+                cleanup_script,
+                "exit 0",
+            )
+        }
+
+        /// Mesmo harness, com o fake que também responde a `pause`/`unpause`.
+        ///
+        /// O fake padrão não conhece esses subcomandos, então um `podman pause`
+        /// sairia com código 0 sem registrar nada: seria um teste vazio.
+        fn with_control_scripts(
+            create_script: &str,
+            start_script: &str,
+            cleanup_script: &str,
+            control_script: &str,
+        ) -> Self {
+            Self::with_fixture(
+                "fake_podman_control",
+                create_script,
+                start_script,
+                cleanup_script,
+                control_script,
+            )
+        }
+
+        fn with_fixture(
+            fixture: &str,
+            create_script: &str,
+            start_script: &str,
+            cleanup_script: &str,
+            control_script: &str,
+        ) -> Self {
             let directory = std::env::temp_dir().join(format!(
                 "smartsec-podman-test-{}-{}",
                 std::process::id(),
@@ -837,8 +1245,11 @@ mod tests {
             fs::write(directory.join("create.sh"), create_script).unwrap();
             fs::write(directory.join("start.sh"), start_script).unwrap();
             fs::write(directory.join("cleanup.sh"), cleanup_script).unwrap();
+            fs::write(directory.join("control.sh"), control_script).unwrap();
             symlink(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_podman"),
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(fixture),
                 &binary,
             )
             .unwrap();
@@ -1286,5 +1697,266 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(fake.calls().contains("rm --force --ignore smartsec-"));
+    }
+
+    /// Espera o fake registrar uma chamada, para tornar as corridas determinísticas.
+    async fn wait_for_call(fake: &FakePodman, needle: &str) {
+        for _ in 0..200 {
+            if fake.calls().contains(needle) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("o Podman falso não registrou {needle}:\n{}", fake.calls());
+    }
+
+    fn controlled_executor(fake: &FakePodman, control: &ControlChannel) -> PodmanExecutor {
+        PodmanExecutor::with_binary(fake.binary.clone(), Duration::from_secs(30))
+            .with_control(control)
+    }
+
+    #[tokio::test]
+    async fn pause_and_resume_issue_podman_pause_and_unpause() {
+        let fake = FakePodman::with_control_scripts(
+            "printf 'container-123\\n'",
+            "exec sleep 10",
+            "exit 0",
+            "exit 0",
+        );
+        let control = ControlChannel::new();
+        let executor = controlled_executor(&fake, &control);
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        wait_for_call(&fake, "start --attach container-123").await;
+        control.pause();
+        wait_for_call(&fake, "pause container-123").await;
+
+        control.resume();
+        wait_for_call(&fake, "unpause container-123").await;
+
+        control.cancel();
+        let result = task.await.unwrap().unwrap();
+        assert_eq!(result.status, ExecutionStatus::Cancelled);
+        let calls = fake.calls();
+        assert!(
+            calls.contains("rm --force --ignore container-123"),
+            "{calls}"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_pause_does_not_issue_a_second_pause() {
+        let fake = FakePodman::with_control_scripts(
+            "printf 'container-123\\n'",
+            "exec sleep 10",
+            "exit 0",
+            "exit 0",
+        );
+        let control = ControlChannel::new();
+        let executor = controlled_executor(&fake, &control);
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        wait_for_call(&fake, "start --attach container-123").await;
+        control.pause();
+        wait_for_call(&fake, "pause container-123").await;
+
+        // Pausa duplicada: o estado pedido não muda, então nenhum comando extra.
+        control.pause();
+        control.resume();
+        wait_for_call(&fake, "unpause container-123").await;
+        assert_eq!(
+            fake.calls()
+                .lines()
+                .filter(|line| line.trim() == "pause container-123")
+                .count(),
+            1,
+            "pausar de novo não pode repetir o comando no container:\n{}",
+            fake.calls()
+        );
+
+        control.cancel();
+        let _ = task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_after_pause_stops_and_removes_the_container() {
+        let fake = FakePodman::with_control_scripts(
+            "printf 'container-123\\n'",
+            "exec sleep 10",
+            "exit 0",
+            "exit 0",
+        );
+        let control = ControlChannel::new();
+        let executor = controlled_executor(&fake, &control);
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        wait_for_call(&fake, "start --attach container-123").await;
+        control.pause();
+        wait_for_call(&fake, "pause container-123").await;
+
+        control.cancel();
+        let result = task.await.unwrap().unwrap();
+        assert_eq!(result.status, ExecutionStatus::Cancelled);
+        let calls = fake.calls();
+        assert!(calls.contains("stop --time 5 container-123"), "{calls}");
+        assert!(
+            calls.contains("rm --force --ignore container-123"),
+            "{calls}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_before_create_never_creates_a_container() {
+        let fake = FakePodman::new("exit 0");
+        let control = ControlChannel::new();
+        control.cancel();
+        let executor = controlled_executor(&fake, &control);
+
+        let result = executor.execute("scanner", &[]).await.unwrap();
+
+        assert_eq!(result.status, ExecutionStatus::Cancelled);
+        let calls = fake.calls();
+        assert!(!calls.contains("create --name"), "{calls}");
+        assert!(calls.contains("rm --force --ignore smartsec-"), "{calls}");
+    }
+
+    #[tokio::test]
+    async fn cancel_during_create_removes_the_container_by_name() {
+        let fake = FakePodman::with_control_scripts("exec sleep 10", "exit 0", "exit 0", "exit 0");
+        let control = ControlChannel::new();
+        let executor = controlled_executor(&fake, &control);
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        wait_for_call(&fake, "create --name smartsec-").await;
+        control.cancel();
+        let result = task.await.unwrap().unwrap();
+
+        assert_eq!(result.status, ExecutionStatus::Cancelled);
+        let calls = fake.calls();
+        assert!(!calls.contains("start --attach"), "{calls}");
+        assert!(calls.contains("rm --force --ignore smartsec-"), "{calls}");
+    }
+
+    #[tokio::test]
+    async fn pause_arriving_while_the_container_starts_is_applied() {
+        // O `create` é lento; a pausa chega antes de o container existir.
+        let fake = FakePodman::with_control_scripts(
+            "sleep 0.5; printf 'container-123\\n'",
+            "exec sleep 10",
+            "exit 0",
+            "exit 0",
+        );
+        let control = ControlChannel::new();
+        let executor = controlled_executor(&fake, &control);
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        wait_for_call(&fake, "create --name smartsec-").await;
+        control.pause();
+        wait_for_call(&fake, "pause container-123").await;
+        let calls = fake.calls();
+        assert!(
+            calls.find("create --name smartsec-") < calls.find("pause container-123"),
+            "o pause deve vir depois do create, nunca antes:\n{calls}"
+        );
+
+        control.resume();
+        wait_for_call(&fake, "unpause container-123").await;
+        control.cancel();
+        let _ = task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stopped_container_is_cancelled_not_failed() {
+        // O `podman stop` mata o scanner e o `start --attach` retorna com 137.
+        // A execução tem de ser registrada como cancelada, e não como falha do
+        // scanner: o cancelamento foi pedido, o scanner não falhou.
+        // O `stop` do fake é lento, e o scanner morre antes dele responder: o
+        // `start --attach` encerra primeiro, com o laço ainda esperando o aviso
+        // do controlador. É a corrida descrita no código.
+        let fake = FakePodman::with_control_scripts(
+            "printf 'container-123\\n'",
+            "sleep 0.4; kill -TERM $$; sleep 30",
+            "exit 0",
+            "sleep 5; exit 0",
+        );
+        let control = ControlChannel::new();
+        let executor = controlled_executor(&fake, &control);
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        wait_for_call(&fake, "start --attach container-123").await;
+        control.cancel();
+        let result = task.await.unwrap().unwrap();
+
+        assert_eq!(result.status, ExecutionStatus::Cancelled);
+        assert!(fake.calls().contains("rm --force --ignore container-123"));
+    }
+
+    #[tokio::test]
+    async fn cancel_racing_with_the_finished_container_still_removes_it() {
+        // O `start` termina sozinho enquanto o cancelamento chega: qualquer
+        // ordem precisa remover o container, sem órfão e sem estado ambíguo.
+        for attempt in 0..12 {
+            let fake = FakePodman::with_control_scripts(
+                "printf 'container-123\\n'",
+                "printf 'fim da varredura\\n'",
+                "exit 0",
+                "exit 0",
+            );
+            let control = ControlChannel::new();
+            let executor = controlled_executor(&fake, &control);
+            let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+            wait_for_call(&fake, "start --attach container-123").await;
+            if attempt % 2 == 0 {
+                control.cancel();
+            }
+            tokio::time::sleep(Duration::from_millis(attempt % 4)).await;
+            control.cancel();
+
+            let result = task.await.unwrap().unwrap();
+            assert!(
+                matches!(
+                    result.status,
+                    ExecutionStatus::Cancelled | ExecutionStatus::Succeeded
+                ),
+                "tentativa {attempt}: estado inesperado {:?}",
+                result.status
+            );
+            assert!(
+                fake.calls().contains("rm --force --ignore container-123"),
+                "tentativa {attempt} deixou container órfão:\n{}",
+                fake.calls()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_pause_is_reported_and_the_scan_survives_it() {
+        // O Podman recusa a pausa: a tela precisa saber, mas a varredura não
+        // pode ser derrubada por causa disso.
+        let fake = FakePodman::with_control_scripts(
+            "printf 'container-123\\n'",
+            "exec sleep 10",
+            "exit 0",
+            "printf 'container is not running\\n' >&2; exit 125",
+        );
+        let control = ControlChannel::new();
+        let executor = controlled_executor(&fake, &control);
+        let task = tokio::spawn(async move { executor.execute("scanner", &[]).await });
+
+        wait_for_call(&fake, "start --attach container-123").await;
+        control.pause();
+        wait_for_call(&fake, "pause container-123").await;
+
+        // O cancelamento ainda precisa encerrar e remover o container.
+        control.cancel();
+        let result = task.await.unwrap().unwrap();
+        assert_eq!(result.status, ExecutionStatus::Cancelled);
+        let trace = result.trace.join("\n");
+        assert!(
+            trace.contains("controle do container container-123 falhou"),
+            "a recusa do Podman precisa aparecer no trace:\n{trace}"
+        );
+        assert!(fake.calls().contains("rm --force --ignore container-123"));
     }
 }

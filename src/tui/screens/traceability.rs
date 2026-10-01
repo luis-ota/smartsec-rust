@@ -24,7 +24,74 @@ pub fn requirement_rows(app: &AppState) -> Vec<RequirementRow> {
         orchestration_row(app),
         logs_row(app),
         ai_row(app),
+        control_row(app),
+        interruption_row(app),
     ]
+}
+
+/// Evidência de pausa, retomada ou cancelamento aplicados ao container real.
+///
+/// Só conta como verificado quando o trace do Podman mostra o comando
+/// correspondente: um botão pressionado não é evidência de que o container foi
+/// de fato pausado.
+fn control_row(app: &AppState) -> RequirementRow {
+    let mut applied: Vec<&str> = Vec::new();
+    for execution in &app.orchestrator.execution_history {
+        for line in &execution.podman_trace {
+            if line.contains("$ podman pause ") {
+                push_unique(&mut applied, "pausa");
+            } else if line.contains("$ podman unpause ") {
+                push_unique(&mut applied, "retomada");
+            } else if line.contains("$ podman stop ") {
+                push_unique(&mut applied, "cancelamento");
+            }
+        }
+    }
+    RequirementRow {
+        id: "REQ14",
+        title: "Pausa, retomada e cancelamento",
+        detail: if applied.is_empty() {
+            "aguardando pausa (p), retomada (p) ou cancelamento (c)".to_string()
+        } else {
+            format!("{} aplicados ao container real", applied.join(" · "))
+        },
+        evidenced: !applied.is_empty(),
+    }
+}
+
+/// Evidência da regra automática de interrupção (REQ05).
+fn interruption_row(app: &AppState) -> RequirementRow {
+    let limit = app.config.max_critical_findings;
+    match app.orchestrator.interruption() {
+        Some(reason) if reason.rule == crate::orchestrator::control::RULE_MAX_CRITICAL_FINDINGS => {
+            RequirementRow {
+                id: "REQ05",
+                title: "Regra automática de interrupção",
+                detail: format!(
+                    "{} · limite de {}",
+                    reason.message,
+                    reason.threshold.unwrap_or_default()
+                ),
+                evidenced: true,
+            }
+        }
+        _ => RequirementRow {
+            id: "REQ05",
+            title: "Regra automática de interrupção",
+            detail: if limit == 0 {
+                "regra desativada (max_critical_findings = 0)".to_string()
+            } else {
+                format!("limite de {limit} críticos; a varredura não atingiu o limite")
+            },
+            evidenced: false,
+        },
+    }
+}
+
+fn push_unique(values: &mut Vec<&'static str>, value: &'static str) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 fn cli_row(app: &AppState) -> RequirementRow {
@@ -196,12 +263,14 @@ fn status_label(status: &str) -> &'static str {
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     app.hit_regions.clear();
     let rows = requirement_rows(app);
-    let popup = super::overlays::centered_fixed(area, 76, 15);
+    // Duas linhas por requisito, mais o cabeçalho, a linha em branco, o
+    // rodapé e as duas bordas.
+    let popup = super::overlays::centered_fixed(area, 76, (rows.len() as u16 * 2 + 6).min(22));
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
-        .title(" Rastreabilidade · Sprint 1 ")
+        .title(" Rastreabilidade · Sprint 1 e 2 ")
         .title_style(Style::default().fg(Color::White).bold())
         .style(Style::default().bg(SURFACE));
     let inner = block.inner(popup);
@@ -314,19 +383,68 @@ mod tests {
     fn pending_session_reports_every_requirement_as_waiting() {
         let rows = requirement_rows(&app());
 
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 7);
         assert_eq!(
             rows.iter().map(|row| row.id).collect::<Vec<_>>(),
-            vec!["UC01", "RNF01", "REQ06", "REQ09", "REQ10"]
+            vec!["UC01", "RNF01", "REQ06", "REQ09", "REQ10", "REQ14", "REQ05"]
         );
         assert!(rows.iter().all(|row| !row.evidenced));
-        assert!(rows
-            .iter()
-            .all(|row| row.detail.contains("aguardando") || row.detail.contains("pendente")));
+        assert!(rows.iter().all(|row| {
+            row.detail.contains("aguardando")
+                || row.detail.contains("pendente")
+                || row.detail.contains("desativada")
+        }));
     }
 
     #[test]
-    fn completed_session_evidences_all_five_requirements() {
+    fn the_pause_and_the_automatic_rule_only_count_with_real_evidence() {
+        let mut app = app();
+        // Uma pausa pedida na tela, sem `podman pause` no trace, não é evidência.
+        app.pause_run();
+        let rows = requirement_rows(&app);
+        let control = rows.iter().find(|row| row.id == "REQ14").unwrap();
+        assert!(!control.evidenced, "{}", control.detail);
+        assert!(control.detail.contains("aguardando"), "{}", control.detail);
+
+        // Com o comando no trace do Podman, a REQUIREMENT fica verificada.
+        let mut execution = nmap_execution();
+        execution
+            .podman_trace
+            .push("[16:00:00] $ podman pause container-123".to_string());
+        app.orchestrator.execution_history.push(execution);
+        app.orchestrator.resume_execution();
+        let control = requirement_rows(&app)
+            .into_iter()
+            .find(|row| row.id == "REQ14")
+            .unwrap();
+        assert!(control.evidenced, "{}", control.detail);
+        assert!(control.detail.contains("pausa"), "{}", control.detail);
+    }
+
+    #[test]
+    fn the_automatic_rule_reports_the_threshold_and_the_reason() {
+        let mut app = app();
+        app.config.max_critical_findings = 2;
+        let idle = requirement_rows(&app)
+            .into_iter()
+            .find(|row| row.id == "REQ05")
+            .unwrap();
+        assert!(!idle.evidenced);
+        assert!(idle.detail.contains("limite de 2"), "{}", idle.detail);
+
+        app.orchestrator.record_interruption(
+            crate::orchestrator::control::InterruptionReason::max_critical_findings(2, 2, "Nuclei"),
+        );
+        let fired = requirement_rows(&app)
+            .into_iter()
+            .find(|row| row.id == "REQ05")
+            .unwrap();
+        assert!(fired.evidenced, "{}", fired.detail);
+        assert!(fired.detail.contains("limite de 2"), "{}", fired.detail);
+    }
+
+    #[test]
+    fn completed_session_evidences_every_requirement_it_actually_exercised() {
         let mut app = app();
         app.config.target_url = "http://169.254.1.2:3000".to_string();
         app.orchestrator.execution_history.push(nmap_execution());
@@ -339,8 +457,12 @@ mod tests {
                 .to_string();
 
         let rows = requirement_rows(&app);
+        // REQ14 e REQ05 exigem evidência de pausa, cancelamento ou disparo da
+        // regra: uma sessão sem esses eventos não pode declará-los verificados.
         assert!(
-            rows.iter().all(|row| row.evidenced),
+            rows.iter()
+                .filter(|row| !matches!(row.id, "REQ14" | "REQ05"))
+                .all(|row| row.evidenced),
             "pendentes: {:?}",
             rows.iter()
                 .filter(|row| !row.evidenced)

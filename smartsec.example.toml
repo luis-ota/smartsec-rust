@@ -34,6 +34,13 @@ model = "llama3.2:1b"
 # output_file = "smartsec-report.md"
 # output_dir = "/caminho/para/relatorios"
 
+# Opcional: regra automática de interrupção (REQ05). Interrompe a varredura ao
+# atingir a quantidade de vulnerabilidades críticas, e registra o motivo no log
+# estruturado. 0 (padrão) mantém a regra desativada.
+# A flag --max-critical-findings da CLI tem precedência sobre este campo.
+# A avaliação ocorre entre ferramentas, preservando a evidência já coletada.
+# max_critical_findings = 3
+
 # Ferramentas adicionais registradas por configuração (RNF08).
 # O manifesto é validado no carregamento: campos obrigatórios, duplicidade e
 # runner/parser precisam ser conhecidos. Runners: "nmap", "nuclei", "generic".

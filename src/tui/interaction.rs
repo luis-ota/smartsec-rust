@@ -13,6 +13,7 @@ pub enum FocusTarget {
     ToolBack,
     ToolRun,
     ExecutionLogs,
+    ExecutionPause,
     ExecutionCancel,
     AnalysisCancel,
     ResultsList,
@@ -54,6 +55,10 @@ pub enum SemanticAction {
     RunTools,
     ScrollUp,
     ScrollDown,
+    /// Pausa a ferramenta em execução (`podman pause` no container real).
+    PauseRun,
+    /// Retoma a ferramenta pausada (`podman unpause` no container real).
+    ResumeRun,
     CancelRun,
     OpenVulnerability(usize),
     ExportMarkdown,

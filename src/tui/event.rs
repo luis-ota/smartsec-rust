@@ -47,6 +47,20 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         return dispatch_action(app, SemanticAction::OpenTraceability);
     }
 
+    // Atalhos de pausa, retomada e cancelamento durante a execução. Fica antes
+    // das camadas sobrepostas para que elas continuem capturando as teclas.
+    if app.step == AppStep::Execution && !app.has_blocking_layer() {
+        match key.code {
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                return dispatch_action(app, execution_toggle_pause(app));
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                return dispatch_action(app, SemanticAction::CancelRun);
+            }
+            _ => {}
+        }
+    }
+
     if app.show_trace_overlay {
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return dispatch_action(app, SemanticAction::OpenCommandPalette);
@@ -85,6 +99,16 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
     }
 
     key_action(app, key).is_some_and(|action| dispatch_action(app, action))
+}
+
+/// Alterna pausa e retomada na tela de execução; pausa vira `podman pause` e
+/// retomada vira `podman unpause` no container real.
+fn execution_toggle_pause(app: &AppState) -> SemanticAction {
+    if app.exec_paused {
+        SemanticAction::ResumeRun
+    } else {
+        SemanticAction::PauseRun
+    }
 }
 
 fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
@@ -209,6 +233,8 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::RunTools => run_tools(app),
         SemanticAction::ScrollUp => scroll(app, false, 3),
         SemanticAction::ScrollDown => scroll(app, true, 3),
+        SemanticAction::PauseRun => pause_execution(app),
+        SemanticAction::ResumeRun => resume_execution(app),
         SemanticAction::CancelRun => cancel_execution(app),
         SemanticAction::OpenVulnerability(index) => open_vulnerability(app, index),
         SemanticAction::ExportMarkdown => export_markdown(app),
@@ -288,7 +314,11 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
             FocusTarget::ToolBack,
             FocusTarget::ToolRun,
         ],
-        AppStep::Execution => vec![FocusTarget::ExecutionLogs, FocusTarget::ExecutionCancel],
+        AppStep::Execution => vec![
+            FocusTarget::ExecutionLogs,
+            FocusTarget::ExecutionPause,
+            FocusTarget::ExecutionCancel,
+        ],
         AppStep::Analysis => vec![FocusTarget::AnalysisCancel],
         AppStep::Results if app.result_detail_vuln.is_some() => {
             vec![
@@ -373,6 +403,8 @@ fn activate_focus(app: &mut AppState) {
         | FocusTarget::DidacticBack
         | FocusTarget::HistoryBack => SemanticAction::Back,
         FocusTarget::ToolRun => SemanticAction::RunTools,
+        FocusTarget::ExecutionPause if !app.exec_cancelled => execution_toggle_pause(app),
+        FocusTarget::ExecutionPause => return,
         FocusTarget::ExecutionCancel if !app.exec_cancelled => SemanticAction::CancelRun,
         FocusTarget::ExecutionCancel => return,
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent | FocusTarget::HistoryDetail => {
@@ -447,7 +479,7 @@ fn go_back(app: &mut AppState) -> bool {
             app.focus = FocusTarget::ToolList;
         }
         AppStep::Analysis => {
-            app.orchestrator.cancelled = true;
+            app.orchestrator.cancel_execution();
             app.step = AppStep::ToolSelect;
             app.tool_detecting = false;
             app.focus = FocusTarget::ToolList;
@@ -748,11 +780,23 @@ fn execute_command(app: &mut AppState, index: usize) -> bool {
     dispatch_action(app, item.action)
 }
 
+fn pause_execution(app: &mut AppState) {
+    if app.step == AppStep::Execution {
+        app.pause_run();
+    }
+}
+
+fn resume_execution(app: &mut AppState) {
+    if app.step == AppStep::Execution {
+        app.resume_run();
+    }
+}
+
 fn cancel_execution(app: &mut AppState) {
     if app.step == AppStep::Execution {
         app.cancel_run();
     } else if app.step == AppStep::Analysis {
-        app.orchestrator.cancelled = true;
+        app.orchestrator.cancel_execution();
         app.step = AppStep::ToolSelect;
         app.focus = FocusTarget::ToolList;
     }
@@ -1477,6 +1521,93 @@ mod tests {
     }
 
     #[test]
+    fn p_toggles_pause_and_c_cancels_with_keyboard_and_mouse_parity() {
+        let mut keyboard = app();
+        keyboard.step = AppStep::Execution;
+        keyboard.focus = FocusTarget::ExecutionPause;
+        keyboard.tools[0].status = crate::tui::state::ToolStatus::Running;
+        let mut mouse = app();
+        mouse.step = AppStep::Execution;
+        mouse.focus = FocusTarget::ExecutionPause;
+        mouse.tools[0].status = crate::tui::state::ToolStatus::Running;
+        render_app(&mut mouse, 80, 24);
+
+        press(&mut keyboard, KeyCode::Char('p'));
+        click_action(&mut mouse, &SemanticAction::PauseRun);
+
+        assert!(keyboard.orchestrator.control.is_paused());
+        assert!(mouse.orchestrator.control.is_paused());
+        assert_eq!(
+            keyboard.tools[0].status,
+            crate::tui::state::ToolStatus::Paused
+        );
+        assert_eq!(mouse.tools[0].status, keyboard.tools[0].status);
+
+        // A mesma tecla retoma: o rótulo do botão acompanha o estado real.
+        press(&mut keyboard, KeyCode::Char('p'));
+        assert!(!keyboard.orchestrator.control.is_paused());
+
+        press(&mut keyboard, KeyCode::Char('c'));
+        assert!(keyboard.orchestrator.is_cancelled());
+        assert!(keyboard.exec_cancelled);
+    }
+
+    #[test]
+    fn pause_and_cancel_shortcuts_are_ignored_inside_overlays() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        dispatch_action(&mut app, SemanticAction::OpenHelp);
+
+        press(&mut app, KeyCode::Char('p'));
+        press(&mut app, KeyCode::Char('c'));
+
+        assert!(
+            app.show_help_overlay,
+            "a ajuda precisa continuar capturando as teclas"
+        );
+        assert!(!app.orchestrator.control.is_paused());
+        assert!(!app.orchestrator.is_cancelled());
+    }
+
+    #[test]
+    fn the_execution_palette_exposes_pause_resume_and_cancel() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+
+        let items = command_items(&app);
+        let pause = items
+            .iter()
+            .position(|item| item.action == SemanticAction::PauseRun)
+            .expect("a pausa precisa estar na paleta");
+        assert_eq!(items[pause].shortcut, "p");
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(pause));
+        assert!(app.orchestrator.control.is_paused());
+
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+        let items = command_items(&app);
+        let resume = items
+            .iter()
+            .position(|item| item.action == SemanticAction::ResumeRun)
+            .expect("a retomada precisa estar na paleta depois da pausa");
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(resume));
+        assert!(!app.orchestrator.control.is_paused());
+
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+        let cancel = items_index(&app, SemanticAction::CancelRun);
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(cancel));
+        assert!(app.orchestrator.is_cancelled());
+    }
+
+    fn items_index(app: &AppState, action: SemanticAction) -> usize {
+        command_items(app)
+            .iter()
+            .position(|item| item.action == action)
+            .expect("a ação precisa estar na paleta")
+    }
+
+    #[test]
     fn help_blocks_scroll_and_cancelled_actions_stay_disabled() {
         let mut app = app();
         app.step = AppStep::Execution;
@@ -1522,6 +1653,7 @@ mod tests {
                 agent_analysis: "Análise".to_string(),
                 decisions: Vec::new(),
                 enrichment: Default::default(),
+                interruption: None,
             },
             &dir,
         )
@@ -1596,6 +1728,7 @@ mod tests {
                     agent_analysis: "Análise".to_string(),
                     decisions: Vec::new(),
                     enrichment: Default::default(),
+                    interruption: None,
                 },
                 &dir,
             )

@@ -94,6 +94,16 @@ O foco principal e Linux, com Podman rootless como engine de isolamento e GitHub
 | Secao 7 — indisponibilidade nao impede o relatorio base | `NvdOutcome::Unavailable` em todos os caminhos, sem `unwrap` | `indisponibilidade_da_nvd_nao_impede_o_relatorio_base`, §4 |
 Rastreabilidade do REQ19 (Sprint 2, issue #24): a CLI expoe `history` para listar as execucoes e `show <SCAN_ID>` para abrir uma delas; a TUI expoe a tela `Historico`, aberta com a tecla `h` ou pela paleta de comandos. A listagem varre `~/.config/smartsec/scans/*.json` e a leitura e somente leitura: nenhum artefato original e alterado. A evidencia esta em `docs/evidence/issue-24-historico.md`.
 
+### Pausa, retomada, cancelamento e interrupcao automatica
+
+Pausar e retomar afetam o container em execucao, e nao apenas a interface: a ordem chega ao executor Podman e vira `podman pause` e `podman unpause` no container real. Na TUI, `p` alterna pausa e retomada e `c` cancela, com equivalencia por mouse (botoes `Pausar/Retomar varredura` e `Cancelar varredura`) e pela paleta de comandos. No modo headless o cancelamento vem de `SIGINT` e `SIGTERM`.
+
+O cancelamento e cooperativo e sempre precede qualquer `abort()` de task: o processo dentro do container e encerrado com `podman stop --time 5` (com `podman kill` como recurso) e o container e removido com `podman rm --force --ignore`. O guard `ContainerCleanup` continua como ultima linha de defesa para os caminhos de erro e de queda do processo. Ordens que chegam antes do `create`, durante o `create` ou durante o `start` tambem convergem para `rm --force --ignore`: nao existe estagio do ciclo de vida do container que fique sem limpeza.
+
+A regra automatica de interrupcao e configuravel por `max_critical_findings` no TOML e por `--max-critical-findings` na CLI, com precedencia da CLI. `0` (padrao) mantem a regra desativada. A avaliacao ocorre **entre** ferramentas, para que a evidencia recem-coletada nao seja descartada e para nao matar o container que acabou de produzir o achado. Ao disparar, o pipeline para e o motivo fica registrado de forma auditavel em `ScanMetadata.interruption`, com a regra, a mensagem em pt-BR, a ferramenta em que disparou, a contagem observada e o limiar configurado. Historicos gravados antes desta feature continuam legiveis, porque o campo novo tem `#[serde(default)]`.
+
+A regra nao altera agressividade, permissao ou concorrencia de nenhum scanner: ela age somente sobre o momento de interromper a orquestracao.
+
 ## 5. Requisitos nao funcionais
 
 | ID | Requisito |
@@ -254,10 +264,20 @@ O CEP nao e pre-condicao para este TCC de desenvolvimento de ferramenta, conform
 - `0`: nenhuma vulnerabilidade critica encontrada.
 - `1`: vulnerabilidade critica encontrada.
 - `2`: erro interno, de configuracao ou de execucao.
+- `130`: execucao cancelada por `SIGINT` (Ctrl+C).
+- `143`: execucao cancelada por `SIGTERM`.
 
 Erro de scanner nao pode ser convertido em sucesso. Finding critico nao e erro interno: deve retornar `1` e preservar o relatorio. No modo headless os codigos derivam do resultado consolidado (achados e falhas de execucao), nunca de mensagens de texto; a falha de execucao tem precedencia sobre o achado critico, e o relatorio e o log estruturado sao gravados antes da mensagem final.
 
 A consulta ao historico tambem respeita este contrato. `history` retorna `0` mesmo com historico vazio, porque a listagem foi executada com sucesso. `show <SCAN_ID>` retorna `2` quando o identificador e invalido, quando viola o padrao `scan_<nanos>` ou quando nao existe registro correspondente: em automacao, um id inexistente e um erro de uso da ferramenta e nao pode ser confundido com `0` (nenhum achado critico) nem com `1` (achado critico), que significam que a varredura foi executada. Registros ilegiveis dentro de um historico listavel nao alteram o codigo de saida; eles sao reportados como aviso na saida padrao para que a listagem continue util, e essa escolha esta registrada em `docs/evidence/issue-24-historico.md` para revisao.
+
+### Cancelamento por sinal
+
+`SIGINT` e `SIGTERM` cancelam a execucao pelo mesmo canal de controle usado pela TUI: o container em andamento e encerrado de forma cooperativa (`podman stop --time 5`, com `podman kill` como recurso) e removido com `podman rm --force --ignore` antes da saida. O relatorio e o log estruturado **sao gravados antes da mensagem final**, inclusive no caminho de cancelamento, e o motivo fica registrado no log como `interruption.rule = "cancelado_por_sinal"`.
+
+Os codigos `130` e `143` seguem a convencao POSIX `128 + numero do sinal`, ja interpretada por shells e pelo GitHub Actions. A decisao de **nao** reaproveitar `2` e porque `2` significa erro interno: um cancelamento pedido pelo operador nao e falha, e um pipeline de CI/CD que trata `2` como erro acabaria atribuindo ao produto um defeito que o operador causou de proposito. O segundo sinal do mesmo tipo encerra o processo imediatamente, para que o operador nao fique preso a um Podman travado; nesse caso a auditoria pode nao ser gravada.
+
+A regra automatica de interrupcao (REQ05) nao tem codigo proprio: a varredura para por decisao do produto e o resultado segue o caminho normal, `1` quando ha achado critico, que e exatamente a condicao que disparou a regra.
 
 ## 11. Entregaveis
 

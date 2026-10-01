@@ -2,6 +2,7 @@ use crate::ai::agent::AIAgent;
 use crate::config::Configuration;
 use crate::domain::security_tool::{SecurityTool, SecurityToolRunner};
 use crate::domain::vulnerability::Vulnerability;
+use crate::orchestrator::control::{ControlChannel, InterruptionReason, RunControl};
 use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
 use crate::orchestrator::enrichment::{correlate_and_enrich, EnrichmentSummary};
 use crate::orchestrator::nvd::NvdClient;
@@ -24,8 +25,14 @@ pub struct Orchestrator {
     pub execution_history: Vec<SecurityTool>,
     pub decision_history: Vec<DecisionRecord>,
     pub findings: Vec<Vulnerability>,
-    pub paused: bool,
-    pub cancelled: bool,
+    /// Canal de pausa, retomada e cancelamento compartilhado com o executor
+    /// Podman e com a interface (REQ14). Substitui as antigas bandeiras
+    /// `paused`/`cancelled`, que nunca chegavam ao container.
+    ///
+    /// O motivo da interrupção mora no canal, e não no orquestrador: a TUI e a
+    /// task de execução são `Orchestrator` distintos ligados só por ele, e o
+    /// log estruturado precisa ver o motivo independente de quem grava.
+    pub control: ControlChannel,
     pub last_log: String,
     /// Sink opcional que recebe ao vivo cada linha do trace operacional do
     /// Podman (TUI e headless). Quando ausente, o trace segue acumulado em
@@ -59,8 +66,7 @@ impl Orchestrator {
             execution_history: Vec::new(),
             decision_history: Vec::new(),
             findings: Vec::new(),
-            paused: false,
-            cancelled: false,
+            control: ControlChannel::new(),
             last_log: String::new(),
             trace_sink: None,
             decision_sink: None,
@@ -84,9 +90,9 @@ impl Orchestrator {
 
     #[allow(dead_code)]
     pub fn status(&self) -> &str {
-        if self.cancelled {
+        if self.control.is_cancelled() {
             "cancelled"
-        } else if self.paused {
+        } else if self.control.is_paused() {
             "paused"
         } else if self.findings.is_empty() {
             "idle"
@@ -95,12 +101,56 @@ impl Orchestrator {
         }
     }
 
+    /// Solicita o cancelamento cooperativo da execução.
+    ///
+    /// A ordem chega ao container em execução pelo canal compartilhado: o
+    /// executor encerra o processo com `podman stop` e remove com
+    /// `podman rm --force`, sem depender de `abort()` da task.
     pub fn cancel_execution(&mut self) {
-        self.cancelled = true;
+        if self.control.is_cancelled() {
+            return;
+        }
+        self.record_interruption(InterruptionReason::user_cancelled());
+        self.control.cancel();
+    }
+
+    /// Solicita a pausa da ferramenta em execução (`podman pause`).
+    pub fn pause_execution(&mut self) {
+        if self.control.is_cancelled() {
+            return;
+        }
+        self.control.pause();
+    }
+
+    /// Retoma a ferramenta pausada (`podman unpause`).
+    pub fn resume_execution(&mut self) {
+        if self.control.is_cancelled() {
+            return;
+        }
+        self.control.resume();
+    }
+
+    /// Grava o motivo da interrupção uma única vez, preservando o primeiro.
+    ///
+    /// A auditoria precisa de um motivo, não de uma sequência: o primeiro
+    /// evento é o que explica por que a varredura parou.
+    pub fn record_interruption(&self, reason: InterruptionReason) {
+        self.control.record_interruption(reason);
+    }
+
+    /// Motivo registrado da interrupção (REQ05 ou REQ14), se houver.
+    pub fn interruption(&self) -> Option<InterruptionReason> {
+        self.control.interruption()
+    }
+
+    /// Indica se a execução foi interrompida por cancelamento ou por sinal.
+    pub fn is_cancelled(&self) -> bool {
+        self.control.is_cancelled()
     }
 
     fn podman_executor(&self) -> PodmanExecutor {
-        let executor = PodmanExecutor::new(Duration::from_secs(15 * 60));
+        let executor =
+            PodmanExecutor::new(Duration::from_secs(15 * 60)).with_control(&self.control);
         match &self.trace_sink {
             Some(sink) => executor.with_log_sink(sink.clone()),
             None => executor,
@@ -622,6 +672,12 @@ impl Orchestrator {
             })
     }
 
+    /// Executa as ferramentas selecionados respeitando pausa, retomada,
+    /// cancelamento e a regra automática de interrupção.
+    ///
+    /// O cancelamento encerra o container em execução de forma cooperativa pelo
+    /// canal compartilhado; a pausa e a retomada viram `podman pause` e
+    /// `podman unpause` no container real, não apenas uma pausa do laço.
     #[allow(dead_code)]
     pub async fn run_full_pipeline(
         &mut self,
@@ -629,16 +685,12 @@ impl Orchestrator {
     ) -> Result<Vec<Vulnerability>, anyhow::Error> {
         let target = self.config.target_url.clone();
         for tool in selected {
-            if self.cancelled {
+            if self.control.wait_while_paused().await == RunControl::Cancelled {
                 break;
             }
-            if self.paused {
-                loop {
-                    if !self.paused || self.cancelled {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
+            if let Some(reason) = self.interrupt_after_findings(tool.name.as_str()) {
+                self.record_interruption(reason);
+                break;
             }
             let _exec = self.execute_tool(tool, &target).await;
         }
@@ -649,6 +701,29 @@ impl Orchestrator {
         let analysis = self.agent.analyze_logs(&self.findings).await;
         self.last_log = analysis;
         Ok(self.findings.clone())
+    }
+
+    /// Avalia a regra automática de interrupção (REQ05) antes da próxima
+    /// ferramenta, contando os achados das execuções já concluídas.
+    ///
+    /// Avaliar **entre** ferramentas evita matar o container que acabou de
+    /// produzir a evidência: o relatório preserva tudo o que foi coletado.
+    pub fn interrupt_after_findings(&mut self, tool_name: &str) -> Option<InterruptionReason> {
+        if self.control.is_cancelled() {
+            return None;
+        }
+        let threshold = self.config.max_critical_findings;
+        if threshold == 0 {
+            return None;
+        }
+        self.build_findings();
+        let critical = self
+            .findings
+            .iter()
+            .filter(|finding| finding.severity == crate::domain::Severity::Critical)
+            .count();
+        (critical >= threshold)
+            .then(|| InterruptionReason::max_critical_findings(critical, threshold, tool_name))
     }
 
     pub fn persist_scan_log(&self) -> anyhow::Result<std::path::PathBuf> {
@@ -705,6 +780,7 @@ impl Orchestrator {
                 .map(DecisionRecord::sanitized)
                 .collect(),
             enrichment: self.enrichment.clone(),
+            interruption: self.control.interruption(),
             ..metadata
         };
         crate::orchestrator::scan_logger::save_scan_log(&metadata)
@@ -763,6 +839,10 @@ fn podman_output(result: ExecutionResult) -> String {
             "[ERRO] O container {} excedeu o tempo limite de 15 minutos.{}",
             result.container_id, cleanup_error
         ),
+        ExecutionStatus::Cancelled => format!(
+            "Execução cancelada: o container {} foi interrompido e removido.{}",
+            result.container_id, cleanup_error
+        ),
     }
 }
 
@@ -780,6 +860,7 @@ fn execution_status(status: &ExecutionStatus) -> String {
             code.map_or_else(|| "unknown".to_string(), |c| c.to_string())
         ),
         ExecutionStatus::TimedOut => "timeout".to_string(),
+        ExecutionStatus::Cancelled => "cancelled".to_string(),
     }
 }
 
@@ -900,6 +981,155 @@ mod tests {
         assert_eq!(orch.findings.len(), 1);
         assert_eq!(orch.findings[0].tool, "ScannerExemplo");
         assert_eq!(orch.findings[0].severity, crate::domain::Severity::Info);
+    }
+
+    fn critical_finding(tool: &str, title: &str) -> Vulnerability {
+        Vulnerability {
+            title: title.to_string(),
+            severity: crate::domain::Severity::Critical,
+            description: "Descrição".to_string(),
+            tool: tool.to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: crate::domain::vulnerability::FindingSource::Real,
+            target: "http://test.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            origins: Vec::new(),
+            enrichment: None,
+            severity_conflict: None,
+        }
+    }
+
+    /// Orquestrador com uma execução real do parser que produz severidade
+    /// `critical` a partir da saída do próprio scanner.
+    fn recording_orchestrator(threshold: usize, tool_name: &str) -> Orchestrator {
+        let mut config = make_config();
+        config.max_critical_findings = threshold;
+        config.tools.push(ToolManifest {
+            name: tool_name.to_string(),
+            description: "Scanner de teste".to_string(),
+            category: "DAST".to_string(),
+            image: "example/scanner:1".to_string(),
+            version: "1.0".to_string(),
+            runner: crate::tools::registry::RUNNER_GENERIC.to_string(),
+            parser: crate::tools::registry::PARSER_NUCLEI_JSONL.to_string(),
+            command_template: vec!["scan".to_string(), "{target}".to_string()],
+            output_format: "jsonl".to_string(),
+            enabled: true,
+        });
+        let mut orchestrator = Orchestrator::new(config).expect("configuração de teste válida");
+        let mut execution = SecurityTool::new(tool_name, "scan http://test.local");
+        execution.status = "succeeded".to_string();
+        execution.output = concat!(
+            r#"{"template-id":"CVE-2021-44228","info":{"name":"Log4Shell RCE","severity":"critical"},"matched-at":"http://test.local/","matcher-name":"jndi-injection"}"#,
+            "\n"
+        )
+        .to_string();
+        orchestrator.execution_history.push(execution);
+        orchestrator
+    }
+
+    #[test]
+    fn the_automatic_rule_fires_at_the_threshold_and_records_the_reason() {
+        let mut orch = recording_orchestrator(1, "ScannerExemplo");
+
+        let reason = orch
+            .interrupt_after_findings("Nikto")
+            .expect("um achado crítico com limiar 1 deve interromper");
+
+        assert_eq!(reason.rule, "max_critical_findings");
+        assert_eq!(reason.threshold, Some(1));
+        assert_eq!(reason.critical_count, 1);
+        assert_eq!(reason.tool.as_deref(), Some("Nikto"));
+        assert!(reason.message.contains("limite de 1"), "{}", reason.message);
+        assert!(!orch.is_cancelled(), "a regra não vira cancelamento");
+    }
+
+    #[test]
+    fn the_automatic_rule_does_not_fire_below_the_threshold_or_when_disabled() {
+        // Limiar 2 com um achado crítico: nada acontece.
+        assert!(recording_orchestrator(2, "ScannerExemplo")
+            .interrupt_after_findings("Nikto")
+            .is_none());
+
+        // Limiar 0 significa regra desativada (padrão retrocompatível).
+        let mut disabled = recording_orchestrator(0, "ScannerExemplo");
+        assert!(disabled.interrupt_after_findings("Nikto").is_none());
+    }
+
+    #[test]
+    fn the_first_interruption_reason_is_the_one_kept_for_audit() {
+        let mut orch = recording_orchestrator(1, "ScannerExemplo");
+        let rule = orch
+            .interrupt_after_findings("Nikto")
+            .expect("a regra deve disparar");
+        orch.record_interruption(rule);
+        let user = crate::orchestrator::control::InterruptionReason::user_cancelled();
+        orch.record_interruption(user.clone());
+
+        let recorded = orch
+            .interruption()
+            .expect("o motivo precisa ser preservado");
+        assert_eq!(recorded.rule, "max_critical_findings");
+        assert_ne!(recorded.rule, user.rule);
+    }
+
+    #[test]
+    fn the_recorded_reason_is_recoverable_from_the_persisted_scan_log() {
+        let mut orch = recording_orchestrator(1, "ScannerExemplo");
+        let reason = orch
+            .interrupt_after_findings("Nikto")
+            .expect("a regra deve disparar");
+        orch.record_interruption(reason);
+        orch.findings = vec![critical_finding("ScannerExemplo", "Achado crítico")];
+
+        let metadata = crate::orchestrator::scan_logger::ScanMetadata {
+            interruption: orch.interruption(),
+            ..crate::orchestrator::scan_logger::ScanMetadata::new(
+                "scan_regra".to_string(),
+                "http://test.local".to_string(),
+                "2026-09-30T12:00:00Z".to_string(),
+                "2026-09-30T12:05:00Z".to_string(),
+                "Auto".to_string(),
+                "Ollama".to_string(),
+                Vec::new(),
+                orch.findings.clone(),
+                "análise".to_string(),
+            )
+        };
+
+        let json = serde_json::to_string(&metadata).expect("serialização do log");
+        let restored: crate::orchestrator::scan_logger::ScanMetadata =
+            serde_json::from_str(&json).expect("leitura do log");
+        let interruption = restored
+            .interruption
+            .expect("o motivo precisa ser persistido");
+        assert_eq!(interruption.rule, "max_critical_findings");
+        assert_eq!(interruption.threshold, Some(1));
+        assert!(interruption.message.contains("limite de 1"));
+    }
+
+    #[test]
+    fn a_scan_log_written_before_this_feature_still_loads() {
+        let metadata = crate::orchestrator::scan_logger::ScanMetadata::new(
+            "scan_legacy".to_string(),
+            "http://test.local".to_string(),
+            "2026-01-01T00:00:00Z".to_string(),
+            "2026-01-01T00:05:00Z".to_string(),
+            "Auto".to_string(),
+            "Ollama".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "análise".to_string(),
+        );
+        let mut legacy = serde_json::to_value(&metadata).unwrap();
+        legacy.as_object_mut().unwrap().remove("interruption");
+
+        let restored: crate::orchestrator::scan_logger::ScanMetadata =
+            serde_json::from_value(legacy).expect("histórico antigo precisa continuar legível");
+
+        assert!(restored.interruption.is_none());
     }
 
     #[tokio::test]

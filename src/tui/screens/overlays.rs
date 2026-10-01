@@ -29,7 +29,9 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
         match app.step {
             AppStep::Splash => "Defina o alvo, o modo de execução e inicie a análise.",
             AppStep::ToolSelect => "Escolha as ferramentas que serão executadas contra o alvo.",
-            AppStep::Execution => "Acompanhe o progresso, pause ou cancele a execução.",
+            AppStep::Execution => {
+                "Acompanhe o progresso, pause (p), retome (p) ou cancele (c) a execução."
+            }
             AppStep::Analysis => "Aguarde a correlação dos achados e a geração das recomendações.",
             AppStep::Results => "Revise os achados, abra detalhes e exporte o relatório.",
             AppStep::History => "Consulte execuções anteriores e abra o detalhe de cada uma.",
@@ -41,6 +43,8 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
         shortcut("tab / shift+tab", "mover o foco"),
         shortcut("setas", "navegar ou rolar"),
         shortcut("enter / espaço", "acionar o item em foco"),
+        shortcut("p", "pausar ou retomar a execução"),
+        shortcut("c", "cancelar a execução em andamento"),
         shortcut("ctrl+u", "limpar o campo de texto em foco"),
         shortcut("esc", "fechar ou voltar"),
         shortcut("f1", "abrir ajuda em qualquer contexto"),

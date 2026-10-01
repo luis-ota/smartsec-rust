@@ -1,3 +1,4 @@
+pub mod control;
 pub mod correlation;
 pub mod decision;
 pub mod enrichment;

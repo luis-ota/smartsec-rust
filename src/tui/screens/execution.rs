@@ -25,6 +25,8 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .unwrap_or(0) as u16;
     let status = if app.exec_cancelled {
         "Execução cancelada; retornando às ferramentas".to_string()
+    } else if app.run_control_label() == "pausado" {
+        format!("Execução PAUSADA · {completed}/{total} concluídas · p retoma")
     } else if total > 0 && completed == total {
         format!(
             "Preparando análise da IA {} · {}s",
@@ -166,6 +168,9 @@ fn render_progress(app: &AppState, frame: &mut Frame, area: Rect, percent: u16) 
             let (symbol, color, status) = match tool.status {
                 ToolStatus::Pending => ("○", MUTED, "aguardando"),
                 ToolStatus::Running => (app.spinner_char(), ACCENT, "executando"),
+                // `podman pause` congela o container; o símbolo não gira para
+                // deixar visível que nada está progredindo.
+                ToolStatus::Paused => ("‖", WARNING, "pausada"),
                 ToolStatus::Done => ("●", SUCCESS, "concluída"),
                 ToolStatus::Failed => ("×", DANGER, "falhou"),
             };
@@ -241,19 +246,42 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    let columns = Layout::horizontal([Constraint::Min(1), Constraint::Length(22)]).split(area);
-    let cancel_focused = app.focus == FocusTarget::ExecutionCancel;
+    // RNF07: em 80 colunas os dois rótulos completos precisam caber. Cada botão
+    // reserva o rótulo mais os dois espaços de `render_button`.
+    const BUTTON: u16 = 19;
+    let columns = Layout::horizontal([
+        Constraint::Min(1),
+        Constraint::Length(BUTTON),
+        Constraint::Length(BUTTON),
+    ])
+    .split(area);
     frame.render_widget(
-        Paragraph::new("↑↓ percorre os logs · esc também cancela")
-            .style(Style::default().fg(MUTED)),
+        Paragraph::new("↑↓ logs · esc cancela").style(Style::default().fg(MUTED)),
         columns[0],
     );
+    // O rótulo acompanha o canal de controle, que é a mesma instância vista
+    // pelo executor: a tela não promete uma pausa que o Podman recusou.
+    let (label, action) = if app.run_control_label() == "pausado" {
+        ("Retomar varredura", SemanticAction::ResumeRun)
+    } else {
+        ("Pausar varredura", SemanticAction::PauseRun)
+    };
     chrome::render_button(
         app,
         frame,
         columns[1],
+        label,
+        action,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::ExecutionPause)
+            .enabled(!app.exec_cancelled),
+    );
+    chrome::render_button(
+        app,
+        frame,
+        columns[2],
         "Cancelar varredura",
         SemanticAction::CancelRun,
-        chrome::ButtonState::secondary(cancel_focused).enabled(!app.exec_cancelled),
+        chrome::ButtonState::secondary(app.focus == FocusTarget::ExecutionCancel)
+            .enabled(!app.exec_cancelled),
     );
 }
