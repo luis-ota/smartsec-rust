@@ -129,6 +129,24 @@ keyring do sistema e nunca sao gravadas no TOML. No Linux o keyring usa o
 Secret Service (por exemplo, gnome-keyring ou KWallet), que precisa estar
 ativo para salvar e ler chaves de provedores remotos.
 
+### Progresso, achados e ocorrencias na TUI
+
+A TUI nao mostra progresso inventado. O catalogo de ferramentas ja aparece
+pronto (ele vem do registry, nao de uma "deteccao"), o medidor da execucao
+conta apenas ferramentas que o orquestrador ja encerrou e a tela de analise
+acompanha a etapa real do pipeline com o tempo que a IA leva. Quando a analise
+termina, os resultados abrem na hora.
+
+Os achados criticos ficam no topo da lista, o painel anuncia quantos sao, e a
+cor da severidade do scanner continua visivel mesmo na linha selecionada. O
+detalhe do achado mostra a evidencia minima do scanner, o alvo, o instante da
+deteccao e a origem do achado.
+
+Falhas nao somem: a tela de Execucao e o resumo de Resultados listam cada
+ocorrencia com a sua origem (ferramenta, auditoria, IA, executor, validacao,
+exportacao). Avisos da IA, como a queda da LLM principal e o uso do modelo
+local alternativo, aparecem como aviso, sem virar falha da varredura.
+
 ### E2E real da TUI
 
 O roteiro abaixo abre a TUI em um terminal `80x24`, serve um alvo autorizado
