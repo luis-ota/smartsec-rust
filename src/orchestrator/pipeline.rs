@@ -1,4 +1,5 @@
 use crate::ai::agent::AIAgent;
+use crate::code_agent::agent::{CodeAnalysisReport, CodeAnalysisService};
 use crate::ai::analysis_service::AnalysisResult;
 use crate::ai::analysis_service::AnalysisService;
 use crate::config::Configuration;
@@ -39,6 +40,9 @@ pub struct Orchestrator {
     pub last_analysis_result: Option<AnalysisResult>,
     /// Serviço único de análise, compartilhado pela TUI e pelo modo headless.
     analysis_service: AnalysisService,
+    /// Relatório da fase do agente de código, com a localização de cada achado
+    /// e o registro auditável de cada chamada de ferramenta.
+    pub last_code_report: Option<CodeAnalysisReport>,
 }
 
 impl Orchestrator {
@@ -70,6 +74,7 @@ impl Orchestrator {
             latest_nmap_output: None,
             last_analysis_result: None,
             analysis_service: AnalysisService::new(),
+            last_code_report: None,
         }
     }
 
@@ -324,6 +329,75 @@ impl Orchestrator {
         result
     }
 
+    /// Executa a fase do agente de código, depois dos scanners.
+    ///
+    /// A fase é **best effort** por desenho: ela roda depois que os achados já
+    /// estão construídos e não pode impedir o relatório de ser gravado. Se o
+    /// diretório do projeto não puder ser aberto, ou se o provedor não
+    /// suportar tool calling, cada achado recebe "localização não determinada"
+    /// com o motivo registrado, e o pipeline segue para o relatório.
+    ///
+    /// `run_command` **não** recebe allowlist aqui: o agente entra em modo
+    /// somente leitura por padrão, e a execução de comandos exigiria um opt-in
+    /// explícito que não existe no contrato da configuração atual. A ferramenta
+    /// permanece registrada e é recusada com mensagem acionável.
+    pub async fn analyze_code(&mut self) -> CodeAnalysisReport {
+        let project_dir = self.config.effective_project_dir();
+        let report = match CodeAnalysisService::open(
+            &project_dir,
+            crate::code_agent::CodeAgentLimits::default(),
+            Vec::new(),
+        ) {
+            Ok(service) => {
+                let model = self.agent.model.clone();
+                let label = self.agent.configured_provider_label();
+                // RNF10 é consultado **antes** do primeiro turno: o consentimento
+                // que a issue #23 já exige para enviar logs é o mesmo que
+                // precisa cobrir trechos do código do alvo, que são o ativo mais
+                // sensível do cliente. Sem esta checagem, um provedor remoto sem
+                // consentimento receberia o código-fonte auditado.
+                if !self.agent.allows_target_data() {
+                    CodeAnalysisReport::blocked_by_consent(
+                        &self.findings,
+                        &model,
+                        &label,
+                    )
+                } else {
+                    service
+                        .analyze(
+                            self.agent.provider_handle(),
+                            &model,
+                            &label,
+                            &self.findings,
+                        )
+                        .await
+                }
+            }
+            Err(error) => CodeAnalysisReport::unavailable(&project_dir, &error.to_string()),
+        };
+        self.apply_code_report(&report);
+        self.last_code_report = Some(report);
+        self.last_code_report
+            .clone()
+            .unwrap_or_else(CodeAnalysisReport::default)
+    }
+
+    /// Escreve a localização e a correção no contrato de cada achado.
+    ///
+    /// O índice do relatório casa com a posição do achado na lista original, e
+    /// é essa correspondência que permite gravar o resultado **sem** reordenar
+    /// nem reclassificar: a severidade continua exatamente a que o scanner
+    /// produziu.
+    fn apply_code_report(&mut self, report: &CodeAnalysisReport) {
+        for analysis in &report.findings {
+            let Some(finding) = self.findings.get_mut(analysis.finding_index) else {
+                continue;
+            };
+            finding.code_location = analysis.location.clone();
+            finding.code_remediation = analysis.remediation.clone();
+        }
+    }
+
     async fn request_nuclei_plan(&mut self, target: &str) -> Option<String> {
         let prompt = nuclei_plan_prompt(
             target,
@@ -500,6 +574,12 @@ impl Orchestrator {
         };
         let metadata = match &self.last_analysis_result {
             Some(result) => metadata.with_analysis(result),
+            None => metadata,
+        };
+        let metadata = match &self.last_code_report {
+            Some(report) => {
+                metadata.with_code_analysis(report, &self.config.effective_project_dir())
+            }
             None => metadata,
         };
         crate::orchestrator::scan_logger::save_scan_log(&metadata)

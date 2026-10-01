@@ -96,6 +96,27 @@ impl AIAgent {
         self.provider_label.clone()
     }
 
+    /// Provedor configurado como `dyn LLMProvider`, para a fase do agente de
+    /// código (issue #76).
+    ///
+    /// O provedor é devolvido por referência viva, e não clonado, porque o agente
+    /// de código conversa em vários turnos com o mesmo provedor: clonar exigiria
+    /// `Clone` no trait e duplicaria estado de sessão em cada achado.
+    pub fn provider_handle(&self) -> &dyn LLMProvider {
+        self.provider.as_ref()
+    }
+
+    /// `true` quando o provedor configurado pode receber dados do alvo.
+    ///
+    /// O agente de código usa este sinal **antes** de qualquer chamada, e não
+    /// apenas para bloquear a requisição: sem ele, um provedor remoto sem
+    /// consentimento receberia trechos do código do alvo auditado, o que RNF10
+    /// proíbe de forma mais estrita do que proíbe o envio de logs, porque o
+    /// código é o ativo protegido do cliente.
+    pub fn allows_target_data(&self) -> bool {
+        self.remote_allowed && self.configuration_error.is_none()
+    }
+
     /// Constrói um agente com provedores injetados. Restrito a testes: existe
     /// para exercitar a cadeia principal/alternativa sem rede e sem mock no
     /// fluxo real.
@@ -397,6 +418,7 @@ mod tests {
             target: "http://target.local".to_string(),
             evidence: "evidência".to_string(),
             detected_at: "2026-09-04T14:00:00Z".to_string(),
+            ..Default::default()
         }
     }
 

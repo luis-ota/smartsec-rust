@@ -25,6 +25,13 @@ pub struct Configuration {
     pub tools: Vec<ToolManifest>,
     pub output_file: Option<String>,
     pub output_dir: Option<String>,
+    /// Diretório do projeto analisado pelo agente de código (issue #76).
+    ///
+    /// `None` significa "diretório atual": o SmartSec é uma CLI e espera ser
+    /// iniciado no workdir da aplicação auditada. Mesmo quando ausente, o valor
+    /// efetivo é canonicalizado e registrado no log estruturado e no relatório,
+    /// para que a auditoria saiba qual árvore foi lida.
+    pub project_dir: Option<String>,
     pub show_help: bool,
     pub show_version: bool,
 }
@@ -72,6 +79,9 @@ impl Configuration {
                 }
                 "--output-dir" => {
                     self.output_dir = Some(next_argument(args, &mut index, "--output-dir")?);
+                }
+                "--project" => {
+                    self.project_dir = Some(next_argument(args, &mut index, "--project")?);
                 }
                 "-p" | "--provider" => {
                     let provider = next_argument(args, &mut index, "--provider")?;
@@ -145,6 +155,23 @@ impl Configuration {
         let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
         base.join("smartsec")
     }
+
+    /// Diretório do projeto analisado, com padrão no diretório atual.
+    ///
+    /// O caminho devolvido é o que o agente de código vai canonicalizar e abrir
+    /// como raiz do sandbox; a validação real acontece em
+    /// `code_agent::workspace::Workspace::open`, que exige um diretório
+    /// existente e legível.
+    pub fn effective_project_dir(&self) -> PathBuf {
+        self.project_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map_or_else(
+                || PathBuf::from("."),
+                |value| PathBuf::from(value),
+            )
+    }
 }
 
 impl Default for Configuration {
@@ -181,6 +208,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             tools: p.tools,
             output_file: p.output_file,
             output_dir: p.output_dir,
+            project_dir: p.project_dir,
             show_help: false,
             show_version: false,
         }
