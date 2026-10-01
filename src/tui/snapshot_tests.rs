@@ -1,6 +1,6 @@
-use super::chrome::{ACCENT, SURFACE};
+use super::chrome::{ACCENT, DANGER, SURFACE};
 use super::interaction::{FocusTarget, SemanticAction};
-use super::state::{AnalysisPhase, AppState, AppStep, ToolStatus};
+use super::state::{AnalysisPhase, AppState, AppStep, RunIssueScope, ToolStatus};
 use crate::config::Configuration;
 use crate::domain::vulnerability::{FindingSource, Vulnerability};
 use crate::domain::Severity;
@@ -59,7 +59,7 @@ fn finding() -> Vulnerability {
         didactic: "Explicação didática".to_string(),
         source: FindingSource::Real,
         target: "https://exemplo.local".to_string(),
-        evidence: "evidência".to_string(),
+        evidence: "template: expo · endpoint https://exemplo.local/atual".to_string(),
         detected_at: "2026-09-04T14:00:00Z".to_string(),
     }
 }
@@ -80,16 +80,17 @@ fn splash_matches_80x24_snapshot() {
 }
 
 #[test]
-fn tool_selection_loading_ready_and_empty_match_80x24_snapshots() {
+fn tool_selection_ready_and_empty_match_80x24_snapshots() {
     let mut app = app();
     app.step = AppStep::ToolSelect;
-    assert_snapshot(
-        &mut app,
-        &["Ferramentas", "Verificando catálogo", "Executar"],
-    );
 
-    app.tool_detecting = false;
-    assert_snapshot(&mut app, &["Nmap", "Contexto", "selecionadas"]);
+    // O catálogo vem do registry de forma síncrona: a listagem já está pronta e
+    // não existe estado intermediário de "verificando catálogo".
+    let snapshot = assert_snapshot(&mut app, &["Ferramentas", "Executar", "Nmap", "Contexto"]);
+    assert!(
+        !snapshot.contains("Verificando catálogo"),
+        "a detecção de catálogo era cenografia de temporizador\n{snapshot}"
+    );
 
     app.tools.clear();
     assert_snapshot(&mut app, &["Nenhuma ferramenta disponível"]);
@@ -99,7 +100,6 @@ fn tool_selection_loading_ready_and_empty_match_80x24_snapshots() {
 fn the_nikto_is_selectable_in_the_tool_catalog_of_the_tui() {
     let mut app = app();
     app.step = AppStep::ToolSelect;
-    app.tool_detecting = false;
 
     // O catálogo da TUI vem do registry, sem lista manual de ferramentas.
     let names: Vec<&str> = app
@@ -122,7 +122,6 @@ fn the_nikto_is_selectable_in_the_tool_catalog_of_the_tui() {
 fn the_zap_is_selectable_in_the_tool_catalog_of_the_tui() {
     let mut app = app();
     app.step = AppStep::ToolSelect;
-    app.tool_detecting = false;
 
     let names: Vec<&str> = app
         .tools
@@ -164,22 +163,67 @@ fn execution_states_match_80x24_snapshots() {
 
     for tool in &mut app.tools {
         tool.status = ToolStatus::Done;
-        tool.progress = 100;
     }
-    assert_snapshot(&mut app, &["Preparando análise da IA", "100%"]);
+    assert_snapshot(&mut app, &["Ferramentas concluídas", "100%"]);
 }
 
+/// A tela de Execução mostra todas as ocorrências da execução, não só a
+/// primeira, e distingue aviso de IA de falha.
+#[test]
+fn execution_screen_shows_every_registered_occurrence() {
+    let mut app = app();
+    app.step = AppStep::Execution;
+    app.focus = FocusTarget::ExecutionLogs;
+    app.record_run_issue(RunIssueScope::Tool, "Nmap falhou: imagem ausente no Podman");
+    app.record_run_issue(
+        RunIssueScope::Ai,
+        "A LLM principal falhou: conexão recusada; usando o Ollama local",
+    );
+    app.record_run_issue(
+        RunIssueScope::Audit,
+        "falha ao salvar auditoria: sem permissão",
+    );
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Ocorrências",
+            "ferramenta: Nmap falhou",
+            "IA: A LLM principal falhou",
+            "auditoria: falha ao salvar",
+        ],
+    );
+    assert!(
+        snapshot.contains("Execução concluída com 3 ocorrências")
+            || snapshot.contains("Executando varredura"),
+        "o status precisa acompanhar o painel de ocorrências\n{snapshot}"
+    );
+}
+
+/// A fase da análise reflete o evento real do pipeline e não um percentual
+/// fixo: enquanto a IA trabalha, a tela mostra o tempo decorrido em vez de
+/// uma porcentagem inventada.
 #[test]
 fn analysis_states_match_80x24_snapshots_without_neural_decoration() {
     let mut app = app();
     app.step = AppStep::Analysis;
     app.focus = FocusTarget::AnalysisCancel;
-    app.analysis_text = "Validando evidências coletadas".to_string();
-    assert_snapshot(&mut app, &["examinando resultados", "Validando evidências"]);
+    app.analysis_phase = AnalysisPhase::Correlating;
+    app.analysis_findings = 4;
+    let snapshot = assert_snapshot(
+        &mut app,
+        &["4 achados em correlação", "Progresso da análise"],
+    );
+    assert!(
+        !snapshot.contains("25%") && !snapshot.contains("55%"),
+        "as fases não podem mais exibir percentuais fixos\n{snapshot}"
+    );
 
-    app.analysis_phase = AnalysisPhase::Complete;
-    let snapshot = assert_snapshot(&mut app, &["concluída · 100%", "Resultados prontos"]);
-    assert!(!snapshot.contains("Neural"));
+    app.analysis_phase = AnalysisPhase::Generating;
+    app.analysis_wait_secs = 42;
+    let snapshot = assert_snapshot(&mut app, &["gerando orientações · 42s"]);
+    assert!(!snapshot.contains("85%"), "{snapshot}");
+    assert!(!snapshot.contains("Neural"), "{snapshot}");
 }
 
 #[test]
@@ -196,12 +240,133 @@ fn result_empty_list_detail_and_didactic_match_80x24_snapshots() {
     app.focus = FocusTarget::ResultsDetail;
     assert_snapshot(
         &mut app,
-        &["Detalhe do achado", "Descrição", "Recomendação"],
+        &[
+            "Detalhe do achado",
+            "Descrição",
+            "Evidência",
+            "Recomendação",
+            "template: expo",
+        ],
     );
 
     app.show_didactic = true;
     app.focus = FocusTarget::DidacticContent;
     assert_snapshot(&mut app, &["Explicação didática", "Em linguagem direta"]);
+}
+
+/// Detalhe com evidência longa e saneada: o link com o scanner é o primeiro
+///citizen da tela de evidência e nunca pode vazar credencial.
+#[test]
+fn finding_detail_shows_long_and_sanitized_evidence() {
+    let mut app = app();
+    app.step = AppStep::Results;
+    let mut item = finding();
+    item.evidence = format!(
+        "template: expose-config · matched-at: https://alvo.local/actuator/env · {}\n\nAuthorization: Bearer token-secreto-1234567890",
+        "matched-header muito longo ".repeat(20)
+    );
+    app.orchestrator.findings = vec![item];
+    app.result_detail_vuln = Some(0);
+    app.focus = FocusTarget::ResultsDetail;
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Evidência",
+            "template: expose-config",
+            "alvo  https://exemplo.local",
+            "origem  real",
+            "2026-09-04T14:00:00Z",
+        ],
+    );
+    assert!(
+        !snapshot.contains("token-secreto"),
+        "a evidência precisa ser sanitizada antes de virar texto de tela\n{snapshot}"
+    );
+
+    app.detail_scroll = app.detail_max_scroll;
+    let (scrolled, _) = render_80x24(&mut app);
+    assert!(
+        scrolled.contains("[REDACTED]"),
+        "a linha com credencial é substituída por [REDACTED]\n{scrolled}"
+    );
+    assert!(!scrolled.contains("token-secreto"), "{scrolled}");
+}
+
+/// REQ15: os críticos ficam no topo, o painel anuncia isso e a cor da
+/// severidade continua presente na linha selecionada.
+#[test]
+fn critical_findings_lead_the_list_and_keep_their_color_when_selected() {
+    let mut app = app();
+    app.step = AppStep::Results;
+    app.focus = FocusTarget::ResultsList;
+    app.orchestrator.findings = vec![
+        Vulnerability {
+            title: "Versão exposta".to_string(),
+            severity: Severity::Info,
+            ..finding()
+        },
+        finding(),
+    ];
+
+    let (snapshot, buffer) = render_80x24(&mut app);
+    let lines: Vec<&str> = snapshot.lines().collect();
+    let critical_row = lines
+        .iter()
+        .position(|line| line.contains("Shell aberta") || line.contains("CRÍTICA"))
+        .expect("linha do achado crítico");
+    let info_row = lines
+        .iter()
+        .position(|line| line.contains("Versão exposta"))
+        .expect("linha do achado informativo");
+    assert!(
+        critical_row < info_row,
+        "o crítico precisa vir primeiro\n{snapshot}"
+    );
+    assert!(snapshot.contains("crítico(s) no topo"), "{snapshot}");
+
+    let column = lines[critical_row]
+        .find("CRÍTICA")
+        .expect("rótulo de severidade") as u16;
+    assert_eq!(
+        buffer[(column, critical_row as u16)].fg,
+        DANGER,
+        "a severidade do scanner é autoritativa e não some com a seleção"
+    );
+    assert_ne!(
+        buffer[(column, critical_row as u16)].bg,
+        ACCENT,
+        "o destaque da seleção vem do fundo, não da cor da severidade"
+    );
+}
+
+/// O resumo de Resultados também agrega as ocorrências e mostra o resumo real
+/// devolvido pelo agente de IA.
+#[test]
+fn results_summary_aggregates_occurrences_and_shows_the_ai_summary() {
+    let mut app = app();
+    app.step = AppStep::Results;
+    app.focus = FocusTarget::ResultsList;
+    app.config.target_url = "https://alvo.local".to_string();
+    app.orchestrator.findings = vec![finding()];
+    app.agent.last_analysis =
+        "Análise concluída: 1 achados (1 críticos, 0 altos, 0 médios, 0 baixos e 0 informativos)."
+            .to_string();
+    app.record_run_issue(RunIssueScope::Tool, "Nmap falhou: imagem ausente no Podman");
+    app.record_run_issue(
+        RunIssueScope::Audit,
+        "falha ao salvar auditoria: sem permissão",
+    );
+
+    assert_snapshot(
+        &mut app,
+        &[
+            "ferramenta: Nmap falhou",
+            "+1 ocorrências no log da execução",
+            "1 críticas",
+            "ia  Análise concluída: 1 achados",
+        ],
+    );
 }
 
 #[test]
@@ -349,7 +514,6 @@ fn wrapped_log_lines_expand_the_scroll_limit() {
 fn semantic_focus_changes_the_rendered_list_style() {
     let mut app = app();
     app.step = AppStep::ToolSelect;
-    app.tool_detecting = false;
     app.focus = FocusTarget::ToolList;
     let (_, focused_backend) = render_80x24(&mut app);
     let row = app
