@@ -241,6 +241,11 @@ pub struct AppState {
     pub settings_input_project_dir: String,
     pub settings_api_key_touched: bool,
     pub settings_error: Option<String>,
+    /// Problema de configuracao detectado na abertura da TUI, antes de qualquer
+    /// execucao. Vive separado de `settings_error` porque nasce do
+    /// carregamento e nao de uma tentativa de salvar, e porque um continua
+    /// valendo enquanto o outro so existe ate a proxima edicao.
+    pub config_warning: Option<String>,
     pub llm_warning: Option<String>,
     pub audit_log_path: Option<PathBuf>,
     pub history: crate::orchestrator::scan_logger::ScanHistory,
@@ -323,6 +328,7 @@ impl AppState {
             .unwrap_or_else(|| config.effective_project_dir().display().to_string());
 
         Ok(Self {
+            config_warning: None,
             config,
             orchestrator,
             agent,
@@ -1112,6 +1118,18 @@ impl AppState {
         llm.is_remote()
     }
 
+    /// Registra (ou limpa) o aviso de configuracao da abertura.
+    pub fn set_config_warning(&mut self, warning: Option<String>) {
+        self.config_warning = warning.filter(|text| !text.trim().is_empty());
+    }
+
+    /// O aviso mais urgente entre erro de salvamento e problema de abertura.
+    pub fn settings_status_error(&self) -> Option<&str> {
+        self.settings_error
+            .as_deref()
+            .or(self.config_warning.as_deref())
+    }
+
     pub fn apply_settings(&mut self) -> Result<(), String> {
         let provider =
             LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
@@ -1158,10 +1176,24 @@ impl AppState {
             .map_err(|error| format!("Diretório do projeto inválido: {error}"))?;
         candidate.project_dir = Some(project);
         candidate.save()?;
+        self.commit_settings(candidate);
+        Ok(())
+    }
+
+    /// Aplica uma configuração já validada e persistida.
+    ///
+    /// Separado de [`Self::apply_settings`] porque `save` toca o disco do
+    /// usuário e o keyring do sistema: misturar as duas coisas tornaria
+    /// impossível verificar o efeito no estado sem uma máquina de verdade.
+    pub(crate) fn commit_settings(&mut self, candidate: Configuration) {
         self.config = candidate;
         self.reset_settings_draft();
         self.show_settings = false;
-        Ok(())
+        // Uma configuracao valida foi salva: o aviso de abertura perdeu o
+        // objeto e sai, para que a proxima execucao comece limpa. Se o `save`
+        // falhar, ele nem chega aqui — e o aviso continuar e o correto,
+        // porque o problema nao foi corrigido em lugar nenhum.
+        self.config_warning = None;
     }
 
     pub fn reset_settings_draft(&mut self) {

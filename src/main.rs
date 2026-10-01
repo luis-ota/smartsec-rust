@@ -304,15 +304,26 @@ impl CommandLineInterface {
             Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
             Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
             None => {
-                let config = config::Configuration::load(&[])?;
-                Self::display_tui(config).await?;
+                // A TUI abre mesmo com configuracao invalida: e a propria tela de
+                // Configurar IA que permite consertar o que esta errado, entao
+                // abortar aqui deixaria o operador sem caminho. Os problemas
+                // encontrados viram aviso visivel. O headless segue validando.
+                let (config, problems) =
+                    config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
+                Self::display_tui(config, problems).await?;
                 Ok(EXIT_SUCCESS)
             }
         }
     }
 
-    async fn display_tui(initial_config: config::Configuration) -> Result<()> {
+    async fn display_tui(
+        initial_config: config::Configuration,
+        config_problems: Vec<String>,
+    ) -> Result<()> {
         let mut app = tui::state::AppState::new(initial_config)?;
+        // O aviso de configuracao entra antes de qualquer execucao e so sai
+        // quando o operador salva uma configuracao valida pela propria tela.
+        app.set_config_warning(Some(config_problems.join(" · ")));
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -973,6 +984,8 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::llm_config::{LlmConfig, LlmProviderKind};
+    use crate::config::Configuration;
     use crate::domain::vulnerability::FindingSource;
 
     fn vulnerability(severity: Severity) -> Vulnerability {
@@ -1227,5 +1240,73 @@ mod tests {
             "--demo".to_owned(),
         ])
         .is_err());
+    }
+    /// Criterio de aceite 3: o headless **continua recusando** a mesma
+    /// configuracao que a TUI agora aceita. Se o headless passasse a aceitar, a
+    /// diferenca entre os dois modos viraria um furo: o pipeline de automacao
+    /// perderia a validacao que a interface flexivel.
+    ///
+    /// A falha usada e a de **timeout invalido**, e nao a de credencial ou
+    /// consentimento, por um motivo que o primeiro CI revelou: `LlmConfig::validate`
+    /// checa a credencial **antes** do consentimento, e a credencial vem do keyring
+    /// do sistema. Com chave no keyring a mensagem era uma, sem chave era outra, e
+    /// o teste passava ou falhava conforme o estado da maquina. O timeout nao
+    /// depende de keyring, disco nem rede, entao prova o mesmo critério sem as
+    /// tres variabilidades.
+    #[test]
+    fn headless_still_refuses_an_invalid_llm_configuration() {
+        let path =
+            std::env::temp_dir().join(format!("smartsec-llm-invalida-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "target_url = \"http://alvo.local\"\n\n[llm]\n\
+             provider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\n\
+             model = \"llama3.2:1b\"\ntimeout_secs = 900\n\n",
+        )
+        .expect("a configuração de teste deve ser escrita");
+
+        let options = ExecutionArgs {
+            config: Some(path.clone()),
+            ..ExecutionArgs::default()
+        };
+        let error = build_config(&options, "192.0.2.10".to_owned(), None, true)
+            .expect_err("o headless precisa recusar a configuração inválida");
+
+        assert!(
+            format!("{error:#}").contains("tempo limite"),
+            "o erro do headless precisa ser o mesmo que a interface mostra"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A TUI e o headless devem recusar **pelo mesmo motivo**, nao apenas ambos
+    /// recusarem. Se cada um escolhesse uma falha diferente da mesma configuracao,
+    /// a operacao leria dois textos para um defeito so.
+    #[test]
+    fn the_tui_and_the_headless_report_the_same_reason_for_the_same_defect() {
+        let config = Configuration {
+            target_url: "http://alvo.local".to_string(),
+            llm: LlmConfig {
+                provider: LlmProviderKind::Ollama,
+                base_url: "http://localhost:11434/v1".to_string(),
+                model: "llama3.2:1b".to_string(),
+                timeout_secs: 900,
+                ..LlmConfig::default()
+            },
+            ..Configuration::default()
+        };
+
+        let headless = config.llm.validate().expect_err("o headless recusa");
+        let problems = config.validation_problems();
+        let interface = problems
+            .iter()
+            .find(|problem| problem.starts_with("IA:"))
+            .expect("a TUI deve reportar a IA");
+
+        assert_eq!(
+            interface.trim_start_matches("IA: "),
+            headless,
+            "a interface e o headless precisam citar a mesma causa"
+        );
     }
 }

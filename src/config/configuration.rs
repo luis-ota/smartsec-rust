@@ -53,6 +53,42 @@ impl Configuration {
         crate::config::persistence::load_config_file().into()
     }
 
+    /// Carrega a configuração para a TUI **sem** abortar quando ela é inválida.
+    ///
+    /// A TUI precisa abrir justamente para permitir corrigir o que está
+    /// errado: abortar deixa o operador sem caminho, porque a tela que
+    /// resolve o problema é a própria que não abre. O modo headless continua
+    /// validando e falhando, por [`Self::load`].
+    ///
+    /// Devolve a configuração e a lista de problemas encontrados, para que a
+    /// interface consiga exibi-los em vez de imprimi-los e sair.
+    pub fn load_for_tui() -> Result<(Self, Vec<String>), String> {
+        let mut config = Self::load_unvalidated();
+        config
+            .parse_args(&[])
+            .map_err(|error| format!("{error:#}"))?;
+        let problems = config.validation_problems();
+        Ok((config, problems))
+    }
+
+    /// Lista os problemas de configuração **sem** interrompê-los.
+    ///
+    /// Reúne os dois pontos que abortam o fluxo — a LLM e as ferramentas
+    /// registradas — na ordem em que o operador precisa corrigir. A ordem
+    /// importa: sem chave de LLM remota não há análise, e sem ferramenta
+    /// válida não há varredura, mas a segunda correção depende da primeira
+    /// quando o operador ainda nem chegou a configurá-la.
+    pub fn validation_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if let Err(error) = self.llm.validate() {
+            problems.push(format!("IA: {error}"));
+        }
+        if let Err(error) = self.validate_tools() {
+            problems.push(format!("Ferramentas: {error}"));
+        }
+        problems
+    }
+
     pub fn load_from_path(path: &std::path::Path) -> Result<Self> {
         let config =
             crate::config::persistence::load_config_file_from(path).map_err(anyhow::Error::msg)?;
@@ -230,6 +266,88 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::llm_config::LlmProviderKind;
+
+    /// Criterio de aceite 1: uma configuracao de IA remota sem chave precisa
+    /// ser **um aviso**, nao um erro fatal. E a tela de Configurar IA que
+    /// resolve o problema, entao abortar nela deixa o operador sem caminho.
+    #[test]
+    fn remote_llm_without_credentials_is_a_problem_not_a_failure() {
+        let config = LlmConfig {
+            provider: LlmProviderKind::OpenAI,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key: String::new(),
+            remote_consent: true,
+            ..LlmConfig::default()
+        };
+
+        assert!(config.validate().is_err(), "o headless precisa recusar");
+
+        let problems = Configuration {
+            target_url: "http://alvo.local".to_string(),
+            llm: config,
+            ..Configuration::default()
+        }
+        .validation_problems();
+
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("credenciais"), "{problems:?}");
+    }
+
+    /// Uma configuracao valida nao produz aviso nenhum: sem isso, a TUI
+    /// anunciaria um problema que nao existe.
+    #[test]
+    fn a_valid_configuration_produces_no_problem() {
+        let config = Configuration {
+            target_url: "http://alvo.local".to_string(),
+            ..Configuration::default()
+        };
+
+        assert!(config.validation_problems().is_empty());
+    }
+
+    /// A lista junta a IA e as ferramentas, porque abortar em qualquer uma
+    /// delas produzia a mesma TUI fechada.
+    #[test]
+    fn problems_from_several_sources_are_all_reported() {
+        let config = Configuration {
+            target_url: "http://alvo.local".to_string(),
+            llm: LlmConfig {
+                provider: LlmProviderKind::OpenAI,
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "gpt-4o".to_string(),
+                api_key: String::new(),
+                remote_consent: true,
+                ..LlmConfig::default()
+            },
+            tools: vec![ToolManifest {
+                name: "ScannerQuebrado".to_string(),
+                description: "Scanner".to_string(),
+                category: "DAST".to_string(),
+                image: "exemplo/quebrado:1".to_string(),
+                version: "1.0".to_string(),
+                runner: "runner-inexistente".to_string(),
+                parser: "generic-text".to_string(),
+                command_template: vec!["scan".to_string(), "{target}".to_string()],
+                output_format: "text".to_string(),
+                enabled: true,
+            }],
+            ..Configuration::default()
+        };
+
+        let problems = config.validation_problems();
+
+        assert!(problems.len() >= 2, "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.starts_with("IA:")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.starts_with("Ferramentas:")),
+            "{problems:?}"
+        );
+    }
 
     #[test]
     fn parse_cli_url_and_auto() {
