@@ -250,12 +250,10 @@ fn push_logical(out: &mut Vec<LogicalLine>, buffer: &mut String, start: usize) {
     buffer.clear();
 }
 
+/// A varredura que alimenta o pipeline: so credencial, por enquanto.
 pub fn scan(file: &str, text: &str) -> Vec<CodeAuditFinding> {
     let mut findings = Vec::new();
     for logical in logical_lines(text) {
-        if let Some(finding) = sql_injection(file, &logical) {
-            findings.push(finding);
-        }
         if let Some(finding) = hardcoded_secret(file, &logical) {
             findings.push(finding);
         }
@@ -264,6 +262,17 @@ pub fn scan(file: &str, text: &str) -> Vec<CodeAuditFinding> {
     findings
 }
 
+/// Regra desligada: a medicao em 3.105.085 linhas deu 100% de falso positivo.
+///
+/// Em 8.384 arquivos reais a regra produziu 73 achados e zero verdadeiro
+/// positivo, porque casa o nome do metodo sem olhar o receptor: `self.execute`
+/// do setuptools, `gdb.execute`, e os internos do proprio sqlite3. Falso
+/// positivo em ferramenta de seguranca treina o revisor a descartar achado, e
+/// torna a densidade de achados do TCC uma metrica sem significado.
+///
+/// A deteccao volta sobre o modulo `ast` do proprio Python, que resolve
+/// receptor, binding e linha exata. Ver docs/evidence/auditoria-codigo-fp.md.
+#[allow(dead_code)]
 fn sql_injection(file: &str, logical: &LogicalLine) -> Option<CodeAuditFinding> {
     let call_at = find_sql_call(&logical.tokens)?;
     let expression = sql_argument_tokens(&logical.tokens, call_at);
@@ -475,4 +484,20 @@ fn is_key_word(identifier: &str, candidate: &str) -> bool {
         }
     }
     false
+}
+
+/// A varredura completa, incluindo a regra de injecao desligada.
+#[cfg(test)]
+pub fn scan_emitting_sql_injection(file: &str, text: &str) -> Vec<CodeAuditFinding> {
+    let mut findings = Vec::new();
+    for logical in logical_lines(text) {
+        if let Some(finding) = sql_injection(file, &logical) {
+            findings.push(finding);
+        }
+        if let Some(finding) = hardcoded_secret(file, &logical) {
+            findings.push(finding);
+        }
+    }
+    findings.sort_by_key(|finding| finding.line);
+    findings
 }
