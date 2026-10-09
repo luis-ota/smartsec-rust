@@ -297,10 +297,15 @@ mod tests {
     fn a_valid_configuration_produces_no_problem() {
         let config = Configuration {
             target_url: "http://alvo.local".to_string(),
+            llm: crate::config::llm_config::remote_de_teste(),
             ..Configuration::default()
         };
 
-        assert!(config.validation_problems().is_empty());
+        assert!(
+            config.validation_problems().is_empty(),
+            "{:?}",
+            config.validation_problems()
+        );
     }
 
     /// A lista junta a IA e as ferramentas, porque abortar em qualquer uma

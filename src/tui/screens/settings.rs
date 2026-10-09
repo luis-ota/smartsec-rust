@@ -491,7 +491,11 @@ mod tests {
     /// Um caminho que a fase do agente rejeitaria não pode ser salvo pela TUI.
     #[test]
     fn an_invalid_project_directory_is_refused_with_an_actionable_message() {
-        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        let mut app = AppState::new(Configuration {
+            llm: crate::config::llm_config::remote_de_teste(),
+            ..Configuration::default()
+        })
+        .expect("configuração válida");
         app.show_settings = true;
         app.settings_input_project_dir = "/caminho/que/nao/existe".to_string();
 
@@ -522,7 +526,7 @@ mod tests {
             execution_type: ExecutionType::Assisted,
             llm: LlmConfig {
                 api_key: "secret-value".to_string(),
-                ..LlmConfig::default()
+                ..crate::config::llm_config::local_de_teste()
             },
             nuclei_templates_path: None,
             nuclei_templates_commit: None,

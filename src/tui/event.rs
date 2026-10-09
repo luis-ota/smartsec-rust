@@ -1107,8 +1107,15 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
+    /// A IA remota fica configurada porque o padrão do projeto é API, e um
+    /// `Configuration::default()` sem provedor faria o `validate()` recusar antes
+    /// do erro que o teste quer observar.
     fn app() -> AppState {
-        AppState::new(Configuration::default()).expect("configuração de teste válida")
+        AppState::new(Configuration {
+            llm: crate::config::llm_config::remote_de_teste(),
+            ..Configuration::default()
+        })
+        .expect("configuração de teste válida")
     }
 
     /// `AppState` com as duas saídas do assistente apontadas para a memória:

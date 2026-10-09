@@ -170,6 +170,14 @@ impl LlmConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.base_url.trim().is_empty() {
+            return Err(
+                "Nenhuma IA configurada. Escolha um provedor de API na tela de \
+                 Configurar IA, ou ative um servidor local se quiser rodar na sua \
+                 máquina."
+                    .to_string(),
+            );
+        }
         validate_endpoint(&self.base_url, !self.is_remote())?;
         validate_model(&self.model)?;
         if self.timeout_secs == 0 || self.timeout_secs > DEFAULT_TIMEOUT_SECS {
@@ -234,9 +242,37 @@ fn is_loopback_endpoint(endpoint: &str) -> bool {
         .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1"))
 }
 
+#[cfg(test)]
+pub(crate) fn remote_de_teste() -> LlmConfig {
+    LlmConfig {
+        provider: LlmProviderKind::Custom,
+        base_url: "https://api.exemplo.test/v1".to_string(),
+        model: "modelo-de-teste".to_string(),
+        api_key: "chave-de-teste".to_string(),
+        remote_consent: true,
+        ..LlmConfig::default()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn local_de_teste() -> LlmConfig {
+    let provider = LlmProviderKind::LlamaCpp;
+    LlmConfig {
+        provider,
+        base_url: provider.default_base_url().to_string(),
+        model: provider.default_model().to_string(),
+        ..LlmConfig::default()
+    }
+}
+
 impl Default for LlmConfig {
+    /// O padrão é API remota, nunca modelo local.
+    ///
+    /// Um servidor local carrega pesos na RAM e queima CPU em inferência, o
+    /// que trava a máquina de quem está tentando trabalhar. Quem quer isso
+    /// escolhe explicitamente, no assistente ou na tela de Configurar IA.
     fn default() -> Self {
-        let provider = LlmProviderKind::LlamaCpp;
+        let provider = LlmProviderKind::Custom;
         Self {
             provider,
             base_url: provider.default_base_url().to_string(),
@@ -400,15 +436,18 @@ mod tests {
     /// Migração de Ollama para llama.cpp: porta e modelo precisam acompanhar o
     /// runtime novo, senão o padrão aponta para um servidor que não sobe mais.
     #[test]
-    fn local_defaults_point_to_the_llama_cpp_server_of_the_spec() {
+    fn o_provedor_local_aponta_para_o_llama_cpp_do_spec() {
         let provider = LlmProviderKind::LlamaCpp;
 
         assert_eq!(provider.default_base_url(), "http://localhost:8080/v1");
         assert_eq!(provider.default_model(), LLAMA_CPP_MODEL);
         assert!(provider.default_model().contains("Llama-3.1-8B"));
         assert!(!provider.default_model().contains(' '));
-        assert_eq!(LlmConfig::default().base_url, provider.default_base_url());
-        assert_eq!(LlmConfig::default().model, provider.default_model());
+        // O padrao do LlmConfig e API remota: o servidor local so entra por
+        // escolha explicita, porque inferencia local consome a maquina.
+        assert_ne!(LlmConfig::default().provider, LlmProviderKind::LlamaCpp);
+        assert!(LlmConfig::default().base_url.is_empty());
+        assert!(LlmConfig::default().validate().is_err());
         assert_eq!(
             LlmConfig::default().fallback_base_url,
             "http://localhost:8080/v1"

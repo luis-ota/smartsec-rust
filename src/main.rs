@@ -260,6 +260,10 @@ fn print_help() {
     println!("  history           Lista as execuções recentes do histórico.");
     println!("  show <SCAN_ID>    Mostra o detalhe de uma execução.");
     println!();
+    println!("Erros de uso:");
+    println!("  ferramenta desconhecida  Ferramenta fora do catálogo registrado");
+    println!("  comando desconhecido     Subcomando que não existe");
+    println!();
     println!("Opções:");
     println!("  -t, --target <ALVO>       IP, domínio ou URL");
     println!("      --config <ARQUIVO>    Configuração TOML");
@@ -269,6 +273,7 @@ fn print_help() {
     println!("      --project <DIRETORIO> Projeto analisado (padrão: diretório atual)");
     println!("  -o, --output <ARQUIVO>    Relatório Markdown");
     println!("      --output-dir <DIR>    Diretório de saída do relatório e do PDF");
+    println!("      --max-critical-findings <N>  Interrompe ao atingir N achados críticos");
     println!("  -h, --help");
     println!("  -V, --version");
     println!();
