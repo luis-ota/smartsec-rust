@@ -224,3 +224,61 @@ def buscar_usuario(user):\n\
 
     let _ = fs::remove_dir_all(root);
 }
+
+/// Formas que a revisão mediu como quebradas: prefixo em SCREAMING_SNAKE_CASE,
+/// literal de bytes e o parêntese de `pass` como coluna de consulta.
+#[test]
+fn a_regra_de_credencial_acha_o_nome_prefixado() {
+    for fonte in [
+        "DB_PASSWORD = \"Sup3rS3nh4!\"",
+        "MYSQL_PASSWORD = \"xYz987Ab12\"",
+        "APP_SECRET = \"qwerty123456\"",
+        "self.db_password = \"Sup3rS3nh4!\"",
+        "AWS_SECRET_KEY = \"AKIA-exemplo-1234\"",
+    ] {
+        assert_eq!(
+            rule_ids(&scan(fonte)),
+            vec!["python.hardcoded-credential"],
+            "não detectou: {fonte}"
+        );
+    }
+}
+
+#[test]
+fn a_regra_de_credencial_nao_come_o_comeco_da_palavra() {
+    for fonte in [
+        "bypass = \"xYz987Ab12\"",
+        "chaveiro = \"abc123def456\"",
+        "tokenizer = \"modelo-vocab-2024\"",
+        "password_hash = \"sha256:abc123\"",
+        "cur.execute(\"SELECT user, pass FROM users\")",
+    ] {
+        assert!(scan(fonte).is_empty(), "falso positivo em: {fonte}");
+    }
+}
+
+#[test]
+fn literal_de_bytes_ou_raw_nao_e_injecao() {
+    for fonte in [
+        "cur.execute(b\"SELECT 1\")",
+        "cur.execute(r\"SELECT 1\")",
+        "cur.execute(u\"SELECT 1\")",
+    ] {
+        assert!(scan(fonte).is_empty(), "falso positivo em: {fonte}");
+    }
+}
+
+#[test]
+fn f_string_so_e_injecao_quando_interpola() {
+    assert_eq!(
+        rule_ids(&scan("cur.execute(f\"SELECT * FROM u WHERE u='{x}'\")")),
+        vec!["python.sql-injection"]
+    );
+    assert!(scan("cur.execute(f\"SELECT 1\")").is_empty());
+}
+
+#[test]
+fn atributo_que_comeca_coma_letra_de_prefixo_nao_vira_string() {
+    assert!(scan("b.x = \"SELECT 1\"").is_empty());
+    assert!(scan("f.resultado = \"texto\"").is_empty());
+}

@@ -37,6 +37,9 @@ const PLACEHOLDERS: &[&str] = &[
 enum Token {
     Ident(String),
     Str(String),
+    /// String com prefixo `f` e interpolacao: o conteudo e montado em tempo de
+    /// execucao, ao contrario de `Str`.
+    FStr(String),
     Punct(char),
 }
 
@@ -54,7 +57,7 @@ impl Token {
 
     fn text(&self) -> Option<&str> {
         match self {
-            Token::Str(value) => Some(value),
+            Token::Str(value) | Token::FStr(value) => Some(value),
             _ => None,
         }
     }
@@ -90,31 +93,52 @@ fn tokenize(line: &str) -> Vec<Token> {
                 }
                 cursor += 1;
             }
-            let prefix = if index > 0
-                && matches!(
-                    chars[index - 1],
-                    'f' | 'F' | 'b' | 'B' | 'r' | 'R' | 'u' | 'U'
-                ) {
-                Some(chars[index - 1])
-            } else {
-                None
-            };
-            if let Some(marker) = prefix {
-                let marker = marker.to_ascii_lowercase();
-                if let Some(Token::Ident(name)) = tokens.last_mut() {
-                    name.pop();
-                }
-                tokens.push(Token::Ident(format!("{marker}string")));
-            } else {
-                tokens.push(Token::Str(value));
-            }
+            tokens.push(Token::Str(value));
             index = cursor + 1;
         } else if c.is_alphanumeric() || c == '_' {
             let start = index;
-            while index < chars.len() && (chars[index].is_alphanumeric() || chars[index] == '_') {
+            while index < chars.len()
+                && (chars[index].is_ascii_alphanumeric() || chars[index] == '_')
+            {
                 index += 1;
             }
-            tokens.push(Token::Ident(chars[start..index].iter().collect()));
+            let word: String = chars[start..index].iter().collect();
+            // `f` só é prefixo de string se a aspa vier logo depois: sem esse
+            // teste, um atributo como `b.x` viraria `bstring`, e um literal de
+            // bytes deixaria de ser lido como constante.
+            let is_string_prefix = word.chars().count() == 1
+                && matches!(word.as_str(), "f" | "b" | "r" | "u" | "F" | "B" | "R" | "U")
+                && matches!(chars.get(index), Some('"') | Some('\''));
+            if is_string_prefix {
+                // Consome a aspa e emite um literal marcado, para que a regra de
+                // SQLi diferencie interpolacao de literal puro.
+                let quote = chars[index];
+                let mut value = String::new();
+                let mut cursor = index + 1;
+                let mut escaped = false;
+                while cursor < chars.len() {
+                    let current = chars[cursor];
+                    if escaped {
+                        escaped = false;
+                    } else if current == '\\' {
+                        escaped = true;
+                    } else if current == quote {
+                        break;
+                    } else {
+                        value.push(current);
+                    }
+                    cursor += 1;
+                }
+                let interpolated = word.eq_ignore_ascii_case("f") && value.contains('{');
+                tokens.push(if interpolated {
+                    Token::FStr(value)
+                } else {
+                    Token::Str(value)
+                });
+                index = cursor + 1;
+            } else {
+                tokens.push(Token::Ident(word));
+            }
         } else {
             tokens.push(Token::Punct(c));
             index += 1;
@@ -301,7 +325,6 @@ fn sql_argument_tokens(tokens: &[Token], call_at: usize) -> Vec<Token> {
 fn expression_is_literal(tokens: &[Token]) -> bool {
     match tokens {
         [Token::Str(_)] => true,
-        [Token::Ident(name)] => name.ends_with("string"),
         [Token::Str(_), Token::Punct(','), rest @ ..] => rest.iter().all(|t| !t.is_punct('+')),
         _ => false,
     }
@@ -393,6 +416,11 @@ fn render(tokens: &[Token]) -> String {
     for token in tokens {
         match token {
             Token::Ident(name) => out.push_str(name),
+            Token::FStr(value) => {
+                out.push_str("f\"");
+                out.push_str(value);
+                out.push('"');
+            }
             Token::Str(value) => {
                 out.push('"');
                 out.push_str(value);
@@ -414,28 +442,37 @@ fn sanitize(line: &str) -> String {
     format!("{cut}…")
 }
 
+/// Termos que só valem como palavra inteira.
+///
+/// `pass` é palavra reservada do Python e nome de coluna (`SELECT user, pass
+/// FROM users`); `pwd` e `chave` são curtos demais para casar por segmento sem
+/// capturar `bypass` ou `chaveiro`.
+const EXATOS: &[&str] = &["pass", "pwd", "chave", "senha"];
+
+/// Sufixos que indicam que o valor **não** é a credencial em claro.
+const NAO_SAO_SEGREDOS: &[&str] = &["hash", "enc", "encoded", "alg", "len", "file", "path"];
+
+/// O identificador nomeia uma credencial?
+///
+/// O nome é lido por segmento: `DB_PASSWORD`, `self.db_password` e
+/// `AWS_SECRET_KEY` nomeiam a mesma coisa, e exigir que o termo fosse a palavra
+/// inteira ou o sufixo descartava as duas formas mais comuns em projeto Python.
 fn is_key_word(identifier: &str, candidate: &str) -> bool {
-    if candidate.len() >= 4 && matches!(candidate, "pass" | "chave" | "pwd") {
+    if EXATOS.contains(&candidate) {
         return identifier == candidate;
     }
-    let bytes = identifier.as_bytes();
-    let mut from = 0usize;
-    while let Some(at) = identifier[from..].find(candidate) {
-        let start = from + at;
-        let end = start + candidate.len();
-        let before_ok = start == 0 || !is_word_byte(bytes[start - 1]);
-        let after_ok = end == bytes.len() || !is_word_byte(bytes[end]);
-        if before_ok && after_ok {
-            return true;
-        }
-        from = start + 1;
-        if from >= identifier.len() {
-            break;
+    let lower = identifier.to_ascii_lowercase();
+    let partes: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+
+    for janela in 1..=2usize {
+        for at in 0..partes.len().saturating_sub(janela - 1) {
+            let trecho = partes[at..at + janela].join("");
+            if trecho != candidate.replace('_', "") {
+                continue;
+            }
+            let proxima = partes.get(at + janela).copied().unwrap_or("");
+            return !NAO_SAO_SEGREDOS.contains(&proxima);
         }
     }
     false
-}
-
-fn is_word_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
 }
