@@ -108,7 +108,7 @@ TOML
 
 echo "==> executando headless com --project $PROJECT"
 set +e
-"$ROOT/target/debug/smartsec-rust" scan \
+"$ROOT/target/debug/smartsec" scan \
     --config "$OUT/smartsec.toml" \
     --target "http://169.254.1.2:$PORT" \
     --tools Nmap \

@@ -317,6 +317,7 @@ A regra automatica de interrupcao (REQ05) nao tem codigo proprio: a varredura pa
 - Agente LLM remoto/local e registros de decisao.
 - Logs, historico e findings com proveniencia.
 - Relatorios Markdown e PDF.
+- Instalador sem privilegios de root e empacotamento de release (`docs/INSTALACAO.md`).
 - Workflow GitHub Actions.
 - Fixtures, testes e evidencias de validacao.
 - Matriz de requisitos, metricas, limitacoes e resultados para o TCC.
@@ -327,3 +328,4 @@ A regra automatica de interrupcao (REQ05) nao tem codigo proprio: a varredura pa
 - Plano de sprints: `docs/BES_TCC_Plano_de_Sprints_v2026_preenchido.docx`
 - Reuniao de orientacao: `docs/call_8.txt`
 - Distribuicao atual: `docs/PLANO_DE_DISTRIBUICAO.md`
+- Instalacao e desinstalacao: `docs/INSTALACAO.md`

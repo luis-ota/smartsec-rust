@@ -45,7 +45,7 @@ if [[ -n "${SMARTSEC_BIN:-}" ]]; then
   BIN="$SMARTSEC_BIN"
 else
   cargo build --manifest-path "$REPO_ROOT/Cargo.toml" --quiet
-  BIN="$REPO_ROOT/target/debug/smartsec-rust"
+  BIN="$REPO_ROOT/target/debug/smartsec"
 fi
 [[ -x "$BIN" ]] || fail "binário não executável: $BIN"
 

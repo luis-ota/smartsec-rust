@@ -225,7 +225,7 @@ jobs:
           cache-on-failure: true
 
       - name: Compilar o binário headless
-        run: cargo build -j 1 --bin smartsec-rust
+        run: cargo build -j 1 --bin smartsec
 
       # ── Secrets consumidos por este workflow ──────────────────────────────
       # SMARTSEC_LLM_API_KEY (opcional, GitHub Secret): habilita o provedor de
@@ -311,7 +311,7 @@ jobs:
       - name: Verificar o contrato de exit codes da CLI
         run: |
           set -euo pipefail
-          bin="$PWD/target/debug/smartsec-rust"
+          bin="$PWD/target/debug/smartsec"
           "$bin" --version
           "$bin" --help > /dev/null
           set +e
@@ -371,7 +371,7 @@ jobs:
           # do SmartSec ignora a falha quando não há Secret Service, e o runner
           # não tem nenhum, então não há prompt nem espera.
           XDG_CONFIG_HOME="$RUNNER_TEMP/xdg" \
-          "$PWD/target/debug/smartsec-rust" scan \
+          "$PWD/target/debug/smartsec" scan \
             --target "http://169.254.1.2:$SMARTSEC_ALVO_PORTA" \
             --tools "$SMARTSEC_FERRAMENTAS" \
             --llm "$SMARTSEC_PROVEDOR_IA" \

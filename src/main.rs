@@ -101,7 +101,7 @@ impl Cli {
             .iter()
             .any(|argument| argument == "--version" || argument == "-V")
         {
-            println!("smartsec-rust 0.2.0");
+            println!("smartsec {}", env!("CARGO_PKG_VERSION"));
             return Ok(Self { command: None });
         }
         if arguments.is_empty() {
@@ -990,8 +990,12 @@ fn selected_tools<'a>(
         .collect()
 }
 
+/// Ponto de entrada do binario.
+///
+/// Publico porque `src/aliases/smartsec_rust.rs` o invoca para manter o nome
+/// antigo do comando como alias do novo.
 #[tokio::main]
-async fn main() {
+pub async fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let cli = CommandLineInterface::new(arguments);
     match cli.run().await {

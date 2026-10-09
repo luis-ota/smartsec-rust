@@ -44,7 +44,7 @@ impl Sandbox {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_smartsec-rust"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_smartsec"));
         command
             .env("XDG_CONFIG_HOME", &self.root)
             .env("HOME", &self.root)

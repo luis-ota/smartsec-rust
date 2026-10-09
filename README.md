@@ -2,6 +2,15 @@
 
 Plataforma de analise de seguranca — prototipo escrito em Rust com interface de terminal.
 
+## Instalacao
+
+```bash
+./scripts/install.sh
+```
+
+Pre-requisitos, como verificar e como desinstalar:
+[docs/INSTALACAO.md](docs/INSTALACAO.md).
+
 ## Documentacao do TCC
 
 - [Especificacao completa, requisitos, sprints e metas](TCC_SPEC.md)
@@ -43,7 +52,7 @@ parte do catalogo executavel.
 
 ## Requisitos
 
-- Rust 1.80+
+- Rust 1.80+ (so para compilar; o binario instalado nao precisa)
 - [Podman](https://podman.io/) em modo rootless, com o backend de rede `pasta`
 - Templates do Nuclei em `~/nuclei-templates`, no commit esperado configurado
 
@@ -56,6 +65,8 @@ local.
 Detalhamento em [docs/CONFIGURACAO.md](docs/CONFIGURACAO.md).
 
 ## Uso rapido
+
+Instalado, o comando e `smartsec`. A partir do repositorio:
 
 ```bash
 # TUI interativa

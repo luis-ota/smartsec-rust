@@ -17,7 +17,7 @@ ALT_PORT="${SMARTSEC_EVIDENCE_ALT_PORT:-38200}"
 TARGET_PORT="${SMARTSEC_EVIDENCE_TARGET_PORT:-38197}"
 ROOTLESS_NET="169.254.1.2"
 WORK="$OUT/work"
-BIN="$REPO_ROOT/target/debug/smartsec-rust"
+BIN="$REPO_ROOT/target/debug/smartsec"
 FAKE="$REPO_ROOT/scripts/evidence_fake_openai_server.py"
 PIDS=()
 
