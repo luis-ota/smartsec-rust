@@ -266,7 +266,7 @@ fn print_help() {
     println!("      --tools <LISTA>       Ferramentas reais separadas por vírgulas");
     println!("      --llm <PROVEDOR>      llama.cpp, openai, nvidia-nim ou custom");
     println!("      --model <MODELO>      Modelo da IA");
-    println!("      --project <DIRETORIO> Projeto analisado pelo agente de código");
+    println!("      --project <DIRETORIO> Projeto analisado (padrão: diretório atual)");
     println!("  -o, --output <ARQUIVO>    Relatório Markdown");
     println!("      --output-dir <DIR>    Diretório de saída do relatório e do PDF");
     println!("  -h, --help");
