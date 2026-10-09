@@ -81,7 +81,7 @@ env:
   SMARTSEC_IMAGEM_NMAP: 'docker.io/instrumentisto/nmap:7.95'
   # Provedor usado no CI. `ollama` é loopback: o agente cai no fallback
   # determinístico local quando não há Ollama no runner, sem alterar o exit code.
-  SMARTSEC_PROVEDOR_IA: 'ollama'
+  SMARTSEC_PROVEDOR_IA: 'llama.cpp'
 
 jobs:
   qualidade:
