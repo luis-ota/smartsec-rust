@@ -56,6 +56,7 @@ enum CliCommand {
     Tool(ToolArgs),
     History(HistoryArgs),
     Show(ShowArgs),
+    Onboarding,
 }
 
 #[derive(Debug)]
@@ -116,6 +117,17 @@ impl Cli {
         }
         let command = arguments[0].as_str();
         match command {
+            "onboarding" | "configurar" => {
+                if arguments.len() > 1 {
+                    anyhow::bail!(
+                        "opção desconhecida: {}; o assistente inicial não recebe opções",
+                        arguments[1]
+                    );
+                }
+                return Ok(Self {
+                    command: Some(CliCommand::Onboarding),
+                });
+            }
             "history" => {
                 let limit = parse_history_limit(&arguments[1..])?;
                 return Ok(Self {
@@ -242,7 +254,8 @@ Comandos:
   scan              Executa uma varredura não interativa.
   tool <FERRAMENTA> Executa manualmente uma ferramenta.
   history           Lista as execuções recentes do histórico.
-  show <SCAN_ID>    Mostra o detalhe de uma execução pelo identificador."
+  show <SCAN_ID>    Mostra o detalhe de uma execução pelo identificador.
+  onboarding        Abre o assistente de configuração da IA."
     );
     println!(
         "
@@ -271,7 +284,7 @@ Códigos de saída:
   Relatório e log estruturado são gravados antes da mensagem final, inclusive
   no cancelamento por sinal."
     );
-    println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
+    println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.\n  onboarding        Abre o assistente de configuração da IA.");
     println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n      --project <DIRETORIO>  Projeto analisado pelo agente de código (padrão: diretório atual)\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
     println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
     println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório e do PDF\n  -h, --help\n  -V, --version");
@@ -293,6 +306,11 @@ impl CommandLineInterface {
         {
             return Ok(EXIT_SUCCESS);
         }
+        // Primeira execução é a ausência do arquivo global: sem ele, a tela
+        // cairia direto na análise com uma configuração que ninguém revisou.
+        let force_onboarding = config::onboarding::is_first_run(
+            config::persistence::config_file_exists_at(&config::persistence::config_path()),
+        );
         match cli.command {
             Some(CliCommand::Scan(args)) => {
                 let config = build_config(&args.options, args.target, None, true)?;
@@ -304,6 +322,12 @@ impl CommandLineInterface {
             }
             Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
             Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
+            Some(CliCommand::Onboarding) => {
+                let (config, problems) =
+                    config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
+                Self::display_tui(config, problems, true).await?;
+                Ok(EXIT_SUCCESS)
+            }
             None => {
                 // A TUI abre mesmo com configuracao invalida: e a propria tela de
                 // Configurar IA que permite consertar o que esta errado, entao
@@ -311,7 +335,7 @@ impl CommandLineInterface {
                 // encontrados viram aviso visivel. O headless segue validando.
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
-                Self::display_tui(config, problems).await?;
+                Self::display_tui(config, problems, force_onboarding).await?;
                 Ok(EXIT_SUCCESS)
             }
         }
@@ -320,11 +344,15 @@ impl CommandLineInterface {
     async fn display_tui(
         initial_config: config::Configuration,
         config_problems: Vec<String>,
+        force_onboarding: bool,
     ) -> Result<()> {
         let mut app = tui::state::AppState::new(initial_config)?;
         // O aviso de configuracao entra antes de qualquer execucao e so sai
         // quando o operador salva uma configuracao valida pela propria tela.
         app.set_config_warning(Some(config_problems.join(" · ")));
+        if force_onboarding {
+            app.start_onboarding();
+        }
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
