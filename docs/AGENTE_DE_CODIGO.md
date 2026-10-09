@@ -44,7 +44,7 @@ está classificada. O agente aponta onde corrigir e nunca reclassifica
 
 | Ferramenta | O que faz |
 |---|---|
-| `list_dir` | Lista um diretório dentro do projeto, com `/` nos subdiretórios |
+| `list_dir` | Lista um diretório dentro do projeto, com `/` nos subdiretórios, até 200 entradas |
 | `read_file` | Lê um arquivo de texto com numeração de linha, até 64 KiB |
 | `search_code` | Busca textual no projeto, ignorando build, binários e arquivos grandes |
 | `run_command` | **Desabilitado por padrão.** Sem shell, com allowlist explícita |
@@ -63,9 +63,16 @@ habilite-o explicitamente antes de executar
 |---|---|---|
 | `max_file_bytes` | 64 KiB | Impede que um arquivo enorme estoure o contexto do modelo |
 | `max_search_results` | 50 | Uma busca não pode varrer o projeto inteiro |
+| `max_list_entries` | 200 | `list_dir` na raiz de um projeto com `target/` devolveu 19.788 bytes num payload e o provedor remoto respondeu 413 |
+| `max_tool_output_bytes` | 16 KiB | Nenhuma chamada devolve um payload maior que o orçamento do provedor |
 | `max_iterations` | 12 por achado | O modelo não pode explorar indefinidamente |
 | `analysis_timeout_secs` | 45 s por achado | RNF04. Um achado caro não pode atrasar a varredura inteira |
 | `command_timeout_secs` | 10 s | Comando travado é interrompido com `kill_on_drop` |
+
+Todo corte é declarado: a saída volta para o modelo com uma linha de aviso, e o
+`summary` do `ToolCallRecord` começa com `saída truncada · `, para que a TUI e o
+log estruturado mostrem que a leitura foi parcial. O prefixo vem antes do
+resumo porque o próprio resumo também é truncado.
 
 O prazo por achado interrompe **aquele** laço e a fase continua nos demais. O
 registro das chamadas de ferramenta acumula fora do futuro do timeout, para que um
@@ -147,7 +154,7 @@ sanitização removida.
 
 2. **Provedor remoto sempre reporta suporte a tool calling.** `OpenAIProvider`
    declara `supports_tool_calling() = true` porque o endpoint Chat Completions do
-   padrão OpenAI é aceito por Ollama, NVIDIA NIM e provedores `custom`. Se o
+   padrão OpenAI é aceito por llama.cpp, NVIDIA NIM e provedores `custom`. Se o
    endpoint real não aceitar ferramentas, a fase degrada com honestidade: o turno
    volta sem chamadas e o achado fica "não determinada". Não quebra, mas gasta um
    turno.

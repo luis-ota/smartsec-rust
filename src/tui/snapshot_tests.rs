@@ -265,7 +265,7 @@ fn execution_screen_shows_every_registered_occurrence() {
     app.record_run_issue(RunIssueScope::Tool, "Nmap falhou: imagem ausente no Podman");
     app.record_run_issue(
         RunIssueScope::Ai,
-        "A LLM principal falhou: conexão recusada; usando o Ollama local",
+        "A LLM principal falhou: conexão recusada; usando o llama.cpp local",
     );
     app.record_run_issue(
         RunIssueScope::Audit,

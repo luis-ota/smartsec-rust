@@ -125,7 +125,17 @@ impl Workspace {
     }
 
     /// Lê um arquivo de texto, truncando em `max_bytes` com marcador explícito.
-    pub fn read_text(&self, requested: &str, max_bytes: usize) -> Result<String, WorkspaceError> {
+    ///
+    /// `None` cai no teto configurado no workspace: um chamador que não passa
+    /// limite não deve conseguir ler um arquivo inteiro sem querer.
+    pub fn read_text(
+        &self,
+        requested: &str,
+        max_bytes: Option<usize>,
+    ) -> Result<String, WorkspaceError> {
+        let max_bytes = max_bytes
+            .filter(|value| *value > 0)
+            .unwrap_or(self.max_file_bytes);
         let path = self.resolve(requested)?;
         let metadata = std::fs::metadata(&path).map_err(|error| map_io(requested, error))?;
         if !metadata.is_file() {
@@ -319,13 +329,27 @@ mod tests {
     fn reads_text_and_truncates_with_clear_marker() {
         let workspace = fixture_workspace();
 
-        let full = workspace.read_text("README.md", 4096).unwrap();
+        let full = workspace.read_text("README.md", Some(4096)).unwrap();
         assert!(full.starts_with("# Codebase de exemplo"));
 
-        let truncated = workspace.read_text("src/app.py", 24).unwrap();
+        let truncated = workspace.read_text("src/app.py", Some(24)).unwrap();
         assert!(truncated.contains(TRUNCATION_MARKER));
         assert!(truncated.contains("exibidos 24 de"));
         assert!(!truncated.contains("return user"));
+    }
+
+    #[test]
+    fn falls_back_to_the_configured_ceiling_when_no_limit_is_given() {
+        let root = temp_workspace("teto-padrao");
+        fs::write(root.join("grande.txt"), "conteúdo\n".repeat(64)).unwrap();
+        let workspace = Workspace::open(&root).unwrap().with_max_file_bytes(32);
+
+        let read = workspace.read_text("grande.txt", None).unwrap();
+
+        assert!(read.contains(TRUNCATION_MARKER), "{read}");
+        assert!(read.contains("exibidos 32 de"), "{read}");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -364,7 +388,7 @@ mod tests {
             Err(WorkspaceError::OutsideRoot { .. })
         ));
         assert!(matches!(
-            workspace.read_text("../Cargo.toml", 1024),
+            workspace.read_text("../Cargo.toml", Some(1024)),
             Err(WorkspaceError::OutsideRoot { .. })
         ));
 
@@ -387,15 +411,15 @@ mod tests {
             Err(WorkspaceError::OutsideRoot { .. })
         ));
         assert!(matches!(
-            workspace.read_text("escape/segredo.txt", 64),
+            workspace.read_text("escape/segredo.txt", Some(64)),
             Err(WorkspaceError::OutsideRoot { .. })
         ));
         assert!(matches!(
-            workspace.read_text("escape.txt", 64),
+            workspace.read_text("escape.txt", Some(64)),
             Err(WorkspaceError::OutsideRoot { .. })
         ));
         assert_eq!(
-            workspace.read_text("link.txt", 64).unwrap(),
+            workspace.read_text("link.txt", Some(64)).unwrap(),
             "conteúdo interno"
         );
 
@@ -454,7 +478,7 @@ mod tests {
     fn sanitizes_example_secret_from_reads_and_search() {
         let workspace = fixture_workspace();
 
-        let text = workspace.read_text("src/config.py", 4096).unwrap();
+        let text = workspace.read_text("src/config.py", Some(4096)).unwrap();
         assert!(text.contains("[REDACTED]"));
         assert!(!text.contains("valor-de-exemplo"));
 
@@ -486,7 +510,7 @@ mod tests {
         let workspace = fixture_workspace();
 
         assert!(matches!(
-            workspace.read_text("src", 64),
+            workspace.read_text("src", Some(64)),
             Err(WorkspaceError::NotAFile { .. })
         ));
         assert!(matches!(
@@ -494,7 +518,7 @@ mod tests {
             Err(WorkspaceError::NotADirectory { .. })
         ));
         assert!(matches!(
-            workspace.read_text("nao-existe.txt", 64),
+            workspace.read_text("nao-existe.txt", Some(64)),
             Err(WorkspaceError::NotFound { .. })
         ));
     }

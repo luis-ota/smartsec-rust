@@ -626,7 +626,7 @@ mod tests {
 
         assert_eq!(result.source, AnalysisSource::FallbackProvider);
         assert!(result.fallback_used);
-        assert_eq!(result.provider, "Ollama");
+        assert_eq!(result.provider, "llama.cpp");
         assert_eq!(result.model, "llama3.1:8b");
         assert_eq!(result.configured_provider, "OpenAI");
         // A queda do principal é registrada mesmo com sucesso da alternativa:
@@ -699,7 +699,7 @@ mod tests {
 
         assert_eq!(result.source, AnalysisSource::FallbackProvider);
         assert!(result.fallback_used);
-        assert_eq!(result.provider, "Ollama");
+        assert_eq!(result.provider, "llama.cpp");
         assert!(result.text.contains("Orientações complementares"));
     }
 

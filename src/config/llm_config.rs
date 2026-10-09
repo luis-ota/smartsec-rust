@@ -1,7 +1,17 @@
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 45;
 const DEFAULT_MAX_RETRIES: u8 = 2;
+
+/// Endpoint padrão do `llama-server`. A porta 11434 era a do Ollama: trocar de
+/// runtime sem trocar a porta deixaria o SmartSec falando com um servidor morto.
+const LLAMA_CPP_BASE_URL: &str = "http://localhost:8080/v1";
+
+/// GGUF assumido quando a configuração não traz `model`: o `llama-server`
+/// identifica o modelo pelo arquivo de `-m`, e não por uma tag de registry.
+/// Segue o modelo do TCC_SPEC (Llama 3.1 8B) na quantização Q4_K_M.
+const LLAMA_CPP_MODEL: &str = "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf";
 
 fn default_timeout_secs() -> u64 {
     DEFAULT_TIMEOUT_SECS
@@ -12,29 +22,54 @@ fn default_max_retries() -> u8 {
 }
 
 fn default_fallback_base_url() -> String {
-    "http://localhost:11434/v1".to_string()
+    LLAMA_CPP_BASE_URL.to_string()
 }
 
 fn default_fallback_model() -> String {
-    "llama3.1:8b".to_string()
+    LLAMA_CPP_MODEL.to_string()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 pub enum LlmProviderKind {
-    #[serde(alias = "Mock", alias = "ollama")]
-    Ollama,
-    #[serde(alias = "nvidia-nim", alias = "nvidia_nim")]
+    LlamaCpp,
     NvidiaNim,
-    #[serde(alias = "openai")]
     OpenAI,
-    #[serde(alias = "custom", alias = "personalizado")]
     Custom,
+}
+
+/// Reduz a grafia a uma chave comparável: sem caixa e sem separadores. A TUI
+/// grava o rótulo que o operador leu na tela, e ele precisa voltar pela leitura.
+fn provider_key(raw: &str) -> String {
+    raw.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn provider_from_key(key: &str) -> Option<LlmProviderKind> {
+    match key {
+        "llamacpp" | "llama" | "ollama" | "mock" => Some(LlmProviderKind::LlamaCpp),
+        "nvidianim" | "nim" => Some(LlmProviderKind::NvidiaNim),
+        "openai" => Some(LlmProviderKind::OpenAI),
+        "custom" | "personalizado" => Some(LlmProviderKind::Custom),
+        _ => None,
+    }
+}
+
+impl<'de> Deserialize<'de> for LlmProviderKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(D::Error::custom)
+    }
 }
 
 impl LlmProviderKind {
     pub fn default_base_url(&self) -> &str {
         match self {
-            LlmProviderKind::Ollama => "http://localhost:11434/v1",
+            LlmProviderKind::LlamaCpp => LLAMA_CPP_BASE_URL,
             LlmProviderKind::NvidiaNim => "https://integrate.api.nvidia.com/v1",
             LlmProviderKind::OpenAI => "https://api.openai.com/v1",
             LlmProviderKind::Custom => "",
@@ -43,7 +78,7 @@ impl LlmProviderKind {
 
     pub fn default_model(&self) -> &str {
         match self {
-            LlmProviderKind::Ollama => "llama3.2:1b",
+            LlmProviderKind::LlamaCpp => LLAMA_CPP_MODEL,
             LlmProviderKind::NvidiaNim => "meta/llama-3.1-405b-instruct",
             LlmProviderKind::OpenAI => "gpt-4o",
             LlmProviderKind::Custom => "",
@@ -51,22 +86,31 @@ impl LlmProviderKind {
     }
 
     pub fn all_labels() -> Vec<&'static str> {
-        vec!["Ollama", "NVIDIA NIM", "OpenAI", "Personalizado"]
+        vec!["llama.cpp", "NVIDIA NIM", "OpenAI", "Personalizado"]
+    }
+
+    /// Interpreta a grafia vinda da CLI ou do TOML, aceitando o rótulo da TUI,
+    /// o nome canônico e as grafias históricas, sem diferenciar caixa nem
+    /// separadores.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        provider_from_key(&provider_key(raw)).ok_or_else(|| {
+            format!(
+                "provedor de IA desconhecido: \"{raw}\"; use {}, {}, {} ou {}",
+                Self::LlamaCpp.label(),
+                Self::NvidiaNim.label(),
+                Self::OpenAI.label(),
+                Self::Custom.label()
+            )
+        })
     }
 
     pub fn from_label(label: &str) -> Self {
-        match label {
-            "Ollama" => LlmProviderKind::Ollama,
-            "NVIDIA NIM" => LlmProviderKind::NvidiaNim,
-            "OpenAI" => LlmProviderKind::OpenAI,
-            _ => LlmProviderKind::Custom,
-        }
+        provider_from_key(&provider_key(label)).unwrap_or(LlmProviderKind::Custom)
     }
 
-    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
-            LlmProviderKind::Ollama => "Ollama",
+            LlmProviderKind::LlamaCpp => "llama.cpp",
             LlmProviderKind::NvidiaNim => "NVIDIA NIM",
             LlmProviderKind::OpenAI => "OpenAI",
             LlmProviderKind::Custom => "Personalizado",
@@ -119,7 +163,7 @@ impl LlmConfig {
     pub fn is_remote(&self) -> bool {
         match self.provider {
             LlmProviderKind::OpenAI | LlmProviderKind::NvidiaNim => true,
-            LlmProviderKind::Ollama | LlmProviderKind::Custom => {
+            LlmProviderKind::LlamaCpp | LlmProviderKind::Custom => {
                 !is_loopback_endpoint(&self.base_url)
             }
         }
@@ -148,7 +192,9 @@ impl LlmConfig {
         if self.fallback_enabled {
             validate_endpoint(&self.fallback_base_url, true)?;
             if !is_loopback_endpoint(&self.fallback_base_url) {
-                return Err("O endpoint alternativo do Ollama deve ser local".to_string());
+                return Err(
+                    "O endpoint alternativo local precisa ser local (llama.cpp)".to_string()
+                );
             }
             validate_model(&self.fallback_model)?;
         }
@@ -190,7 +236,7 @@ fn is_loopback_endpoint(endpoint: &str) -> bool {
 
 impl Default for LlmConfig {
     fn default() -> Self {
-        let provider = LlmProviderKind::Ollama;
+        let provider = LlmProviderKind::LlamaCpp;
         Self {
             provider,
             base_url: provider.default_base_url().to_string(),
@@ -230,11 +276,11 @@ mod tests {
     }
 
     #[test]
-    fn accepts_local_ollama_over_http() {
+    fn accepts_local_llama_cpp_over_http() {
         let config = LlmConfig {
-            provider: LlmProviderKind::Ollama,
-            base_url: "http://127.0.0.1:11434/v1".to_string(),
-            model: "llama3.1:8b".to_string(),
+            provider: LlmProviderKind::LlamaCpp,
+            base_url: "http://127.0.0.1:8080/v1".to_string(),
+            model: LLAMA_CPP_MODEL.to_string(),
             ..LlmConfig::default()
         };
         assert!(config.validate().is_ok());
@@ -244,30 +290,57 @@ mod tests {
     fn exposes_provider_labels_in_portuguese() {
         let labels = LlmProviderKind::all_labels();
 
-        assert_eq!(labels[0], "Ollama");
+        assert_eq!(labels[0], "llama.cpp");
         assert_eq!(labels[3], "Personalizado");
         assert!(!labels.contains(&"Integrado"));
         assert_eq!(LlmProviderKind::Custom.label(), "Personalizado");
     }
 
+    /// Regressão da grafia salva pela TUI: `provider = "Personalizado"` era rejeitado
+    /// na leitura, porque só o alias minúsculo estava registrado.
     #[test]
-    fn deserializes_legacy_mock_provider_as_ollama() {
+    fn accepts_the_label_the_tui_writes_in_every_casing_and_separator() {
+        let cases = [
+            ("Personalizado", LlmProviderKind::Custom),
+            ("personalizado", LlmProviderKind::Custom),
+            ("PERSONALIZADO", LlmProviderKind::Custom),
+            ("Custom", LlmProviderKind::Custom),
+            ("llama.cpp", LlmProviderKind::LlamaCpp),
+            ("LlamaCpp", LlmProviderKind::LlamaCpp),
+            ("LLAMA_CPP", LlmProviderKind::LlamaCpp),
+            ("nvidia nim", LlmProviderKind::NvidiaNim),
+            ("NVIDIA-NIM", LlmProviderKind::NvidiaNim),
+            ("NvidiaNim", LlmProviderKind::NvidiaNim),
+            ("OpenAI", LlmProviderKind::OpenAI),
+            ("openai", LlmProviderKind::OpenAI),
+        ];
+        for (spelling, expected) in cases {
+            let provider: LlmProviderKind = toml::from_str(&format!("provider = \"{spelling}\""))
+                .and_then(|value: toml::Value| value["provider"].clone().try_into())
+                .unwrap_or_else(|error| panic!("grafia \"{spelling}\" rejeitada: {error}"));
+            assert_eq!(provider, expected, "grafia {spelling}");
+        }
+    }
+
+    /// As grafias anteriores continuam válidas: uma configuração já gravada em disco
+    /// não pode deixar de carregar por causa do rótulo novo.
+    #[test]
+    fn deserializes_legacy_mock_provider_as_local_llama_cpp() {
         let provider: LlmProviderKind = toml::from_str("provider = \"Mock\"")
             .and_then(|value: toml::Value| value["provider"].clone().try_into())
             .unwrap();
 
-        assert_eq!(provider, LlmProviderKind::Ollama);
+        assert_eq!(provider, LlmProviderKind::LlamaCpp);
     }
 
     #[test]
     fn deserializes_cli_spellings_as_provider_aliases() {
         let cases = [
-            ("ollama", LlmProviderKind::Ollama),
+            ("ollama", LlmProviderKind::LlamaCpp),
             ("openai", LlmProviderKind::OpenAI),
             ("nvidia-nim", LlmProviderKind::NvidiaNim),
             ("nvidia_nim", LlmProviderKind::NvidiaNim),
             ("custom", LlmProviderKind::Custom),
-            ("personalizado", LlmProviderKind::Custom),
         ];
         for (spelling, expected) in cases {
             let document = format!("provider = \"{spelling}\"");
@@ -279,9 +352,17 @@ mod tests {
     }
 
     #[test]
+    fn reports_an_unknown_provider_with_the_valid_spellings() {
+        let error = toml::from_str::<LlmConfig>("provider = \"gemini\"").unwrap_err();
+
+        assert!(error.to_string().contains("gemini"), "{error}");
+        assert!(error.to_string().contains("llama.cpp"), "{error}");
+    }
+
+    #[test]
     fn serializes_canonical_variant_names() {
         let cases = [
-            (LlmProviderKind::Ollama, "Ollama"),
+            (LlmProviderKind::LlamaCpp, "LlamaCpp"),
             (LlmProviderKind::NvidiaNim, "NvidiaNim"),
             (LlmProviderKind::OpenAI, "OpenAI"),
             (LlmProviderKind::Custom, "Custom"),
@@ -294,18 +375,18 @@ mod tests {
 
     #[test]
     fn parses_llm_section_without_endpoint_fields() {
-        let config: LlmConfig = toml::from_str("provider = \"Ollama\"").unwrap();
-        assert_eq!(config.provider, LlmProviderKind::Ollama);
+        let config: LlmConfig = toml::from_str("provider = \"llama.cpp\"").unwrap();
+        assert_eq!(config.provider, LlmProviderKind::LlamaCpp);
         assert!(config.base_url.is_empty());
         assert!(config.model.is_empty());
     }
 
     #[test]
-    fn treats_non_loopback_ollama_as_remote() {
+    fn treats_non_loopback_llama_cpp_as_remote() {
         let mut config = LlmConfig {
-            provider: LlmProviderKind::Ollama,
-            base_url: "https://ollama.example/v1".to_string(),
-            model: "llama3.1:8b".to_string(),
+            provider: LlmProviderKind::LlamaCpp,
+            base_url: "https://llama.example/v1".to_string(),
+            model: LLAMA_CPP_MODEL.to_string(),
             ..LlmConfig::default()
         };
 
@@ -316,15 +397,48 @@ mod tests {
         assert!(config.validate().is_ok());
     }
 
+    /// Migração de Ollama para llama.cpp: porta e modelo precisam acompanhar o
+    /// runtime novo, senão o padrão aponta para um servidor que não sobe mais.
+    #[test]
+    fn local_defaults_point_to_the_llama_cpp_server_of_the_spec() {
+        let provider = LlmProviderKind::LlamaCpp;
+
+        assert_eq!(provider.default_base_url(), "http://localhost:8080/v1");
+        assert_eq!(provider.default_model(), LLAMA_CPP_MODEL);
+        assert!(provider.default_model().contains("Llama-3.1-8B"));
+        assert!(!provider.default_model().contains(' '));
+        assert_eq!(LlmConfig::default().base_url, provider.default_base_url());
+        assert_eq!(LlmConfig::default().model, provider.default_model());
+        assert_eq!(
+            LlmConfig::default().fallback_base_url,
+            "http://localhost:8080/v1"
+        );
+    }
+
+    /// O rótulo da TUI e o do arquivo precisam ser o mesmo caminho: a tela grava
+    /// `label()` e a tela seguinte relê por ele.
+    #[test]
+    fn every_tui_label_round_trips_through_its_kind() {
+        for label in LlmProviderKind::all_labels() {
+            let kind = LlmProviderKind::from_label(label);
+            assert_eq!(kind.label(), label, "rótulo {label}");
+            assert_eq!(
+                LlmProviderKind::from_label(label),
+                kind,
+                "grafia de {label}"
+            );
+        }
+    }
+
     #[test]
     fn rejects_non_local_fallback_endpoint() {
         let config = LlmConfig {
             fallback_enabled: true,
-            fallback_base_url: "https://ollama.example/v1".to_string(),
+            fallback_base_url: "https://llama.example/v1".to_string(),
             ..LlmConfig::default()
         };
 
-        assert!(config.validate().unwrap_err().contains("deve ser local"));
+        assert!(config.validate().unwrap_err().contains("local"));
     }
 
     #[test]

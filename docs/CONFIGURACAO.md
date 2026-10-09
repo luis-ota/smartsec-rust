@@ -27,8 +27,11 @@ schema mínimo: `target_url`, `active_tools`, `execution_type` e a tabela
 - `--target` é sempre obrigatório na CLI; o `target_url` do arquivo é usado
   pela TUI e substituído pela CLI no headless.
 - `--tools`, `--llm` e `--model` sobrescrevem os valores do arquivo.
-- `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`,
-  `custom`) além das canônicas (`Ollama`, `NvidiaNim`, `OpenAI`, `Custom`).
+- `provider` aceita o rótulo exibido na TUI (`llama.cpp`, `NVIDIA NIM`,
+  `OpenAI`, `Personalizado`), os nomes canônicos (`LlamaCpp`, `NvidiaNim`,
+  `OpenAI`, `Custom`) e as grafias da CLI, sem diferenciar caixa nem separador
+  (`llama_cpp`, `nvidia nim`, `personalizado`). `ollama` e `Mock` continuam
+  válidos como alias, para as configurações já gravadas.
 - `base_url` e `model` ausentes assumem o padrão do provedor;
   `execution_type` ausente assume `Assisted`.
 - `scan` headless sempre opera como Automático, independente de
@@ -41,12 +44,23 @@ schema mínimo: `target_url`, `active_tools`, `execution_type` e a tabela
 
 A tela `Configurar IA` separa conexao principal de confiabilidade e mostra
 somente os campos aplicaveis. Provedores remotos exibem chave e consentimento;
-o Ollama local os oculta. `Tab` percorre os campos e acoes, `←`/`→` alteram
+o llama.cpp local os oculta. `Tab` percorre os campos e acoes, `←`/`→` alteram
 selecoes, `Espaco` alterna opcoes e `Ctrl+U` limpa o campo atual. Valores
 invalidos mantem a tela aberta com uma mensagem acionavel. Chaves ficam no
 keyring do sistema e nunca sao gravadas no TOML. No Linux o keyring usa o
 Secret Service (por exemplo, gnome-keyring ou KWallet), que precisa estar
 ativo para salvar e ler chaves de provedores remotos.
+
+## Retentativas e limite de uso
+
+`max_retries` é o número de tentativas **adicionais**. Nenhuma retentativa sai sem
+esperar: um `Retry-After` do provedor tem precedência e, na ausência dele, o
+SmartSec aplica backoff exponencial (500 ms, 1 s, 2 s, com jitter) porque reenviar
+o mesmo payload no mesmo instante consome o orçamento de tokens por minuto que
+acabou de estourar. Um `429` vira uma mensagem que diz o que fazer — aguardar o
+período pedido, reduzir o payload ou usar o llama.cpp local — em vez de um `status
+429` cru. Um `Retry-After` maior que o teto de espera não vira espera: a resposta
+é imediata, para não passar do prazo da análise.
 
 ## Progresso, achados e ocorrencias na TUI
 
@@ -109,9 +123,9 @@ containers:
 ```
 
 Ele exige `bash`, `cargo`, `curl`, `jq`, `podman`, `python3`, `rg`, `tmux`,
-Ollama local com `llama3.2:1b` e o checkout versionado em
-`~/nuclei-templates`. Os artefatos temporarios ficam no caminho informado ao
-fim da execucao. A evidencia homologada desta mudanca esta em
+llama.cpp local (`llama-server` na porta 8080) com o GGUF Llama 3.1 8B e o
+checkout versionado em `~/nuclei-templates`. Os artefatos temporarios ficam no
+caminho informado ao fim da execucao. A evidencia homologada desta mudanca esta em
 [`docs/evidence/issue-53-tui-e2e.md`](evidence/issue-53-tui-e2e.md).
 
 Para uma execucao real, a configuracao TOML pode definir `nuclei_templates_path` e

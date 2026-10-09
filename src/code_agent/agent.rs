@@ -41,6 +41,9 @@ const HINT_CLOSE: &str = "</PISTAS_DO_ACHADO>";
 /// Máximo de itens de evidência do scanner repassados como pista.
 const MAX_HINT_EVIDENCE_CHARS: usize = 400;
 
+/// Marca de saída cortada que abre o `summary` de uma chamada de ferramenta.
+const TRUNCATED_PREFIX: &str = "saída truncada · ";
+
 /// A localização vive em `domain`, junto do restante do contrato de findings,
 /// porque é persistida no log estruturado, impressa no relatório e exibida na
 /// TUI: um tipo próprio do agente a tornaria um segundo contrato parallelo.
@@ -125,19 +128,29 @@ pub struct ToolCallRecord {
 
 impl ToolCallRecord {
     /// Resumo de uma chamada bem-sucedida.
+    ///
+    /// O corte entra como prefixo, e não no fim da saída, porque o resumo da
+    /// TUI e do log também é truncado: um aviso que só existe na cauda seria
+    /// descartado antes de aparecer e a auditoria mostraria uma leitura
+    /// completa que não foi.
     fn ok(
         finding_index: usize,
         iteration: usize,
         call: &ToolCall,
         result: &ToolCallResult,
     ) -> Self {
+        let output = truncate(&sanitize_text(&result.output), 240);
         Self {
             finding_index,
             iteration,
             tool: sanitize_text(&call.name),
             arguments: summarize_arguments(&call.arguments),
             outcome: "ok".to_string(),
-            summary: truncate(&sanitize_text(&result.output), 240),
+            summary: if result.truncated {
+                format!("{TRUNCATED_PREFIX}{output}")
+            } else {
+                output
+            },
         }
     }
 
@@ -1663,6 +1676,58 @@ mod tests {
         assert!(report.tool_calls[0].summary.contains("allowlist vazia"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// O corte precisa aparecer na auditoria. O `summary` também é truncado, então
+    /// um aviso preso no fim da saída seria descartado antes de aparecer.
+    #[tokio::test]
+    async fn a_truncated_tool_output_is_declared_in_the_audit_summary() {
+        let provider = ScriptedProvider::new(
+            vec![
+                ToolTurn {
+                    content: String::new(),
+                    tool_calls: vec![tool_call(
+                        "c1",
+                        "list_dir",
+                        serde_json::json!({"path": "src"}),
+                    )],
+                },
+                ToolTurn {
+                    content: r#"{"localizacao": null, "passos": []}"#.to_string(),
+                    tool_calls: Vec::new(),
+                },
+            ],
+            true,
+        );
+        let limits = CodeAgentLimits {
+            max_list_entries: 1,
+            ..CodeAgentLimits::default()
+        };
+
+        let report = fixture_service(limits)
+            .analyze(
+                &provider,
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Achado", "api")],
+                    progress: None,
+                },
+            )
+            .await;
+
+        let record = &report.tool_calls[0];
+        assert_eq!(record.outcome, "ok");
+        assert!(
+            record.summary.starts_with(TRUNCATED_PREFIX),
+            "{}",
+            record.summary
+        );
+        assert!(
+            record.summary.contains("listagem truncada"),
+            "{}",
+            record.summary
+        );
     }
 
     /// Consentimento remoto ausente bloqueia a fase **antes** de qualquer turno.
