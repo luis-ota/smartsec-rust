@@ -35,7 +35,7 @@ parte do catalogo executavel.
 - **TUI** com [ratatui](https://crates.io/crates/ratatui) + [crossterm](https://crates.io/crates/crossterm), navegavel por teclado e mouse
 - **Modo headless** via `scan --target <alvo>`, com exit codes proprios para CI
 - **Seis scanners reais**, cada um com imagem fixada por digest, rodando em container rootless
-- **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM / endpoint customizado
+- **Analise IA** com llama.cpp local por padrao e suporte a OpenAI / NVIDIA NIM / endpoint customizado
 - **Agente de codigo** que aponta `arquivo:linha` de cada achado depois dos scanners, em modo somente leitura
 - **Relatorio Markdown e PDF** com a mesma base sanitizada, entao os dois nao divergem
 - **Historico consultavel** por CLI e pela TUI, com log estruturado por execucao
@@ -130,7 +130,7 @@ src/
   tools/           Runners reais das ferramentas
   ai/              Agente IA e servico unico de analise (TUI e headless)
   code_agent/      Agente de codigo: sandbox read-only e tool calling
-  llm/             Provedores LLM (openai, ollama, nvidia-nim)
+  llm/             Provedores LLM (openai, llama.cpp, nvidia-nim)
   domain/          Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/          Persistencia de configuracao (~/.config/smartsec/)
   report/          Gerador de relatorio Markdown e PDF

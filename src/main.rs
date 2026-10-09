@@ -250,7 +250,7 @@ Opções:
   -t, --target <ALVO>  IP, domínio ou URL
       --config <ARQUIVO>  Configuração TOML
       --tools <LISTA>  Ferramentas reais separadas por vírgulas
-      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom
+      --llm <PROVEDOR>  llama.cpp, openai, nvidia-nim ou custom
       --model <MODELO>  Modelo da IA
   -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)
       --output-dir <DIRETORIO>  Diretório de saída do relatório
@@ -272,9 +272,9 @@ Códigos de saída:
   no cancelamento por sinal."
     );
     println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n      --project <DIRETORIO>  Projeto analisado pelo agente de código (padrão: diretório atual)\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  llama.cpp, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n      --project <DIRETORIO>  Projeto analisado pelo agente de código (padrão: diretório atual)\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
     println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório e do PDF\n  -h, --help\n  -V, --version");
+    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  llama.cpp, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório e do PDF\n  -h, --help\n  -V, --version");
     println!("\nRelatórios:\n  O Markdown e o PDF são gravados juntos, com o mesmo nome e a mesma\n  pasta. O PDF é derivado do Markdown já sanitizado, então não pode exibir um\n  segredo que o Markdown removeu.");
     println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração, de execução ou de gravação do relatório");
 }
@@ -966,13 +966,7 @@ fn validate_tools(registry: &ToolRegistry, active_tools: &[String]) -> Result<()
 }
 
 fn parse_provider(provider: &str) -> Result<config::llm_config::LlmProviderKind> {
-    match provider.to_ascii_lowercase().as_str() {
-        "ollama" => Ok(config::llm_config::LlmProviderKind::Ollama),
-        "openai" => Ok(config::llm_config::LlmProviderKind::OpenAI),
-        "nvidia-nim" | "nvidia_nim" => Ok(config::llm_config::LlmProviderKind::NvidiaNim),
-        "custom" | "personalizado" => Ok(config::llm_config::LlmProviderKind::Custom),
-        _ => anyhow::bail!("provedor de IA desconhecido: {provider}"),
-    }
+    config::llm_config::LlmProviderKind::parse(provider).map_err(anyhow::Error::msg)
 }
 
 fn selected_tools<'a>(
@@ -1082,7 +1076,7 @@ mod tests {
             &path,
             "target_url = \"http://config.local\"\nactive_tools = [\"Nmap\"]\n\
              max_critical_findings = 5\n\
-             [llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+             [llm]\nprovider = \"llama.cpp\"\nbase_url = \"http://localhost:8080/v1\"\nmodel = \"Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {
@@ -1141,7 +1135,7 @@ mod tests {
         std::fs::write(
             &path,
             "target_url = \"http://config.local\"\nactive_tools = [\"Nmap\"]\n\
-             [llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+             [llm]\nprovider = \"llama.cpp\"\nbase_url = \"http://localhost:8080/v1\"\nmodel = \"Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {
@@ -1190,7 +1184,7 @@ mod tests {
             std::env::temp_dir().join(format!("smartsec-precedence-{}.toml", std::process::id()));
         std::fs::write(
             &path,
-            "target_url = \"http://config.local\"\nactive_tools = [\"Nuclei\"]\nexecution_type = \"Assisted\"\n\n[llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+            "target_url = \"http://config.local\"\nactive_tools = [\"Nuclei\"]\nexecution_type = \"Assisted\"\n\n[llm]\nprovider = \"llama.cpp\"\nbase_url = \"http://localhost:8080/v1\"\nmodel = \"Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {
@@ -1282,8 +1276,8 @@ mod tests {
         std::fs::write(
             &path,
             "target_url = \"http://alvo.local\"\n\n[llm]\n\
-             provider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\n\
-             model = \"llama3.2:1b\"\ntimeout_secs = 900\n\n",
+             provider = \"llama.cpp\"\nbase_url = \"http://localhost:8080/v1\"\n\
+             model = \"Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\"\ntimeout_secs = 900\n\n",
         )
         .expect("a configuração de teste deve ser escrita");
 
@@ -1309,9 +1303,9 @@ mod tests {
         let config = Configuration {
             target_url: "http://alvo.local".to_string(),
             llm: LlmConfig {
-                provider: LlmProviderKind::Ollama,
-                base_url: "http://localhost:11434/v1".to_string(),
-                model: "llama3.2:1b".to_string(),
+                provider: LlmProviderKind::LlamaCpp,
+                base_url: "http://localhost:8080/v1".to_string(),
+                model: "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf".to_string(),
                 timeout_secs: 900,
                 ..LlmConfig::default()
             },

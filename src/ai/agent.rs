@@ -1,8 +1,8 @@
 use crate::config::llm_config::LlmConfig;
 use crate::config::llm_config::LlmProviderKind;
 use crate::domain::vulnerability::Vulnerability;
+use crate::llm::llama_cpp::llama_cpp_provider;
 use crate::llm::nvidia_nim::nvidia_nim_provider;
-use crate::llm::ollama_provider::ollama_provider;
 use crate::llm::openai_provider::OpenAIProvider;
 use crate::llm::LLMProvider;
 use std::time::{Duration, Instant};
@@ -43,7 +43,7 @@ pub struct AIAgent {
 impl AIAgent {
     pub fn from_config(cfg: &LlmConfig) -> Self {
         let provider: Box<dyn LLMProvider> = match cfg.provider {
-            LlmProviderKind::Ollama => Box::new(ollama_provider(
+            LlmProviderKind::LlamaCpp => Box::new(llama_cpp_provider(
                 &cfg.base_url,
                 &cfg.api_key,
                 cfg.timeout_secs,
@@ -60,6 +60,7 @@ impl AIAgent {
                 timeout_secs: cfg.timeout_secs,
                 max_retries: cfg.max_retries,
                 send_auth: true,
+                retry_base_delay: crate::llm::openai_provider::DEFAULT_RETRY_BASE_DELAY,
             }),
             LlmProviderKind::Custom => Box::new(OpenAIProvider {
                 base_url: cfg.base_url.clone(),
@@ -67,10 +68,11 @@ impl AIAgent {
                 timeout_secs: cfg.timeout_secs,
                 max_retries: cfg.max_retries,
                 send_auth: !cfg.api_key.is_empty(),
+                retry_base_delay: crate::llm::openai_provider::DEFAULT_RETRY_BASE_DELAY,
             }),
         };
         let fallback_provider = cfg.fallback_enabled.then(|| {
-            Box::new(ollama_provider(
+            Box::new(llama_cpp_provider(
                 &cfg.fallback_base_url,
                 "",
                 cfg.timeout_secs,
@@ -82,7 +84,7 @@ impl AIAgent {
             fallback_provider,
             fallback_model: cfg.fallback_model.clone(),
             provider_label: cfg.provider.label().to_string(),
-            fallback_provider_label: LlmProviderKind::Ollama.label().to_string(),
+            fallback_provider_label: LlmProviderKind::LlamaCpp.label().to_string(),
             remote_allowed: !cfg.is_remote() || cfg.remote_consent,
             configuration_error: cfg.validate().err(),
             model: cfg.model.clone(),
@@ -133,7 +135,7 @@ impl AIAgent {
             fallback_provider,
             fallback_model: fallback_model.to_string(),
             provider_label: provider_label.to_string(),
-            fallback_provider_label: LlmProviderKind::Ollama.label().to_string(),
+            fallback_provider_label: LlmProviderKind::LlamaCpp.label().to_string(),
             remote_allowed: true,
             configuration_error: None,
             model: model.to_string(),
@@ -301,7 +303,7 @@ impl AIAgent {
                     return Err(primary_error);
                 }
                 self.execution_history
-                    .push("Usando o Ollama local configurado como alternativa".to_string());
+                    .push("Usando o llama.cpp local configurado como alternativa".to_string());
                 match execute_within(remaining, fallback.execute_prompt(prompt, &self.fallback_model)).await {
                     Ok(response) => Ok(ProviderOutcome {
                         response,
@@ -476,7 +478,7 @@ mod tests {
             "resposta alternativa do modelo llama3.1:8b"
         );
         assert!(outcome.fallback_used);
-        assert_eq!(outcome.provider, "Ollama");
+        assert_eq!(outcome.provider, "llama.cpp");
         assert_eq!(outcome.model, "llama3.1:8b");
         // A causa da queda do principal viaja com o resultado, para que o log
         // estruturado não registre um fallback sem explicação.
@@ -491,7 +493,7 @@ mod tests {
         assert!(agent
             .execution_history
             .iter()
-            .any(|entry| entry.contains("Ollama local configurado")));
+            .any(|entry| entry.contains("llama.cpp local configurado")));
     }
 
     #[tokio::test]

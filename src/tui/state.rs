@@ -309,7 +309,7 @@ impl AppState {
         let (provider_idx, base_url, api_key, model) = {
             let llm = &config.llm;
             let idx = match llm.provider {
-                LlmProviderKind::Ollama => 0,
+                LlmProviderKind::LlamaCpp => 0,
                 LlmProviderKind::NvidiaNim => 1,
                 LlmProviderKind::OpenAI => 2,
                 LlmProviderKind::Custom => 3,
@@ -1391,7 +1391,7 @@ impl AppState {
 
     pub fn reset_settings_draft(&mut self) {
         self.settings_provider_idx = match self.config.llm.provider {
-            LlmProviderKind::Ollama => 0,
+            LlmProviderKind::LlamaCpp => 0,
             LlmProviderKind::NvidiaNim => 1,
             LlmProviderKind::OpenAI => 2,
             LlmProviderKind::Custom => 3,
@@ -1947,7 +1947,7 @@ mod tests {
                     vec![finding(Severity::Critical, "Shell remota aberta")],
                     vec![
                         "A LLM principal falhou: conexão recusada",
-                        "Usando o Ollama local configurado como alternativa",
+                        "Usando o llama.cpp local configurado como alternativa",
                     ],
                 )),
                 audit_log: Err("sem permissão de escrita".to_string()),

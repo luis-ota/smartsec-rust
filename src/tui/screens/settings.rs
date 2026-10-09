@@ -547,7 +547,7 @@ mod tests {
         assert!(screen.contains("Configurações de IA"));
         assert!(screen.contains("Conexão principal"));
         assert!(screen.contains("Confiabilidade"));
-        assert!(screen.contains("Ollama"));
+        assert!(screen.contains("llama.cpp"));
         assert!(!screen.contains("Chave de API"));
         assert!(!screen.contains("Envio remoto"));
         assert!(screen.contains("Descartar"));

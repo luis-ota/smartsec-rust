@@ -114,7 +114,7 @@ timeout_secs = 3
 max_retries = 0
 fallback_enabled = true
 fallback_base_url = "http://127.0.0.1:$ALT_PORT/v1"
-fallback_model = "llama3.1:8b"
+fallback_model = "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
 EOF
 
 run_headless "$WORK/timeout.toml" timeout
