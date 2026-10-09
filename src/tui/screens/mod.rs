@@ -1,6 +1,7 @@
 pub mod analysis;
 pub mod execution;
 pub mod history;
+pub mod onboarding;
 pub mod overlays;
 pub mod results;
 pub mod settings;

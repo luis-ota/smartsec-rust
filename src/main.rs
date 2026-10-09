@@ -56,6 +56,7 @@ enum CliCommand {
     Tool(ToolArgs),
     History(HistoryArgs),
     Show(ShowArgs),
+    Onboarding,
 }
 
 #[derive(Debug)]
@@ -116,6 +117,17 @@ impl Cli {
         }
         let command = arguments[0].as_str();
         match command {
+            "onboarding" | "configurar" => {
+                if arguments.len() > 1 {
+                    anyhow::bail!(
+                        "opção desconhecida: {}; o assistente inicial não recebe opções",
+                        arguments[1]
+                    );
+                }
+                return Ok(Self {
+                    command: Some(CliCommand::Onboarding),
+                });
+            }
             "history" => {
                 let limit = parse_history_limit(&arguments[1..])?;
                 return Ok(Self {
@@ -233,50 +245,44 @@ fn parse_history_limit(arguments: &[String]) -> Result<usize> {
 
 fn print_help() {
     println!("SmartSec - Plataforma de análise de segurança");
-    println!("Uso: smartsec <scan|tool> --target <ALVO> [OPÇÕES]");
-    println!("     smartsec history [--limit <N>]");
-    println!("     smartsec show <SCAN_ID>");
-    println!(
-        "
-Comandos:
-  scan              Executa uma varredura não interativa.
-  tool <FERRAMENTA> Executa manualmente uma ferramenta.
-  history           Lista as execuções recentes do histórico.
-  show <SCAN_ID>    Mostra o detalhe de uma execução pelo identificador."
-    );
-    println!(
-        "
-Opções:
-  -t, --target <ALVO>  IP, domínio ou URL
-      --config <ARQUIVO>  Configuração TOML
-      --tools <LISTA>  Ferramentas reais separadas por vírgulas
-      --llm <PROVEDOR>  llama.cpp, openai, nvidia-nim ou custom
-      --model <MODELO>  Modelo da IA
-  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)
-      --output-dir <DIRETORIO>  Diretório de saída do relatório
-  -n, --limit <N>        Quantidade de execuções exibidas por 'history' (padrão: 20)
-      --max-critical-findings <N>  Interrompe a varredura ao atingir N achados críticos (0 desativa)
-  -h, --help
-  -V, --version"
-    );
-    println!(
-        "
-Códigos de saída:
-  0    nenhuma vulnerabilidade crítica
-  1    vulnerabilidade crítica encontrada
-  2    erro de configuração, de execução ou de consulta ao histórico
-  130  cancelado por SIGINT (Ctrl+C)
-  143  cancelado por SIGTERM
-
-  Relatório e log estruturado são gravados antes da mensagem final, inclusive
-  no cancelamento por sinal."
-    );
-    println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  llama.cpp, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n      --project <DIRETORIO>  Projeto analisado pelo agente de código (padrão: diretório atual)\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
-    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  llama.cpp, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório e do PDF\n  -h, --help\n  -V, --version");
-    println!("\nRelatórios:\n  O Markdown e o PDF são gravados juntos, com o mesmo nome e a mesma\n  pasta. O PDF é derivado do Markdown já sanitizado, então não pode exibir um\n  segredo que o Markdown removeu.");
-    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração, de execução ou de gravação do relatório");
+    println!();
+    println!("Uso:");
+    println!("  smartsec scan --target <ALVO> [OPÇÕES]");
+    println!("  smartsec tool <FERRAMENTA> --target <ALVO>");
+    println!("  smartsec onboarding");
+    println!("  smartsec history [--limit <N>]");
+    println!("  smartsec show <SCAN_ID>");
+    println!();
+    println!("Comandos:");
+    println!("  scan              Executa uma varredura não interativa.");
+    println!("  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
+    println!("  onboarding        Abre o assistente de configuração da IA.");
+    println!("  history           Lista as execuções recentes do histórico.");
+    println!("  show <SCAN_ID>    Mostra o detalhe de uma execução.");
+    println!();
+    println!("Opções:");
+    println!("  -t, --target <ALVO>       IP, domínio ou URL");
+    println!("      --config <ARQUIVO>    Configuração TOML");
+    println!("      --tools <LISTA>       Ferramentas reais separadas por vírgulas");
+    println!("      --llm <PROVEDOR>      llama.cpp, openai, nvidia-nim ou custom");
+    println!("      --model <MODELO>      Modelo da IA");
+    println!("      --project <DIRETORIO> Projeto analisado pelo agente de código");
+    println!("  -o, --output <ARQUIVO>    Relatório Markdown");
+    println!("      --output-dir <DIR>    Diretório de saída do relatório e do PDF");
+    println!("  -h, --help");
+    println!("  -V, --version");
+    println!();
+    println!("Relatórios:");
+    println!("  O Markdown e o PDF são gravados juntos, com o mesmo nome e a mesma");
+    println!("  pasta. O PDF é derivado do Markdown já sanitizado, então não pode exibir");
+    println!("  um segredo que o Markdown removeu.");
+    println!();
+    println!("Códigos de saída:");
+    println!("  0    nenhuma vulnerabilidade crítica");
+    println!("  1    vulnerabilidade crítica encontrada");
+    println!("  2    erro de configuração, de execução ou de gravação do relatório");
+    println!("  130  cancelado por SIGINT (Ctrl+C)");
+    println!("  143  cancelado por SIGTERM");
 }
 
 impl CommandLineInterface {
@@ -293,6 +299,11 @@ impl CommandLineInterface {
         {
             return Ok(EXIT_SUCCESS);
         }
+        // Primeira execução é a ausência do arquivo global: sem ele, a tela
+        // cairia direto na análise com uma configuração que ninguém revisou.
+        let force_onboarding = config::onboarding::is_first_run(
+            config::persistence::config_file_exists_at(&config::persistence::config_path()),
+        );
         match cli.command {
             Some(CliCommand::Scan(args)) => {
                 let config = build_config(&args.options, args.target, None, true)?;
@@ -304,6 +315,12 @@ impl CommandLineInterface {
             }
             Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
             Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
+            Some(CliCommand::Onboarding) => {
+                let (config, problems) =
+                    config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
+                Self::display_tui(config, problems, true).await?;
+                Ok(EXIT_SUCCESS)
+            }
             None => {
                 // A TUI abre mesmo com configuracao invalida: e a propria tela de
                 // Configurar IA que permite consertar o que esta errado, entao
@@ -311,7 +328,7 @@ impl CommandLineInterface {
                 // encontrados viram aviso visivel. O headless segue validando.
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
-                Self::display_tui(config, problems).await?;
+                Self::display_tui(config, problems, force_onboarding).await?;
                 Ok(EXIT_SUCCESS)
             }
         }
@@ -320,11 +337,15 @@ impl CommandLineInterface {
     async fn display_tui(
         initial_config: config::Configuration,
         config_problems: Vec<String>,
+        force_onboarding: bool,
     ) -> Result<()> {
         let mut app = tui::state::AppState::new(initial_config)?;
         // O aviso de configuracao entra antes de qualquer execucao e so sai
         // quando o operador salva uma configuracao valida pela propria tela.
         app.set_config_warning(Some(config_problems.join(" · ")));
+        if force_onboarding {
+            app.start_onboarding();
+        }
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();

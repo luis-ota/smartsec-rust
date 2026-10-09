@@ -172,6 +172,11 @@ enum RunEvent {
         elapsed_secs: u64,
     },
     CodeAgent(crate::code_agent::progress::CodeAgentEvent),
+    AuditFinished {
+        files_scanned: usize,
+        findings: usize,
+        limitation: Option<String>,
+    },
     /// Linha de resumo da correlação e do enriquecimento CVE/NVD.
     EnrichmentSummary(String),
     Completed {
@@ -246,6 +251,21 @@ pub struct AppState {
     pub settings_input_project_dir: String,
     pub settings_api_key_touched: bool,
     pub settings_error: Option<String>,
+    /// Assistente de primeira execução: Some quando o operador sai ou conclui.
+    pub onboarding: Option<crate::config::onboarding::OnboardingState>,
+    pub onboarding_cursor: usize,
+    /// Falha de gravação do assistente, exibida na própria tela.
+    pub onboarding_error: Option<String>,
+    pub(crate) onboarding_probe: Option<Arc<dyn crate::config::environment::OnboardingProbe>>,
+    pub(crate) onboarding_sender:
+        Option<mpsc::Sender<crate::tui::state_onboarding::OnboardingEvent>>,
+    pub(crate) onboarding_events:
+        Option<mpsc::Receiver<crate::tui::state_onboarding::OnboardingEvent>>,
+    pub(crate) onboarding_task: Option<tokio::task::JoinHandle<()>>,
+    /// A sondagem do ambiente só dispara uma vez, no laço assíncrono.
+    pub(crate) onboarding_probe_pending: bool,
+    /// Gravador da configuração concluída; trocável para não tocar a máquina.
+    pub(crate) onboarding_persister: Box<dyn crate::config::onboarding::OnboardingPersister>,
     /// Problema de configuracao detectado na abertura da TUI, antes de qualquer
     /// execucao. Vive separado de `settings_error` porque nasce do
     /// carregamento e nao de uma tentativa de salvar, e porque um continua
@@ -392,6 +412,15 @@ impl AppState {
             settings_input_project_dir: project_dir,
             settings_api_key_touched: false,
             settings_error: None,
+            onboarding: None,
+            onboarding_cursor: 0,
+            onboarding_error: None,
+            onboarding_probe: None,
+            onboarding_sender: None,
+            onboarding_events: None,
+            onboarding_task: None,
+            onboarding_probe_pending: false,
+            onboarding_persister: Box::new(crate::config::onboarding::SystemOnboardingPersister),
             llm_warning: None,
             audit_log_path: None,
             history: crate::orchestrator::scan_logger::ScanHistory::default(),
@@ -551,6 +580,8 @@ impl AppState {
     /// que o canal limitado não acumule eventos enquanto o usuário está na
     /// ajuda ou nas configurações.
     pub async fn step_tick(&mut self) {
+        self.spawn_onboarding_probe();
+        self.poll_onboarding_events().await;
         self.process_run_events().await;
     }
 
@@ -560,6 +591,7 @@ impl AppState {
     /// para que `p` e `c` não virem ação dentro de um overlay.
     pub fn has_blocking_layer(&self) -> bool {
         self.show_settings
+            || self.onboarding.is_some()
             || self.show_help_overlay
             || self.show_command_palette
             || self.show_report_viewer
@@ -667,6 +699,20 @@ impl AppState {
                     }
                 }
                 RunEvent::CodeAgent(event) => self.push_code_agent(event),
+                RunEvent::AuditFinished {
+                    files_scanned,
+                    findings,
+                    limitation,
+                } => {
+                    self.exec_logs.push(format!(
+                        "[codigo] auditoria leu {files_scanned} arquivo(s) e produziu \
+                         {findings} achado(s)"
+                    ));
+                    if let Some(limit) = limitation {
+                        self.exec_logs
+                            .push(format!("[codigo] cobertura parcial: {limit}"));
+                    }
+                }
                 RunEvent::EnrichmentSummary(line) => {
                     // A indisponibilidade da NVD precisa ser visível na TUI,
                     // não silenciosa: a linha já carrega a causa em pt-BR.
@@ -995,6 +1041,19 @@ impl AppState {
                 }
             }
             orchestrator.build_findings();
+
+            // A auditoria de código entra antes da correlação, como no headless,
+            // senão os achados do fonte não participariam da deduplicação.
+            let audit = orchestrator.audit_code();
+            if audit.files_scanned > 0 {
+                let _ = sender
+                    .send(RunEvent::AuditFinished {
+                        files_scanned: audit.files_scanned,
+                        findings: audit.findings.len(),
+                        limitation: audit.limitation.clone(),
+                    })
+                    .await;
+            }
             orchestrator.correlate_and_enrich_findings().await;
             for line in orchestrator.enrichment.lines_pt_br() {
                 let _ = sender.send(RunEvent::EnrichmentSummary(line)).await;
@@ -1324,6 +1383,18 @@ impl AppState {
     }
 
     pub fn apply_settings(&mut self) -> Result<(), String> {
+        let candidate = self.settings_candidate()?;
+        candidate.save()?;
+        self.commit_settings(candidate);
+        Ok(())
+    }
+
+    /// Monta a configuração a partir do rascunho **sem** gravar nada.
+    ///
+    /// Separação necessária porque `save` toca o arquivo do usuário e o keyring
+    /// do sistema: o assistente de primeira execução precisa montar e validar o
+    /// candidato antes de decidir se ele vale a pena ser persistido.
+    pub fn settings_candidate(&self) -> Result<Configuration, String> {
         let provider =
             LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
         let timeout = self
@@ -1368,9 +1439,7 @@ impl AppState {
         crate::code_agent::workspace::Workspace::open(&project_path)
             .map_err(|error| format!("Diretório do projeto inválido: {error}"))?;
         candidate.project_dir = Some(project);
-        candidate.save()?;
-        self.commit_settings(candidate);
-        Ok(())
+        Ok(candidate)
     }
 
     /// Aplica uma configuração já validada e persistida.

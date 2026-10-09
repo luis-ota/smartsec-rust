@@ -50,7 +50,7 @@ impl Default for PersistedConfig {
     }
 }
 
-fn config_path() -> PathBuf {
+pub fn config_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("smartsec").join("config.toml")
 }
@@ -120,8 +120,12 @@ pub fn save_config_file(cfg: &PersistedConfig) -> std::io::Result<()> {
     fs::write(&path, content)
 }
 
-const KEYRING_SERVICE: &str = "smartsec";
-const KEYRING_USERNAME: &str = "llm-api-key";
+pub(crate) const KEYRING_SERVICE: &str = "smartsec";
+pub(crate) const KEYRING_USERNAME: &str = "llm-api-key";
+
+pub fn config_file_exists_at(path: &std::path::Path) -> bool {
+    path.exists()
+}
 
 pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;

@@ -482,10 +482,9 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
                 Span::styled("   origem  ", Style::default().fg(MUTED)),
                 Span::styled(
                     item.source.to_string(),
-                    Style::default().fg(if item.source == FindingSource::Real {
-                        SUCCESS
-                    } else {
-                        WARNING
+                    Style::default().fg(match item.source {
+                        FindingSource::Real | FindingSource::CodeAudit => SUCCESS,
+                        FindingSource::Demo => WARNING,
                     }),
                 ),
             ]),

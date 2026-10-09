@@ -40,6 +40,44 @@ schema mínimo: `target_url`, `active_tools`, `execution_type` e a tabela
   (o PDF sai ao lado, com a extensão trocada); as flags
   `--output`/`--output-dir` têm precedência sobre o arquivo.
 
+## Assistente de primeira execução
+
+Na primeira execução — quando `~/.config/smartsec/config.toml` ainda não existe
+— a TUI abre no assistente de configuração em vez de cair direto na tela de
+análise. A partir da segunda execução o assistente só aparece por pedido
+explícito: `Ctrl+P` → *Executar assistente de configuração*, ou o subcomando
+`smartsec onboarding`.
+
+São cinco passos, e a ordem responde ao que a máquina offers e ao que o provedor
+exige:
+
+1. **Ambiente.** Antes de perguntar qualquer coisa, o SmartSec verifica se há
+   servidor de IA local respondendo (`localhost:8080` para llama.cpp,
+   `localhost:11434` para Ollama), se o cofre de segredos do sistema está
+   disponível e se o Podman está presente e rootless. Cada item diz o que foi
+   achado e o que aquilo significa. A verificação acontece uma vez, em task
+   assíncrona com timeout curto; nada é consultado durante a renderização de um
+   quadro. Sem cofre de segredos, o caminho remoto é fechado na hora com aviso
+   explícito, porque uma chave que não pode ser salva não sobrevive à próxima
+   sessão.
+2. **Provedor.** A escolha usa os mesmos campos, o mesmo rascunho e a mesma
+   validação da tela `Configurar IA` — inclusive o botão para abri-la e ajustar
+   o que falta.
+3. **Credencial.** Só para provedor remoto, e mascarada na tela. A chave vai
+   para o keyring; ela nunca passa pelo arquivo de configuração.
+4. **Consentimento.** Só para provedor remoto. O texto diz o que sai da máquina:
+   alvo, logs das ferramentas, achados com suas evidências e o código do projeto
+   escolhido. Recusar não deixa o fluxo inválido: o assistente volta para o
+   modelo local, apaga a credencial digitada e explica por quê (RNF10).
+5. **Teste de conexão.** Opcional: uma chamada mínima a `{base_url}/models`, com
+   o resultado em português e a causa acionável de uma falha (chave recusada,
+   endpoint errado, limite de requisições, prazo esgotado).
+
+Sair a qualquer momento — `Esc`, *Sair* ou *Voltar* até o início — não grava
+nada: o rascunho volta ao que está em vigor. Uma gravação só acontece na última
+etapa, depois de `LlmConfig::validate` aceitar a configuração inteira, então não
+existe estado intermediário inválido no disco.
+
 ## Configuracao da IA na TUI
 
 A tela `Configurar IA` separa conexao principal de confiabilidade e mostra

@@ -34,7 +34,7 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
 
     if matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U'))
         && key.modifiers.contains(KeyModifiers::CONTROL)
-        && app.show_settings
+        && (app.show_settings || onboarding_takes_secret(app))
     {
         return dispatch_action(app, SemanticAction::ClearText);
     }
@@ -150,7 +150,9 @@ fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
         KeyCode::Right => Some(SemanticAction::MoveRight),
         KeyCode::Enter | KeyCode::Char(' ') => Some(SemanticAction::Activate),
         KeyCode::Esc => Some(SemanticAction::Back),
-        KeyCode::Backspace if app.show_settings => Some(SemanticAction::DeleteBackward),
+        KeyCode::Backspace if app.show_settings || onboarding_takes_secret(app) => {
+            Some(SemanticAction::DeleteBackward)
+        }
         KeyCode::Backspace if app.show_didactic => Some(SemanticAction::Back),
         KeyCode::Backspace if app.result_detail_vuln.is_some() => Some(SemanticAction::Back),
         KeyCode::Backspace => Some(SemanticAction::DeleteBackward),
@@ -169,6 +171,13 @@ fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
 }
 
 fn accepts_text(app: &AppState) -> bool {
+    if app.onboarding_open() {
+        return crate::config::onboarding::OnboardingStep::Credential
+            == app
+                .onboarding_step()
+                .unwrap_or(crate::config::onboarding::OnboardingStep::Environment)
+            && app.focus == FocusTarget::OnboardingList;
+    }
     if app.show_settings {
         return matches!(
             app.focus,
@@ -217,8 +226,15 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::Back => return go_back(app),
         SemanticAction::Quit => return true,
         SemanticAction::OpenSettings => {
-            app.settings_return_focus = app.focus;
-            app.reset_settings_draft();
+            let from_onboarding = app.onboarding_open();
+            app.settings_return_focus = if from_onboarding {
+                FocusTarget::OnboardingList
+            } else {
+                app.focus
+            };
+            if !from_onboarding {
+                app.reset_settings_draft();
+            }
             app.show_settings = true;
             app.focus = FocusTarget::SettingsField(app.settings_field);
         }
@@ -248,7 +264,12 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::NewScan => new_scan(app),
         SemanticAction::SelectSettingsField(field) => select_settings_field(app, field),
         SemanticAction::SaveSettings => match app.apply_settings() {
-            Ok(()) => app.focus = app.settings_return_focus,
+            Ok(()) => {
+                if app.onboarding_open() {
+                    app.cancel_onboarding();
+                }
+                app.focus = app.settings_return_focus;
+            }
             Err(error) => app.settings_error = Some(error),
         },
         SemanticAction::CloseSettings => {
@@ -256,6 +277,13 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
             app.show_settings = false;
             app.focus = app.settings_return_focus;
         }
+        SemanticAction::OpenOnboarding => {
+            app.start_onboarding();
+            app.focus = FocusTarget::OnboardingList;
+        }
+        SemanticAction::OnboardingActivate(index) => app.onboarding_activate(index),
+        SemanticAction::OnboardingBack => app.onboarding_retreat(),
+        SemanticAction::OnboardingQuit => app.cancel_onboarding(),
         SemanticAction::InsertText(text) => insert_text(app, &text),
         SemanticAction::DeleteBackward => delete_backward(app),
         SemanticAction::ClearText => clear_text(app),
@@ -278,6 +306,9 @@ fn set_focus(app: &mut AppState, focus: FocusTarget) {
 }
 
 fn focus_order(app: &AppState) -> Vec<FocusTarget> {
+    if app.onboarding_open() {
+        return vec![FocusTarget::OnboardingList];
+    }
     if app.show_trace_overlay {
         return vec![FocusTarget::TraceClose];
     }
@@ -372,8 +403,22 @@ fn move_vertical(app: &mut AppState, down: bool) {
         }
         FocusTarget::SettingsField(SettingsField::Provider) => move_provider(app, down),
         FocusTarget::CommandList => move_command_cursor(app, down),
+        FocusTarget::OnboardingList => move_onboarding_cursor(app, down),
         _ => move_focus(app, down),
     }
+}
+
+fn move_onboarding_cursor(app: &mut AppState, down: bool) {
+    let count = crate::tui::screens::onboarding::option_count(app);
+    if count == 0 {
+        app.onboarding_cursor = 0;
+        return;
+    }
+    app.onboarding_cursor = if down {
+        (app.onboarding_cursor + 1) % count
+    } else {
+        app.onboarding_cursor.checked_sub(1).unwrap_or(count - 1)
+    };
 }
 
 fn move_horizontal(app: &mut AppState, right: bool) {
@@ -423,6 +468,17 @@ fn activate_focus(app: &mut AppState) {
         }
         FocusTarget::SettingsSave => SemanticAction::SaveSettings,
         FocusTarget::SettingsCancel => SemanticAction::CloseSettings,
+        FocusTarget::OnboardingList => {
+            if crate::config::onboarding::OnboardingStep::Credential
+                == app
+                    .onboarding_step()
+                    .unwrap_or(crate::config::onboarding::OnboardingStep::Environment)
+            {
+                SemanticAction::OnboardingActivate(0)
+            } else {
+                SemanticAction::OnboardingActivate(app.onboarding_cursor)
+            }
+        }
         FocusTarget::HelpClose => SemanticAction::Back,
         FocusTarget::ReportClose => SemanticAction::Back,
         FocusTarget::TraceClose => SemanticAction::Back,
@@ -432,6 +488,10 @@ fn activate_focus(app: &mut AppState) {
 }
 
 fn go_back(app: &mut AppState) -> bool {
+    if app.onboarding_open() {
+        app.cancel_onboarding();
+        return false;
+    }
     if app.show_trace_overlay {
         app.show_trace_overlay = false;
         app.focus = app.overlay_return_focus;
@@ -581,6 +641,12 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
 }
 
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
+    if app.onboarding_open() {
+        for _ in 0..amount {
+            move_onboarding_cursor(app, down);
+        }
+        return;
+    }
     if app.show_trace_overlay {
         return;
     }
@@ -895,6 +961,14 @@ fn insert_text(app: &mut AppState, text: &str) {
     if !accepts_text(app) {
         return;
     }
+    if app.onboarding_open() {
+        if !app.settings_api_key_touched {
+            app.settings_input_api_key.clear();
+            app.settings_api_key_touched = true;
+        }
+        app.settings_input_api_key.push_str(text);
+        return;
+    }
     match app.focus {
         FocusTarget::SplashTarget => {
             app.config.target_url.push_str(text);
@@ -937,7 +1011,23 @@ fn insert_text(app: &mut AppState, text: &str) {
     }
 }
 
+fn onboarding_takes_secret(app: &AppState) -> bool {
+    app.onboarding_open()
+        && crate::config::onboarding::OnboardingStep::Credential
+            == app
+                .onboarding_step()
+                .unwrap_or(crate::config::onboarding::OnboardingStep::Environment)
+}
+
 fn delete_backward(app: &mut AppState) {
+    if onboarding_takes_secret(app) {
+        if !app.settings_api_key_touched {
+            app.settings_input_api_key.clear();
+            app.settings_api_key_touched = true;
+        }
+        app.settings_input_api_key.pop();
+        return;
+    }
     match app.focus {
         FocusTarget::SplashTarget => {
             app.config.target_url.pop();
@@ -979,6 +1069,11 @@ fn delete_backward(app: &mut AppState) {
 }
 
 fn clear_text(app: &mut AppState) {
+    if onboarding_takes_secret(app) {
+        app.settings_input_api_key.clear();
+        app.settings_api_key_touched = true;
+        return;
+    }
     match app.focus {
         FocusTarget::SettingsField(SettingsField::BaseUrl) => app.settings_input_base_url.clear(),
         FocusTarget::SettingsField(SettingsField::ApiKey) => {
@@ -1014,6 +1109,33 @@ mod tests {
 
     fn app() -> AppState {
         AppState::new(Configuration::default()).expect("configuração de teste válida")
+    }
+
+    /// `AppState` com as duas saídas do assistente apontadas para a memória:
+    /// um teste de evento não pode gravar no disco do usuário nem no keyring.
+    fn app_with_offline_onboarding() -> AppState {
+        let mut app = app();
+        app.set_onboarding_probe(std::sync::Arc::new(
+            crate::config::environment::FixedOnboardingProbe {
+                report: crate::config::environment::EnvironmentReport {
+                    local_llm: None,
+                    keyring: crate::config::environment::KeyringAvailability::Available,
+                    podman: crate::config::environment::PodmanMode::Rootless,
+                },
+                check: crate::config::environment::ConnectionCheck::NotRun,
+            },
+        ));
+        app.set_onboarding_persister(Box::new(RefusingPersister));
+        app
+    }
+
+    /// Falha de propósito: prova que nenhum teste de evento chegou a gravar.
+    struct RefusingPersister;
+
+    impl crate::config::onboarding::OnboardingPersister for RefusingPersister {
+        fn save(&self, _config: &Configuration) -> Result<(), String> {
+            Err("gravação real não deve acontecer em teste de evento".to_string())
+        }
     }
 
     fn finding() -> crate::domain::vulnerability::Vulnerability {
@@ -2034,5 +2156,117 @@ mod tests {
 
         assert_eq!(app.settings_input_api_key, "n");
         assert!(app.settings_api_key_touched);
+    }
+
+    /// O assistente precisa ser alcançável depois da primeira execução, sem
+    /// depender de a pessoa lembrar que existe um subcomando.
+    #[test]
+    fn the_command_palette_offers_the_onboarding_wizard() {
+        let mut app = app_with_offline_onboarding();
+
+        dispatch_action(&mut app, SemanticAction::OpenCommandPalette);
+        assert!(command_items(&app)
+            .iter()
+            .any(|item| item.action == SemanticAction::OpenOnboarding));
+
+        let index = command_items(&app)
+            .iter()
+            .position(|item| item.action == SemanticAction::OpenOnboarding)
+            .unwrap();
+        dispatch_action(&mut app, SemanticAction::ExecuteCommand(index));
+
+        assert!(app.onboarding_open());
+        assert!(!app.show_command_palette);
+        assert_eq!(app.focus, FocusTarget::OnboardingList);
+    }
+
+    /// Sair do assistente por `esc` é abandono, não conclusão: nada é gravado
+    /// e a tela de análise volta a ser a de sempre.
+    #[test]
+    fn escape_leaves_the_onboarding_without_closing_the_tui() {
+        let mut app = app_with_offline_onboarding();
+        app.onboarding = Some(crate::config::onboarding::OnboardingState::start());
+
+        let should_quit = press(&mut app, KeyCode::Esc);
+
+        assert!(!should_quit);
+        assert!(!app.onboarding_open());
+    }
+
+    /// As setas percorrem as escolhas do passo, e o item focado responde ao
+    /// mouse com a mesma ação do teclado (RNF07).
+    #[test]
+    fn onboarding_choices_move_with_the_arrows_and_answer_the_mouse() {
+        let mut app = app_with_offline_onboarding();
+        let mut onboarding = crate::config::onboarding::OnboardingState::start();
+        // Consentimento: as duas escolhas só decidem o caminho, nenhuma grava.
+        onboarding.step = crate::config::onboarding::OnboardingStep::Consent;
+        app.onboarding = Some(onboarding);
+        app.focus = FocusTarget::OnboardingList;
+        render_app(&mut app, 80, 24);
+
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.onboarding_cursor, 1);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.onboarding_cursor, 0);
+
+        let region = app
+            .hit_regions
+            .iter()
+            .find(|region| region.action == SemanticAction::OnboardingActivate(1))
+            .expect("a segunda escolha precisa de região clicável")
+            .clone();
+        let clicked = handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: region.area.x,
+                row: region.area.y,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+
+        assert!(!clicked);
+        assert_eq!(
+            app.onboarding.as_ref().and_then(|state| state.consent),
+            Some(false),
+            "o clique precisa ter disparado a mesma decisão que a seta+f1 produz"
+        );
+    }
+
+    /// Na etapa de credencial a tecla escreve no segredo em vez de virar ação,
+    /// e o primeiro caractere substitui o que estava em rascunho.
+    #[test]
+    fn the_credential_step_takes_the_secret_typed_by_keyboard() {
+        let mut app = app_with_offline_onboarding();
+        let mut onboarding = crate::config::onboarding::OnboardingState::start();
+        onboarding.step = crate::config::onboarding::OnboardingStep::Credential;
+        app.onboarding = Some(onboarding);
+        app.focus = FocusTarget::OnboardingList;
+        app.settings_input_api_key = "chave-antiga".to_string();
+
+        press(&mut app, KeyCode::Char('a'));
+
+        assert_eq!(app.settings_input_api_key, "a");
+        assert!(app.settings_api_key_touched);
+    }
+
+    /// Salvar uma configuração inválida a partir do assistente mantém o fluxo
+    /// aberto e mostra a causa, em vez de fechar sobre um erro.
+    #[test]
+    fn an_invalid_save_inside_the_onboarding_keeps_the_wizard_open_with_an_error() {
+        let mut app = app_with_offline_onboarding();
+        app.onboarding = Some(crate::config::onboarding::OnboardingState::start());
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+        app.settings_input_timeout = "99".to_string();
+
+        dispatch_action(&mut app, SemanticAction::SaveSettings);
+
+        assert!(app.show_settings);
+        assert!(app.onboarding_open());
+        assert!(app
+            .settings_error
+            .as_deref()
+            .is_some_and(|error| error.contains("entre 1 e 45")));
     }
 }
