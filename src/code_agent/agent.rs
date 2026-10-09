@@ -250,7 +250,24 @@ pub struct CodeAnalysisService {
     limits: CodeAgentLimits,
 }
 
+pub struct CodeAgentContext<'a> {
+    pub model: &'a str,
+    pub provider_label: &'a str,
+    pub findings: &'a [Vulnerability],
+    pub progress: Option<&'a crate::code_agent::progress::EventSender>,
+}
+
+struct FindingJob<'a> {
+    context: &'a CodeAgentContext<'a>,
+    index: usize,
+    finding: &'a Vulnerability,
+}
+
 impl CodeAnalysisService {
+    fn workspace_root(&self) -> String {
+        self.registry.root().display().to_string()
+    }
+
     /// Cria o serviço a partir de um workspace já validado.
     pub fn new(registry: LocalToolRegistry, limits: CodeAgentLimits) -> Self {
         Self { registry, limits }
@@ -278,25 +295,57 @@ impl CodeAnalysisService {
     pub async fn analyze(
         &self,
         provider: &dyn LLMProvider,
-        model: &str,
-        provider_label: &str,
-        findings: &[Vulnerability],
+        context: CodeAgentContext<'_>,
     ) -> CodeAnalysisReport {
+        let CodeAgentContext {
+            model,
+            provider_label,
+            findings,
+            progress,
+        } = context;
         let mut report = CodeAnalysisReport::default();
+        crate::code_agent::progress::emit(
+            progress,
+            crate::code_agent::progress::CodeAgentEvent::Started {
+                total_findings: findings.len(),
+                project_dir: self.workspace_root(),
+            },
+        );
         for (index, finding) in findings.iter().enumerate() {
             // O registro de chamadas é acumulado **fora** do futuro do timeout:
             // se ficasse dentro dele, um achado que estoura o prazo perderia as
             // chamadas já executadas e o log estruturado deixaria de mostrar
             // ferramentas que rodaram de fato.
             let mut calls = Vec::new();
+            let context = CodeAgentContext {
+                model,
+                provider_label,
+                findings,
+                progress,
+            };
+            let job = FindingJob {
+                context: &context,
+                index,
+                finding,
+            };
             let outcome = tokio::time::timeout(
                 Duration::from_secs(self.limits.analysis_timeout_secs),
-                self.analyze_one(provider, model, provider_label, index, finding, &mut calls),
+                self.analyze_one(provider, job, &mut calls),
             )
             .await;
             report.tool_calls.append(&mut calls);
             match outcome {
-                Ok(analysis) => report.findings.push(analysis),
+                Ok(analysis) => {
+                    crate::code_agent::progress::emit(
+                        progress,
+                        crate::code_agent::progress::CodeAgentEvent::FindingFinished {
+                            finding_index: index,
+                            located: analysis.location.is_some(),
+                            tool_calls: calls.len(),
+                        },
+                    );
+                    report.findings.push(analysis);
+                }
                 Err(_) => report.findings.push(undetermined(
                     index,
                     model,
@@ -308,6 +357,18 @@ impl CodeAnalysisService {
                 )),
             }
         }
+        crate::code_agent::progress::emit(
+            progress,
+            crate::code_agent::progress::CodeAgentEvent::Finished {
+                located: report
+                    .findings
+                    .iter()
+                    .filter(|f| f.location.is_some())
+                    .count(),
+                total: report.findings.len(),
+                unavailable_reason: report.unavailable_reason.clone(),
+            },
+        );
         report
     }
 
@@ -317,12 +378,20 @@ impl CodeAnalysisService {
     async fn analyze_one(
         &self,
         provider: &dyn LLMProvider,
-        model: &str,
-        provider_label: &str,
-        finding_index: usize,
-        finding: &Vulnerability,
+        job: FindingJob<'_>,
         calls: &mut Vec<ToolCallRecord>,
     ) -> FindingCodeAnalysis {
+        let FindingJob {
+            context:
+                CodeAgentContext {
+                    model,
+                    provider_label,
+                    progress,
+                    ..
+                },
+            index: finding_index,
+            finding,
+        } = job;
         if !provider.supports_tool_calling() {
             return undetermined(
                 finding_index,
@@ -376,9 +445,26 @@ impl CodeAnalysisService {
                 tool_calls: turn.tool_calls.clone(),
             });
             for call in &turn.tool_calls {
+                crate::code_agent::progress::emit(
+                    *progress,
+                    crate::code_agent::progress::CodeAgentEvent::ToolInvoked {
+                        finding_index,
+                        iteration: iterations - 1,
+                        tool: call.name.clone(),
+                        arguments: crate::utils::redaction::sanitize_diagnostic(
+                            &call.arguments.to_string(),
+                        ),
+                    },
+                );
                 let dispatched = self
                     .dispatch(finding_index, iterations - 1, call, &mut observed)
                     .await;
+                crate::code_agent::progress::emit(
+                    *progress,
+                    crate::code_agent::progress::CodeAgentEvent::ToolCompleted(
+                        dispatched.record.clone(),
+                    ),
+                );
                 calls.push(dispatched.record);
                 // A recusa e a falha também voltam ao modelo: esconder a
                 // justificativa faria o modelo repetir a mesma chamada proibida
@@ -899,12 +985,15 @@ mod tests {
         let report = fixture_service(CodeAgentLimits::default())
             .analyze(
                 &provider,
-                "gpt-4o",
-                "OpenAI",
-                &[finding(
-                    "Autenticação fraca em /api/login",
-                    "matched-at: /api/login",
-                )],
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding(
+                        "Autenticação fraca em /api/login",
+                        "matched-at: /api/login",
+                    )],
+                    progress: None,
+                },
             )
             .await;
 
@@ -975,9 +1064,12 @@ mod tests {
         let report = fixture_service(CodeAgentLimits::default())
             .analyze(
                 &provider,
-                "gpt-4o",
-                "OpenAI",
-                &[finding("Achado qualquer", "matched-at: /api/login")],
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Achado qualquer", "matched-at: /api/login")],
+                    progress: None,
+                },
             )
             .await;
 
@@ -1021,9 +1113,12 @@ mod tests {
         let report = fixture_service(CodeAgentLimits::default())
             .analyze(
                 &provider,
-                "gpt-4o",
-                "OpenAI",
-                &[finding("Achado", "matched-at: /api/login")],
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Achado", "matched-at: /api/login")],
+                    progress: None,
+                },
             )
             .await;
 
@@ -1063,9 +1158,12 @@ mod tests {
         let report = fixture_service(CodeAgentLimits::default())
             .analyze(
                 &provider,
-                "gpt-4o",
-                "OpenAI",
-                &[finding("Achado", "matched-at: /api/login")],
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Achado", "matched-at: /api/login")],
+                    progress: None,
+                },
             )
             .await;
 
@@ -1108,9 +1206,12 @@ mod tests {
         let report = fixture_service(CodeAgentLimits::default())
             .analyze(
                 &provider,
-                "gpt-4o",
-                "OpenAI",
-                &[finding("Segredo no código", "matched-at: /api/login")],
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Segredo no código", "matched-at: /api/login")],
+                    progress: None,
+                },
             )
             .await;
 
@@ -1161,9 +1262,12 @@ mod tests {
         let report = fixture_service(CodeAgentLimits::default())
             .analyze(
                 &provider,
-                "gpt-4o",
-                "OpenAI",
-                &[finding("Achado", "matched-at: /api/login")],
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Achado", "matched-at: /api/login")],
+                    progress: None,
+                },
             )
             .await;
 
@@ -1189,7 +1293,15 @@ mod tests {
         };
 
         let report = fixture_service(limits)
-            .analyze(&provider, "gpt-4o", "OpenAI", &[finding("Achado", "api")])
+            .analyze(
+                &provider,
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Achado", "api")],
+                    progress: None,
+                },
+            )
             .await;
 
         let analysis = &report.findings[0];
@@ -1211,7 +1323,15 @@ mod tests {
         let provider = ScriptedProvider::failing("provedor indisponível");
 
         let report = fixture_service(CodeAgentLimits::default())
-            .analyze(&provider, "gpt-4o", "OpenAI", &[finding("Achado", "api")])
+            .analyze(
+                &provider,
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Achado", "api")],
+                    progress: None,
+                },
+            )
             .await;
 
         assert!(!report.findings[0].located());
@@ -1260,9 +1380,12 @@ mod tests {
         let report = service
             .analyze(
                 &HangingProvider,
-                "gpt-4o",
-                "OpenAI",
-                &[finding("Primeiro", "api"), finding("Segundo", "api")],
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Primeiro", "api"), finding("Segundo", "api")],
+                    progress: None,
+                },
             )
             .await;
         let elapsed = started.elapsed();
@@ -1309,12 +1432,15 @@ mod tests {
         let report = fixture_service(CodeAgentLimits::default())
             .analyze(
                 &provider,
-                "gpt-4o",
-                "OpenAI",
-                &[finding(
-                    "Segredo exposto",
-                    "Authorization: Bearer segredo-real",
-                )],
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding(
+                        "Segredo exposto",
+                        "Authorization: Bearer segredo-real",
+                    )],
+                    progress: None,
+                },
             )
             .await;
 
@@ -1515,7 +1641,15 @@ mod tests {
         );
 
         let report = service
-            .analyze(&provider, "gpt-4o", "OpenAI", &[finding("Achado", "api")])
+            .analyze(
+                &provider,
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[finding("Achado", "api")],
+                    progress: None,
+                },
+            )
             .await;
 
         assert_eq!(snapshot(), before, "o projeto analisado foi modificado");

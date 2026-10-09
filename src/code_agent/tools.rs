@@ -67,6 +67,10 @@ pub struct LocalToolRegistry {
 }
 
 impl LocalToolRegistry {
+    pub fn root(&self) -> &std::path::Path {
+        self.workspace.root()
+    }
+
     pub fn new(
         workspace: Workspace,
         limits: CodeAgentLimits,

@@ -28,6 +28,7 @@ pub struct Orchestrator {
     pub execution_history: Vec<SecurityTool>,
     pub decision_history: Vec<DecisionRecord>,
     pub findings: Vec<Vulnerability>,
+    pub code_audit: Option<crate::code_audit::CodeAuditReport>,
     /// Canal de pausa, retomada e cancelamento compartilhado com o executor
     /// Podman e com a interface (REQ14). Substitui as antigas bandeiras
     /// `paused`/`cancelled`, que nunca chegavam ao container.
@@ -86,6 +87,7 @@ impl Orchestrator {
             latest_nmap_output: None,
             last_analysis_result: None,
             analysis_service: AnalysisService::new(),
+            code_audit: None,
             last_code_report: None,
         }
     }
@@ -580,7 +582,27 @@ impl Orchestrator {
     /// somente leitura por padrão, e a execução de comandos exigiria um opt-in
     /// explícito que não existe no contrato da configuração atual. A ferramenta
     /// permanece registrada e é recusada com mensagem acionável.
-    pub async fn analyze_code(&mut self) -> CodeAnalysisReport {
+    pub fn audit_code(&mut self) -> crate::code_audit::CodeAuditReport {
+        let report = crate::code_audit::audit_project(
+            &self.config.effective_project_dir(),
+            crate::code_audit::MAX_FILES,
+            crate::code_audit::MAX_FILE_BYTES,
+        );
+
+        self.findings.extend(
+            report
+                .findings
+                .iter()
+                .map(crate::code_audit::to_vulnerability),
+        );
+        self.code_audit = Some(report);
+        self.code_audit.clone().unwrap_or_default()
+    }
+
+    pub async fn analyze_code(
+        &mut self,
+        progress: Option<&crate::code_agent::progress::EventSender>,
+    ) -> CodeAnalysisReport {
         let project_dir = self.config.effective_project_dir();
         let report = match CodeAnalysisService::open(
             &project_dir,
@@ -599,7 +621,15 @@ impl Orchestrator {
                     CodeAnalysisReport::blocked_by_consent(&self.findings, &model, &label)
                 } else {
                     service
-                        .analyze(self.agent.provider_handle(), &model, &label, &self.findings)
+                        .analyze(
+                            self.agent.provider_handle(),
+                            crate::code_agent::agent::CodeAgentContext {
+                                model: &model,
+                                provider_label: &label,
+                                findings: &self.findings,
+                                progress,
+                            },
+                        )
                         .await
                 }
             }
@@ -1355,7 +1385,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let report = orch.analyze_code().await;
+        let report = orch.analyze_code(None).await;
 
         let reason = report
             .unavailable_reason
@@ -1402,7 +1432,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let report = orch.analyze_code().await;
+        let report = orch.analyze_code(None).await;
 
         assert_eq!(report.tool_calls.len(), 0, "nenhuma ferramenta pode rodar");
         assert!(orch.findings[0].code_location.is_none());

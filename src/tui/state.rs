@@ -171,6 +171,7 @@ enum RunEvent {
     AnalysisProgress {
         elapsed_secs: u64,
     },
+    CodeAgent(crate::code_agent::progress::CodeAgentEvent),
     /// Linha de resumo da correlação e do enriquecimento CVE/NVD.
     EnrichmentSummary(String),
     Completed {
@@ -179,8 +180,12 @@ enum RunEvent {
     },
 }
 
+const CODE_TRAIL_LIMIT: usize = 200;
+
 pub struct AppState {
     pub config: Configuration,
+    pub code_agent_trail: Vec<crate::code_agent::progress::CodeAgentEvent>,
+    pub code_agent_current: Option<String>,
     pub orchestrator: Orchestrator,
     pub agent: AIAgent,
     pub step: AppStep,
@@ -329,6 +334,8 @@ impl AppState {
 
         Ok(Self {
             config_warning: None,
+            code_agent_trail: Vec::new(),
+            code_agent_current: None,
             config,
             orchestrator,
             agent,
@@ -659,6 +666,7 @@ impl AppState {
                             .push(format!("[ia] análise em andamento… ({elapsed_secs}s)"));
                     }
                 }
+                RunEvent::CodeAgent(event) => self.push_code_agent(event),
                 RunEvent::EnrichmentSummary(line) => {
                     // A indisponibilidade da NVD precisa ser visível na TUI,
                     // não silenciosa: a linha já carrega a causa em pt-BR.
@@ -1037,11 +1045,22 @@ impl AppState {
                 }
             });
             orchestrator.analyze_findings().await;
+
+            let (code_tx, mut code_rx) = tokio::sync::mpsc::unbounded_channel();
+            let forwarder = sender.clone();
+            tokio::spawn(async move {
+                while let Some(event) = code_rx.recv().await {
+                    if forwarder.send(RunEvent::CodeAgent(event)).await.is_err() {
+                        break;
+                    }
+                }
+            });
             // A fase do agente de código roda depois da análise de logs, pela
             // mesma razão do headless: os achados precisam existir e já estar
             // classificados. O heartbeat continua vivo para que a TUI não fique
             // parada durante a exploração do projeto.
-            orchestrator.analyze_code().await;
+            orchestrator.analyze_code(Some(&code_tx)).await;
+            drop(code_tx);
             heartbeat.abort();
             let audit_log = orchestrator
                 .persist_scan_log()
@@ -1053,6 +1072,180 @@ impl AppState {
                 })
                 .await;
         }));
+    }
+
+    pub fn push_code_agent(&mut self, event: crate::code_agent::progress::CodeAgentEvent) {
+        use crate::code_agent::progress::CodeAgentEvent as Event;
+        match &event {
+            Event::Started {
+                total_findings,
+                project_dir,
+            } => {
+                self.code_agent_current = None;
+                self.exec_logs.push(format!(
+                    "[ia/codigo] explorando {project_dir} · {total_findings} achado(s)"
+                ));
+            }
+            Event::ToolInvoked {
+                finding_index,
+                tool,
+                arguments,
+                ..
+            } => {
+                self.code_agent_current = Some(format!("{tool}({arguments})"));
+                self.exec_logs.push(format!(
+                    "[ia/codigo] achado #{} → {tool}({arguments})",
+                    finding_index + 1
+                ));
+            }
+            Event::ToolCompleted(record) => {
+                self.code_agent_current = None;
+                self.exec_logs.push(format!(
+                    "[ia/codigo] {} {} · {}",
+                    record.tool, record.outcome, record.summary
+                ));
+            }
+            Event::FindingFinished {
+                finding_index,
+                located,
+                tool_calls,
+            } => {
+                let desfecho = if *located {
+                    "localizado"
+                } else {
+                    "localização não determinada"
+                };
+                self.exec_logs.push(format!(
+                    "[ia/codigo] achado #{} {desfecho} em {tool_calls} chamada(s)",
+                    finding_index + 1
+                ));
+            }
+            Event::Finished {
+                located,
+                total,
+                unavailable_reason,
+            } => {
+                self.code_agent_current = None;
+                match unavailable_reason {
+                    Some(reason) => self
+                        .exec_logs
+                        .push(format!("[ia/codigo] fase indisponível: {reason}")),
+                    None => self.exec_logs.push(format!(
+                        "[ia/codigo] {located}/{total} achado(s) localizado(s)"
+                    )),
+                }
+            }
+        }
+
+        if self.code_agent_trail.len() >= CODE_TRAIL_LIMIT {
+            let excess = self.code_agent_trail.len() + 1 - CODE_TRAIL_LIMIT;
+            self.code_agent_trail.drain(..excess);
+        }
+        self.code_agent_trail.push(event);
+    }
+
+    pub fn code_agent_rows(
+        &self,
+        width: usize,
+        height: usize,
+    ) -> Vec<ratatui::text::Line<'static>> {
+        use crate::code_agent::progress::CodeAgentEvent as Event;
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span};
+
+        let label = |text: String| Span::styled(text, Style::default().fg(Color::DarkGray));
+        let tool = |text: String| Span::styled(text, Style::default().fg(Color::Cyan));
+        let ok = |text: String| Span::styled(text, Style::default().fg(Color::Green));
+        let bad = |text: String| Span::styled(text, Style::default().fg(Color::Red));
+
+        let mut rows = Vec::new();
+        let trail = &self.code_agent_trail;
+        let inicio = trail.len().saturating_sub(height);
+        for event in &trail[inicio..] {
+            match event {
+                Event::Started { total_findings, .. } => rows.push(Line::from(vec![
+                    label("  fase  ".into()),
+                    Span::styled(
+                        format!("explorando código · {total_findings} achado(s)"),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])),
+                Event::ToolInvoked {
+                    finding_index,
+                    tool: name,
+                    arguments,
+                    ..
+                } => rows.push(Line::from(vec![
+                    label(format!("  #{}    ", finding_index + 1)),
+                    tool(name.clone()),
+                    Span::styled(
+                        crate::tui::chrome::truncate_width(arguments, width.saturating_sub(14)),
+                        Style::default().fg(Color::Gray),
+                    ),
+                ])),
+                Event::ToolCompleted(record) => {
+                    let color = match record.outcome.as_str() {
+                        "ok" => ok,
+                        _ => bad,
+                    };
+                    rows.push(Line::from(vec![
+                        label("        ↳ ".into()),
+                        color(record.outcome.clone()),
+                        Span::styled(
+                            crate::tui::chrome::truncate_width(
+                                &record.summary,
+                                width.saturating_sub(18),
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]));
+                }
+                Event::FindingFinished {
+                    finding_index,
+                    located,
+                    tool_calls,
+                } => {
+                    let (text, style) = if *located {
+                        ("localizado".to_string(), Style::default().fg(Color::Green))
+                    } else {
+                        (
+                            "sem localização".to_string(),
+                            Style::default().fg(Color::DarkGray),
+                        )
+                    };
+                    rows.push(Line::from(vec![
+                        label(format!("  #{}    ", finding_index + 1)),
+                        Span::styled(text, style),
+                        label(format!(" · {tool_calls} chamada(s)")),
+                    ]));
+                }
+                Event::Finished {
+                    located,
+                    total,
+                    unavailable_reason,
+                } => match unavailable_reason {
+                    Some(reason) => rows.push(Line::from(vec![
+                        label("  fase  ".into()),
+                        bad(crate::tui::chrome::truncate_width(
+                            reason,
+                            width.saturating_sub(10),
+                        )),
+                    ])),
+                    None => rows.push(Line::from(vec![
+                        label("  fase  ".into()),
+                        Span::styled(
+                            format!("{located}/{total} localizado(s)"),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ])),
+                },
+            }
+        }
+        rows
     }
 
     pub fn advance_execution(&mut self) {

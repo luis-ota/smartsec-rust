@@ -6,6 +6,7 @@
 
 mod ai;
 mod code_agent;
+mod code_audit;
 mod config;
 mod domain;
 mod llm;
@@ -618,6 +619,27 @@ impl CommandLineInterface {
         // reação ao cancelamento. Assim a execução interrompida também persiste
         // `enrichment` no log estruturado, junto de `interruption`.
         orchestrator.build_findings();
+
+        let code_audit = orchestrator.audit_code();
+        if code_audit.files_scanned > 0 {
+            println!(
+                "[1b/4] Auditoria de código ({} arquivo(s), {} achado(s)):",
+                code_audit.files_scanned,
+                code_audit.findings.len()
+            );
+            for finding in &code_audit.findings {
+                println!(
+                    "  │ [{}] {} · {}:{}",
+                    finding.severity.label_pt_br(),
+                    finding.title,
+                    finding.file,
+                    finding.line
+                );
+            }
+            if let Some(limit) = &code_audit.limitation {
+                println!("  │ cobertura parcial: {limit}");
+            }
+        }
         orchestrator.correlate_and_enrich_findings().await;
         for line in orchestrator.enrichment.lines_pt_br() {
             println!("  │ {line}");
@@ -650,7 +672,7 @@ impl CommandLineInterface {
         // severidade já está classificada e o agente apenas aponta onde
         // corrigir. O diretório efetivo é impresso antes do resultado para
         // que a saída diga qual árvore foi lida.
-        let code_report = orchestrator.analyze_code().await;
+        let code_report = orchestrator.analyze_code(None).await;
         println!("[3/4] Localização no código (projeto: {})", project_dir);
         print_code_report(&orchestrator.findings, &code_report);
         println!();
