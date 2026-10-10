@@ -85,8 +85,20 @@ impl LlmProviderKind {
         }
     }
 
+    /// Ordem apresentada na TUI: API primeiro, servidor local por último porque
+    /// inferência local consome a máquina de quem instala.
     pub fn all_labels() -> Vec<&'static str> {
-        vec!["llama.cpp", "NVIDIA NIM", "OpenAI", "Personalizado"]
+        vec!["Personalizado", "OpenAI", "NVIDIA NIM", "llama.cpp"]
+    }
+
+    /// Posição na lista de [`Self::all_labels`], derivada para não dessincronizar
+    /// quando a ordem muda.
+    pub fn index(&self) -> usize {
+        let key = provider_key(self.label());
+        Self::all_labels()
+            .iter()
+            .position(|label| provider_key(label) == key)
+            .unwrap_or(0)
     }
 
     /// Interpreta a grafia vinda da CLI ou do TOML, aceitando o rótulo da TUI,
@@ -169,14 +181,15 @@ impl LlmConfig {
         }
     }
 
+    /// Verdadeiro quando há provedor de IA. Vazio é instalação nova e não é erro:
+    /// a varredura funciona com a análise determinística no lugar do modelo.
+    pub fn is_configured(&self) -> bool {
+        !self.base_url.trim().is_empty()
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.base_url.trim().is_empty() {
-            return Err(
-                "Nenhuma IA configurada. Escolha um provedor de API na tela de \
-                 Configurar IA, ou ative um servidor local se quiser rodar na sua \
-                 máquina."
-                    .to_string(),
-            );
+        if !self.is_configured() {
+            return Ok(());
         }
         validate_endpoint(&self.base_url, !self.is_remote())?;
         validate_model(&self.model)?;
@@ -266,11 +279,8 @@ pub(crate) fn local_de_teste() -> LlmConfig {
 }
 
 impl Default for LlmConfig {
-    /// O padrão é API remota, nunca modelo local.
-    ///
-    /// Um servidor local carrega pesos na RAM e queima CPU em inferência, o
-    /// que trava a máquina de quem está tentando trabalhar. Quem quer isso
-    /// escolhe explicitamente, no assistente ou na tela de Configurar IA.
+    /// API remota por padrão: servidor local queima a máquina de quem instala e
+    /// só entra por escolha explícita.
     fn default() -> Self {
         let provider = LlmProviderKind::Custom;
         Self {
@@ -326,10 +336,30 @@ mod tests {
     fn exposes_provider_labels_in_portuguese() {
         let labels = LlmProviderKind::all_labels();
 
-        assert_eq!(labels[0], "llama.cpp");
-        assert_eq!(labels[3], "Personalizado");
+        assert_eq!(
+            labels,
+            ["Personalizado", "OpenAI", "NVIDIA NIM", "llama.cpp"]
+        );
         assert!(!labels.contains(&"Integrado"));
         assert_eq!(LlmProviderKind::Custom.label(), "Personalizado");
+    }
+
+    #[test]
+    fn o_indice_de_um_provedor_segue_a_ordem_apresentada() {
+        let labels = LlmProviderKind::all_labels();
+        for provider in [
+            LlmProviderKind::LlamaCpp,
+            LlmProviderKind::NvidiaNim,
+            LlmProviderKind::OpenAI,
+            LlmProviderKind::Custom,
+        ] {
+            let esperado = labels
+                .iter()
+                .position(|label| LlmProviderKind::from_label(label) == provider)
+                .expect("provedor presente na lista");
+            assert_eq!(provider.index(), esperado, "{}", provider.label());
+        }
+        assert_eq!(LlmProviderKind::LlamaCpp.index(), labels.len() - 1);
     }
 
     /// Regressão da grafia salva pela TUI: `provider = "Personalizado"` era rejeitado
@@ -446,8 +476,8 @@ mod tests {
         // O padrao do LlmConfig e API remota: o servidor local so entra por
         // escolha explicita, porque inferencia local consome a maquina.
         assert_ne!(LlmConfig::default().provider, LlmProviderKind::LlamaCpp);
-        assert!(LlmConfig::default().base_url.is_empty());
-        assert!(LlmConfig::default().validate().is_err());
+        assert!(!LlmConfig::default().is_configured());
+        assert!(LlmConfig::default().validate().is_ok());
         assert_eq!(
             LlmConfig::default().fallback_base_url,
             "http://localhost:8080/v1"
@@ -474,7 +504,7 @@ mod tests {
         let config = LlmConfig {
             fallback_enabled: true,
             fallback_base_url: "https://llama.example/v1".to_string(),
-            ..LlmConfig::default()
+            ..local_de_teste()
         };
 
         assert!(config.validate().unwrap_err().contains("local"));

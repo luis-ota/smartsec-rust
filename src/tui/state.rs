@@ -328,12 +328,7 @@ impl AppState {
 
         let (provider_idx, base_url, api_key, model) = {
             let llm = &config.llm;
-            let idx = match llm.provider {
-                LlmProviderKind::LlamaCpp => 0,
-                LlmProviderKind::NvidiaNim => 1,
-                LlmProviderKind::OpenAI => 2,
-                LlmProviderKind::Custom => 3,
-            };
+            let idx = llm.provider.index();
             (
                 idx,
                 llm.base_url.clone(),
@@ -1459,12 +1454,7 @@ impl AppState {
     }
 
     pub fn reset_settings_draft(&mut self) {
-        self.settings_provider_idx = match self.config.llm.provider {
-            LlmProviderKind::LlamaCpp => 0,
-            LlmProviderKind::NvidiaNim => 1,
-            LlmProviderKind::OpenAI => 2,
-            LlmProviderKind::Custom => 3,
-        };
+        self.settings_provider_idx = self.config.llm.provider.index();
         self.settings_input_base_url = self.config.llm.base_url.clone();
         self.settings_input_api_key = self.config.llm.api_key.clone();
         self.settings_input_model = self.config.llm.model.clone();

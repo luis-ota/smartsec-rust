@@ -7,6 +7,7 @@
 //! no projeto analisado.
 
 pub mod agent;
+pub mod audit_trail;
 pub mod progress;
 pub mod tools;
 pub mod workspace;

@@ -56,6 +56,7 @@ enum CliCommand {
     Tool(ToolArgs),
     History(HistoryArgs),
     Show(ShowArgs),
+    Trace(ShowArgs),
     Onboarding,
 }
 
@@ -78,7 +79,7 @@ struct HistoryArgs {
     limit: usize,
 }
 
-/// Argumentos de `show`: abertura de uma execução pelo `scan_id`.
+/// Argumentos de `show` e `trace`.
 #[derive(Debug)]
 struct ShowArgs {
     scan_id: String,
@@ -134,7 +135,7 @@ impl Cli {
                     command: Some(CliCommand::History(HistoryArgs { limit })),
                 });
             }
-            "show" => {
+            "show" | "trace" => {
                 let scan_id = arguments
                     .get(1)
                     .ok_or_else(|| anyhow::anyhow!("o scan_id da execução é obrigatório"))?;
@@ -147,10 +148,15 @@ impl Cli {
                         arguments[2]
                     );
                 }
+                let args = ShowArgs {
+                    scan_id: scan_id.clone(),
+                };
                 return Ok(Self {
-                    command: Some(CliCommand::Show(ShowArgs {
-                        scan_id: scan_id.clone(),
-                    })),
+                    command: Some(if command == "trace" {
+                        CliCommand::Trace(args)
+                    } else {
+                        CliCommand::Show(args)
+                    }),
                 });
             }
             _ => {}
@@ -252,6 +258,7 @@ fn print_help() {
     println!("  smartsec onboarding");
     println!("  smartsec history [--limit <N>]");
     println!("  smartsec show <SCAN_ID>");
+    println!("  smartsec trace <SCAN_ID>");
     println!();
     println!("Comandos:");
     println!("  scan              Executa uma varredura não interativa.");
@@ -259,6 +266,7 @@ fn print_help() {
     println!("  onboarding        Abre o assistente de configuração da IA.");
     println!("  history           Lista as execuções recentes do histórico.");
     println!("  show <SCAN_ID>    Mostra o detalhe de uma execução.");
+    println!("  trace <SCAN_ID>   Mostra as ações que a IA executou na execução.");
     println!();
     println!("Erros de uso:");
     println!("  ferramenta desconhecida  Ferramenta fora do catálogo registrado");
@@ -320,6 +328,7 @@ impl CommandLineInterface {
             }
             Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
             Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
+            Some(CliCommand::Trace(args)) => Ok(Self::print_agent_trace(&args.scan_id)),
             Some(CliCommand::Onboarding) => {
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
@@ -459,6 +468,7 @@ impl CommandLineInterface {
 
         println!();
         println!("  Detalhe de uma execução: smartsec show <SCAN_ID>");
+        println!("  Ações da IA: smartsec trace <SCAN_ID>");
         println!("═══════════════════════════════════════════════════════════");
         EXIT_SUCCESS
     }
@@ -558,6 +568,59 @@ impl CommandLineInterface {
             }
         }
 
+        println!("═══════════════════════════════════════════════════════════");
+        EXIT_SUCCESS
+    }
+
+    /// Lida do arquivo e não do log estruturado: a trilha existe para os casos em
+    /// que o scan não chegou a gravar o log.
+    fn print_agent_trace(scan_id: &str) -> i32 {
+        if !crate::orchestrator::scan_logger::is_valid_scan_id(scan_id) {
+            eprintln!("Erro: scan_id inválido: {scan_id}");
+            return EXIT_ERROR;
+        }
+        let path =
+            crate::code_agent::audit_trail::agent_trails_dir().join(format!("{scan_id}.jsonl"));
+        let registros = match crate::code_agent::audit_trail::read_records(&path) {
+            Ok(registros) => registros,
+            Err(error) => {
+                eprintln!("Erro: {error:#}");
+                return EXIT_ERROR;
+            }
+        };
+
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  SmartSec — Ações da IA em {scan_id}");
+        println!("═══════════════════════════════════════════════════════════");
+        if registros.is_empty() {
+            println!("  (a IA não registrou nenhuma ação nesta execução)");
+            println!();
+            println!(
+                "  A IA é opcional: sem provedor configurado, ou com consentimento\n\
+                 \x20 ausente, a fase não chega a chamar o modelo."
+            );
+            println!("═══════════════════════════════════════════════════════════");
+            return EXIT_SUCCESS;
+        }
+        for registro in &registros {
+            let sequencia = registro
+                .get("seq")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default();
+            let quando = registro.get("em").and_then(|v| v.as_str()).unwrap_or("-");
+            let fase = registro.get("fase").and_then(|v| v.as_str()).unwrap_or("-");
+            let evento = registro
+                .get("evento")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            println!("  {sequencia:>3}. [{fase}] {evento} · {quando}");
+            if let Some(detalhe) = registro.get("detalhe") {
+                println!("       {detalhe}");
+            }
+        }
+        println!();
+        println!("  Total de ações: {}", registros.len());
+        println!("  Trilha: {}", path.display());
         println!("═══════════════════════════════════════════════════════════");
         EXIT_SUCCESS
     }

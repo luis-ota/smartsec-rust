@@ -51,6 +51,10 @@ pub struct Orchestrator {
     /// Resultado estruturado da última análise da IA, com modelo, provedor
     /// efetivo, fallback, motivo da falha e horário.
     pub last_analysis_result: Option<AnalysisResult>,
+    /// Identificador desta execução, compartilhado pela trilha da IA e pelo log.
+    pub scan_id: String,
+    /// Trilha append-only das ações da IA, gravada durante a fase.
+    agent_trail: std::sync::Arc<crate::code_agent::audit_trail::AgentAuditTrail>,
     /// Serviço único de análise, compartilhado pela TUI e pelo modo headless.
     analysis_service: AnalysisService,
     /// Relatório da fase do agente de código, com a localização de cada achado
@@ -71,7 +75,11 @@ impl Orchestrator {
     pub fn with_registry(mut config: Configuration, registry: ToolRegistry) -> Self {
         config.provider_mode = config.llm.provider.label().to_string();
         let agent = AIAgent::from_config(&config.llm);
+        let scan_id = Self::novo_scan_id();
+        let agent_trail = agent_trail_for(&scan_id);
         Self {
+            scan_id,
+            agent_trail,
             config,
             agent,
             registry,
@@ -561,10 +569,16 @@ impl Orchestrator {
     /// chamada: os dois modos de execução recebem a mesma configuração de prazo,
     /// o que torna a unificação observável em vez de apenas declarada.
     pub async fn analyze_findings(&mut self) -> AnalysisResult {
+        self.agent_trail.record_analysis_started(
+            &self.config.provider_mode,
+            &self.agent.model,
+            self.findings.len(),
+        );
         let result = self
             .analysis_service
             .analyze(&mut self.agent, &self.findings)
             .await;
+        self.agent_trail.record_analysis_finished(&result);
         self.last_log = result.text.clone();
         self.last_analysis_result = Some(result.clone());
         result
@@ -618,22 +632,56 @@ impl Orchestrator {
                 // sensível do cliente. Sem esta checagem, um provedor remoto sem
                 // consentimento receberia o código-fonte auditado.
                 if !self.agent.allows_target_data() {
+                    self.agent_trail.record_event(
+                        &crate::code_agent::progress::CodeAgentEvent::Finished {
+                            located: 0,
+                            total: self.findings.len(),
+                            unavailable_reason: Some("envio remoto bloqueado".to_string()),
+                        },
+                    );
                     CodeAnalysisReport::blocked_by_consent(&self.findings, &model, &label)
                 } else {
-                    service
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+                    let trail = std::sync::Arc::clone(&self.agent_trail);
+                    // Quem lê o canal grava em disco e repassa para a TUI, para
+                    // que o headless também registre a fase.
+                    let repasse = progress.cloned();
+                    let auditor = tokio::spawn(async move {
+                        while let Some(event) = rx.recv().await {
+                            trail.record_event(&event);
+                            if let Some(tui) = &repasse {
+                                let _ = tui.send(event);
+                            }
+                        }
+                    });
+                    let report = service
                         .analyze(
                             self.agent.provider_handle(),
                             crate::code_agent::agent::CodeAgentContext {
                                 model: &model,
                                 provider_label: &label,
                                 findings: &self.findings,
-                                progress,
+                                progress: Some(&tx),
                             },
                         )
-                        .await
+                        .await;
+                    // Sem esta espera a última linha pode não ter sido gravada.
+                    drop(tx);
+                    let _ = auditor.await;
+                    report
                 }
             }
-            Err(error) => CodeAnalysisReport::unavailable(&project_dir, &error.to_string()),
+            Err(error) => {
+                let reason = error.to_string();
+                self.agent_trail.record_event(
+                    &crate::code_agent::progress::CodeAgentEvent::Finished {
+                        located: 0,
+                        total: 0,
+                        unavailable_reason: Some(reason.clone()),
+                    },
+                );
+                CodeAnalysisReport::unavailable(&project_dir, &reason)
+            }
         };
         self.apply_code_report(&report);
         self.last_code_report = Some(report);
@@ -851,13 +899,15 @@ impl Orchestrator {
     }
 
     pub fn persist_scan_log(&self) -> anyhow::Result<std::path::PathBuf> {
-        let scan_id = format!(
-            "scan_{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        );
+        crate::orchestrator::scan_logger::save_scan_log(&self.scan_metadata())
+    }
+
+    /// Log estruturado da execução, ainda não gravado.
+    ///
+    /// Separado da gravação para que um teste possa conferir o conteúdo sem
+    /// escrever no diretório de configuração do usuário.
+    pub fn scan_metadata(&self) -> crate::orchestrator::scan_logger::ScanMetadata {
+        let scan_id = self.scan_id.clone();
         let tools_executed = self
             .execution_history
             .iter()
@@ -917,8 +967,37 @@ impl Orchestrator {
             }
             None => metadata,
         };
-        crate::orchestrator::scan_logger::save_scan_log(&metadata)
+        let metadata = metadata.with_agent_trail(self.agent_trail.path());
+        metadata
     }
+}
+
+/// Trilha e log estruturado levam o mesmo id para a auditoria poder emendar
+/// as ações da IA com o relatório que elas produziram.
+impl Orchestrator {
+    pub fn novo_scan_id() -> String {
+        format!(
+            "scan_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
+    }
+}
+
+fn agent_trail_for(
+    scan_id: &str,
+) -> std::sync::Arc<crate::code_agent::audit_trail::AgentAuditTrail> {
+    let trail = crate::code_agent::audit_trail::AgentAuditTrail::open_default(scan_id)
+        .unwrap_or_else(|| {
+            // Sem diretório gravável a trilha cai para o temporário: a fase
+            // continua e nenhum teste quebra por causa do ambiente.
+            let dir = std::env::temp_dir();
+            crate::code_agent::audit_trail::AgentAuditTrail::open_in(&dir, scan_id)
+                .expect("diretório temporário é gravável")
+        });
+    std::sync::Arc::new(trail)
 }
 
 fn now_iso8601() -> String {
@@ -1394,6 +1473,41 @@ mod tests {
         assert!(reason.contains("/caminho/que/nao/existe"), "{reason}");
         assert!(orch.findings[0].code_location.is_none());
         assert_eq!(report.located_count(), 0);
+    }
+
+    /// A fase do agente de código grava a trilha mesmo sem TUI e sem achado
+    /// localizado: é a auditoria que precisa do motivo da recusa.
+    #[tokio::test]
+    async fn a_fase_de_codigo_registra_a_trilha_mesmo_sem_interface() {
+        let mut config = make_config();
+        config.project_dir = Some("/caminho/que/nao/existe".to_string());
+        let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
+
+        orch.analyze_code(None).await;
+
+        let registros = crate::code_agent::audit_trail::read_records(orch.agent_trail.path())
+            .expect("a trilha existe");
+        assert!(
+            registros
+                .iter()
+                .any(|registro| registro["detalhe"]["motivo"].is_string()),
+            "a recusa precisa ficar registrada: {registros:?}"
+        );
+    }
+
+    /// O log estruturado aponta para a trilha, para a auditoria não precisar
+    /// adivinhar onde a fase foi registrada.
+    #[tokio::test]
+    async fn o_log_estruturado_aponta_para_a_trilha_da_ia() {
+        let orch = Orchestrator::new(make_config()).expect("configuração de teste válida");
+
+        let metadata = orch.scan_metadata();
+
+        assert!(
+            metadata.agent_trail_path.ends_with(".jsonl"),
+            "{:?}",
+            metadata.agent_trail_path
+        );
     }
 
     /// Sem consentimento remoto, a fase não abre turno nenhum e diz por quê.

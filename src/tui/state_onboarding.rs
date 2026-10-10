@@ -553,8 +553,11 @@ mod tests {
         }));
         start(&mut app, report(KeyringAvailability::Available)).await;
         app.onboarding_activate(0);
+        // Provedor de API: credencial e consentimento antes da conexão.
         app.onboarding_activate(0);
         app.onboarding_activate(provider_continue());
+        app.onboarding_activate(0);
+        app.onboarding_activate(0);
         assert_eq!(app.onboarding_step(), Some(OnboardingStep::Connection));
 
         app.complete_onboarding().unwrap();
