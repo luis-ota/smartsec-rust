@@ -1,6 +1,6 @@
 use super::chrome::{ACCENT, DANGER, SURFACE};
 use super::interaction::{FocusTarget, SemanticAction};
-use super::state::{AnalysisPhase, AppState, AppStep, RunIssueScope, ToolStatus};
+use super::state::{AnalysisPhase, AppState, AppStep, RunIssueScope, SettingsField, ToolStatus};
 use crate::config::environment::{
     EnvironmentReport, KeyringAvailability, LocalEndpoint, PodmanMode,
 };
@@ -1007,6 +1007,73 @@ fn wrapped_log_lines_expand_the_scroll_limit() {
         "o fim não pode aparecer na visão do topo\n{top}"
     );
     println!("--- topo apos rolar para cima ---\n{top}\n--- fim no auto-follow ---\n{bottom}");
+}
+
+/// A navegação da tela de configurações em 80x24: o campo em edição se anuncia,
+/// o cursor só existe na digitação e o rascunho pendente aparece marcado.
+#[test]
+fn settings_navigation_announces_editing_and_pending_changes_at_80x24() {
+    let mut app = app();
+    app.show_settings = true;
+    app.focus = FocusTarget::SettingsField(SettingsField::BaseUrl);
+    app.settings_editing = Some(SettingsField::BaseUrl);
+    app.settings_input_base_url = "https://rascunho.local/v1".to_string();
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Configurações de IA",
+            "Conexão principal",
+            "Confiabilidade",
+            "Editando URL base",
+            "nada é descartado",
+            "▏",
+        ],
+    );
+
+    let label_row = snapshot
+        .lines()
+        .position(|line| line.contains("│URL base"))
+        .expect("o campo em edição precisa estar visível");
+    assert!(
+        snapshot
+            .lines()
+            .nth(label_row + 1)
+            .is_some_and(|line| line.starts_with("│•")),
+        "o campo alterado fica marcado: {snapshot}"
+    );
+    assert!(
+        app.hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::ClearText),
+        "com campo de texto em foco o botão de limpar existe"
+    );
+
+    // Fora da digitação a tela volta a dizer o que `enter` faz com o campo, o
+    // cursor desaparece e o aviso de rascunho pendente aparece.
+    app.settings_editing = None;
+    let snapshot = assert_snapshot(&mut app, &["enter edita", "1 alteração não salva"]);
+    assert!(
+        !snapshot.contains('▏'),
+        "sem edição não existe cursor: {snapshot}"
+    );
+
+    // A seta horizontal leva o foco para a linha equivalente da outra coluna, e
+    // o destaque de foco é o que diz onde as teclas vão agir.
+    super::event::dispatch_action(&mut app, SemanticAction::MoveRight);
+    let (movido, buffer) = render_80x24(&mut app);
+    assert!(movido.contains("Retentativas"), "{movido}");
+    let row = app
+        .hit_regions
+        .iter()
+        .find(|region| region.action == SemanticAction::SelectSettingsField(SettingsField::Retries))
+        .expect("a coluna vizinha precisa de região clicável")
+        .area;
+    assert_eq!(
+        buffer[(row.x, row.y + 1)].bg,
+        super::chrome::SURFACE_ACTIVE,
+        "o painel do campo focado precisa ficar destacado"
+    );
 }
 
 #[test]

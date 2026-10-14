@@ -113,7 +113,8 @@ fn render_status_bar(app: &mut AppState, frame: &mut Frame, area: Rect, status: 
     const COMMANDS: &str = "ctrl+p comandos";
     let right_width = HELP.width() + 2 + COMMANDS.width() + 1;
     let right_x = area.x + area.width.saturating_sub(right_width as u16);
-    let status_width = area.width.saturating_sub(right_width as u16 + 2) as usize;
+    // Coluna de separação: sem ela o status encosta no atalho ("obrigatóriof1 ajuda").
+    let status_width = area.width.saturating_sub(right_width as u16 + 4) as usize;
     let status = truncate_width(status, status_width);
     frame.render_widget(
         Paragraph::new(Line::from(vec![

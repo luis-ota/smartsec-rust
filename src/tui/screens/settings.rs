@@ -1,5 +1,5 @@
 use crate::config::llm_config::LlmProviderKind;
-use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SURFACE, SURFACE_ACTIVE, TEXT};
+use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SURFACE, SURFACE_ACTIVE, TEXT, WARNING};
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::{AppState, SettingsField};
 use ratatui::{
@@ -36,7 +36,10 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     ])
     .split(shell.content);
     render_intro(app, frame, rows[0]);
-    if rows[1].width >= 72 && rows[1].height >= 12 {
+    // O mesmo limiar decide o desenho e a navegação: as setas só podem andar em
+    // eixos de coluna quando existe coluna desenhada.
+    app.settings_two_columns = rows[1].width >= 72 && rows[1].height >= 12;
+    if app.settings_two_columns {
         render_columns(app, frame, rows[1]);
     } else {
         render_compact_form(app, frame, rows[1]);
@@ -45,25 +48,56 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_intro(app: &AppState, frame: &mut Frame, area: Rect) {
-    let detail = app
-        .settings_status_error()
-        .unwrap_or("Tab navega · ← → altera seleções · espaço alterna · ctrl+u limpa o campo");
-    let detail_color = if app.settings_status_error().is_some() {
-        DANGER
+    let title = Line::styled(
+        "Defina o provedor e os limites. Opções não aplicáveis ficam ocultas.",
+        Style::default().fg(TEXT).bold(),
+    );
+    let detail = if let Some(error) = app.settings_status_error() {
+        Line::styled(error, Style::default().fg(DANGER))
+    } else if let Some(field) = app.settings_editing {
+        Line::from(vec![
+            Span::styled(
+                format!("Editando {} ", field_label(field)),
+                Style::default().fg(ACCENT).bold(),
+            ),
+            Span::styled(
+                "· enter ou esc saem do campo; nada é descartado",
+                Style::default().fg(MUTED),
+            ),
+        ])
     } else {
-        MUTED
+        status_line(app)
     };
     frame.render_widget(
-        Paragraph::new(Text::from(vec![
-            Line::styled(
-                "Defina o provedor e os limites. Opções não aplicáveis ficam ocultas.",
-                Style::default().fg(TEXT).bold(),
-            ),
-            Line::styled(detail, Style::default().fg(detail_color)),
-        ]))
-        .style(Style::default().bg(chrome::BACKGROUND)),
+        Paragraph::new(Text::from(vec![title, detail]))
+            .style(Style::default().bg(chrome::BACKGROUND)),
         area,
     );
+}
+
+/// Rodapé da tela: com rascunho pendente a prioridade é avisar que o `esc`
+/// descarta algo, porque é isso que o operador precisa saber antes de teclar.
+fn status_line(app: &AppState) -> Line<'static> {
+    let dirty = app.settings_dirty_count();
+    if dirty > 0 {
+        return Line::from(vec![
+            Span::styled("• ", Style::default().fg(WARNING).bold()),
+            Span::styled(pending_label(dirty), Style::default().fg(WARNING).bold()),
+            Span::styled(" · esc descarta o rascunho", Style::default().fg(MUTED)),
+        ]);
+    }
+    Line::styled(
+        "Tab navega · setas movem · enter aciona ou edita · esc descarta",
+        Style::default().fg(MUTED),
+    )
+}
+
+fn pending_label(count: usize) -> String {
+    if count == 1 {
+        "1 alteração não salva".to_string()
+    } else {
+        format!("{count} alterações não salvas")
+    }
 }
 
 fn render_columns(app: &mut AppState, frame: &mut Frame, area: Rect) {
@@ -73,8 +107,12 @@ fn render_columns(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Constraint::Percentage(50),
     ])
     .split(area);
-    let primary = primary_fields(app);
-    let reliability = reliability_fields(app);
+    let [primary, reliability] = app.settings_columns();
+    let primary: Vec<FieldView> = primary.into_iter().map(|f| field_view(app, f)).collect();
+    let reliability: Vec<FieldView> = reliability
+        .into_iter()
+        .map(|f| field_view(app, f))
+        .collect();
     render_section(app, frame, columns[0], "Conexão principal", &primary);
     render_section(app, frame, columns[2], "Confiabilidade", &reliability);
 }
@@ -86,21 +124,53 @@ fn render_section(
     title: &str,
     fields: &[FieldView],
 ) {
-    let focused = fields
-        .iter()
-        .any(|view| app.focus == FocusTarget::SettingsField(view.field));
-    let block = chrome::panel(title, focused);
+    let focused_field = app.focused_settings_field();
+    let focused = fields.iter().any(|view| focused_field == Some(view.field));
+    let capacity = (area.height.saturating_sub(2) / 2).max(1) as usize;
+    let first = window_start(
+        fields
+            .iter()
+            .position(|view| focused_field == Some(view.field)),
+        capacity,
+        fields.len(),
+    );
+    let visible = fields.len().min(capacity);
+    let title = section_title(title, first, visible, fields.len());
+    let block = chrome::panel(&title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let visible = fields.len().min((inner.height / 2) as usize);
-    for (row, view) in fields.iter().take(visible).enumerate() {
+    for (row, view) in fields.iter().skip(first).take(visible).enumerate() {
         let y = inner.y + row as u16 * 2;
         render_field(app, frame, Rect::new(inner.x, y, inner.width, 2), view);
     }
 }
 
+/// Primeira linha visível de uma seção: o campo em foco nunca sai da janela e a
+/// janela só rola o necessário para mantê-lo visível.
+fn window_start(focused_index: Option<usize>, capacity: usize, total: usize) -> usize {
+    let capacity = capacity.max(1);
+    focused_index
+        .map(|index| index.saturating_sub(capacity - 1))
+        .unwrap_or(0)
+        .min(total.saturating_sub(capacity))
+}
+
+fn section_title(title: &str, first: usize, visible: usize, total: usize) -> String {
+    if total > visible {
+        format!(
+            "{title} · campos {}-{} de {total}",
+            first + 1,
+            first + visible
+        )
+    } else {
+        title.to_string()
+    }
+}
+
 fn render_field(app: &mut AppState, frame: &mut Frame, area: Rect, view: &FieldView) {
-    let active = app.focus == FocusTarget::SettingsField(view.field);
+    let active = app.focused_settings_field() == Some(view.field);
+    let editing = app.settings_editing == Some(view.field);
+    let changed = app.settings_field_changed(view.field);
     let label_width = area.width.saturating_sub(view.hint.len() as u16 + 2) as usize;
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -120,17 +190,20 @@ fn render_field(app: &mut AppState, frame: &mut Frame, area: Rect, view: &FieldV
     );
     let value = chrome::truncate_width(&view.value, area.width.saturating_sub(4) as usize);
     let value_line = Line::from(vec![
+        // A marca de alteração pendente vive na coluna livre à esquerda do
+        // marcador de foco, para não deslocar o valor quando o campo é focado.
         Span::styled(
-            if active { " › " } else { "   " },
-            Style::default().fg(ACCENT),
+            if changed { "•" } else { " " },
+            Style::default().fg(WARNING).bold(),
         ),
+        Span::styled(
+            if active { "›" } else { " " },
+            Style::default().fg(ACCENT).bold(),
+        ),
+        Span::raw(" "),
         Span::styled(value, Style::default().fg(TEXT)),
         Span::styled(
-            if active && is_text_field(view.field) {
-                "▏"
-            } else {
-                ""
-            },
+            if editing { "▏" } else { "" },
             Style::default().fg(ACCENT).bold(),
         ),
     ]);
@@ -149,30 +222,45 @@ fn render_compact_form(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let fields = all_visible_fields(app);
     let focused_index = fields
         .iter()
-        .position(|view| app.focus == FocusTarget::SettingsField(view.field));
-    let block = chrome::panel("Configuração", focused_index.is_some());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let visible = inner.height.max(1) as usize;
-    let max_scroll = fields.len().saturating_sub(visible);
+        .position(|view| app.focused_settings_field() == Some(view.field));
+    let entry = chrome::panel("Configuração", focused_index.is_some()).inner(area);
+    let inner_height = entry.height.max(1) as usize;
+    let max_scroll = fields.len().saturating_sub(inner_height);
     app.settings_scroll = app.settings_scroll.min(max_scroll);
     if let Some(index) = focused_index {
         if index < app.settings_scroll {
             app.settings_scroll = index;
-        } else if index >= app.settings_scroll.saturating_add(visible) {
-            app.settings_scroll = index.saturating_sub(visible - 1);
+        } else if index >= app.settings_scroll.saturating_add(inner_height) {
+            app.settings_scroll = index.saturating_sub(inner_height - 1);
         }
     }
 
+    let visible = inner_height.min(fields.len().saturating_sub(app.settings_scroll));
+    let title = section_title("Configuração", app.settings_scroll, visible, fields.len());
+    let block = chrome::panel(&title, focused_index.is_some());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     let mut lines = Vec::new();
-    for row in 0..visible.min(fields.len().saturating_sub(app.settings_scroll)) {
+    for row in 0..visible {
         let view = &fields[app.settings_scroll + row];
-        let active = app.focus == FocusTarget::SettingsField(view.field);
+        let active = app.focused_settings_field() == Some(view.field);
+        let changed = app.settings_field_changed(view.field);
         let value_width = inner.width.saturating_sub(24) as usize;
         lines.push(
             Line::from(vec![
                 Span::styled(
-                    format!("{} {:<18}", if active { "›" } else { " " }, view.label),
+                    if changed { "•" } else { " " },
+                    Style::default().fg(WARNING).bold(),
+                ),
+                Span::styled(
+                    // O rótulo tem coluna fixa de 18 e um espaço de separação,
+                    // para o valor começar sempre na mesma coluna.
+                    format!(
+                        "{} {:<18} ",
+                        if active { "›" } else { " " },
+                        chrome::truncate_width(view.label, 18)
+                    ),
                     Style::default().bold(),
                 ),
                 Span::styled(
@@ -197,40 +285,6 @@ fn render_compact_form(app: &mut AppState, frame: &mut Frame, area: Rect) {
     );
 }
 
-fn primary_fields(app: &AppState) -> Vec<FieldView> {
-    let mut fields = vec![field_view(app, SettingsField::Provider)];
-    fields.extend([
-        field_view(app, SettingsField::BaseUrl),
-        field_view(app, SettingsField::Model),
-    ]);
-    if app.settings_connection_is_remote() {
-        fields.extend([
-            field_view(app, SettingsField::ApiKey),
-            field_view(app, SettingsField::RemoteConsent),
-        ]);
-    }
-    fields
-}
-
-fn reliability_fields(app: &AppState) -> Vec<FieldView> {
-    let mut fields = vec![
-        field_view(app, SettingsField::Timeout),
-        field_view(app, SettingsField::Retries),
-        field_view(app, SettingsField::FallbackEnabled),
-    ];
-    // O diretório fica na coluna de confiabilidade, junto dos limites e do
-    // consentimento, porque decide o **escopo de leitura** do agente — e não
-    // junto de provedor e modelo, que são parâmetros de transporte.
-    fields.push(field_view(app, SettingsField::ProjectDir));
-    if app.settings_fallback_enabled {
-        fields.extend([
-            field_view(app, SettingsField::FallbackBaseUrl),
-            field_view(app, SettingsField::FallbackModel),
-        ]);
-    }
-    fields
-}
-
 fn all_visible_fields(app: &AppState) -> Vec<FieldView> {
     app.visible_settings_fields()
         .into_iter()
@@ -239,19 +293,38 @@ fn all_visible_fields(app: &AppState) -> Vec<FieldView> {
 }
 
 fn field_view(app: &AppState, field: SettingsField) -> FieldView {
-    let (label, value, hint) = match field {
-        SettingsField::Provider => (
-            "Provedor",
-            LlmProviderKind::all_labels()[app.settings_provider_idx].to_string(),
-            "← →",
-        ),
-        SettingsField::BaseUrl => (
-            "URL base",
-            empty_label(&app.settings_input_base_url),
-            "editar",
-        ),
+    FieldView {
+        field,
+        label: field_label(field),
+        value: field_value(app, field),
+        hint: field_hint(app, field),
+    }
+}
+
+fn field_label(field: SettingsField) -> &'static str {
+    match field {
+        SettingsField::Provider => "Provedor",
+        SettingsField::BaseUrl => "URL base",
+        SettingsField::ApiKey => "Chave de API",
+        SettingsField::Model => "Modelo",
+        SettingsField::Timeout => "Tempo limite",
+        SettingsField::Retries => "Retentativas",
+        SettingsField::RemoteConsent => "Envio remoto",
+        SettingsField::FallbackEnabled => "Alternativa local",
+        SettingsField::FallbackBaseUrl => "URL alternativa",
+        SettingsField::FallbackModel => "Modelo alternativo",
+        SettingsField::ProjectDir => "Projeto analisado",
+    }
+}
+
+fn field_value(app: &AppState, field: SettingsField) -> String {
+    match field {
+        SettingsField::Provider => {
+            LlmProviderKind::all_labels()[app.settings_provider_idx].to_string()
+        }
+        SettingsField::BaseUrl => empty_label(&app.settings_input_base_url),
         SettingsField::ApiKey => {
-            let value = if app.settings_input_api_key.is_empty() {
+            if app.settings_input_api_key.is_empty() {
                 "Não definida".to_string()
             } else if app.settings_api_key_touched {
                 format!(
@@ -260,51 +333,47 @@ fn field_view(app: &AppState, field: SettingsField) -> FieldView {
                 )
             } else {
                 "•••••••• · configurada; digite para substituir".to_string()
-            };
-            ("Chave de API", value, "secreto")
+            }
         }
-        SettingsField::Model => ("Modelo", empty_label(&app.settings_input_model), "editar"),
-        SettingsField::Timeout => (
-            "Tempo limite",
-            format!("{} segundos · máximo 45", app.settings_input_timeout),
-            "editar",
-        ),
-        SettingsField::Retries => (
-            "Retentativas",
-            format!("{} · máximo 3", app.settings_input_retries),
-            "editar",
-        ),
-        SettingsField::RemoteConsent => (
-            "Envio remoto",
-            toggle_label(app.settings_remote_consent, "Consentido", "Bloqueado"),
-            "espaço",
-        ),
-        SettingsField::FallbackEnabled => (
-            "Alternativa local",
-            toggle_label(app.settings_fallback_enabled, "Ativada", "Desativada"),
-            "espaço",
-        ),
-        SettingsField::FallbackBaseUrl => (
-            "URL alternativa",
-            empty_label(&app.settings_input_fallback_base_url),
-            "editar",
-        ),
-        SettingsField::FallbackModel => (
-            "Modelo alternativo",
-            empty_label(&app.settings_input_fallback_model),
-            "editar",
-        ),
-        SettingsField::ProjectDir => (
-            "Projeto analisado",
-            app.settings_input_project_dir.clone(),
-            "read-only",
-        ),
-    };
-    FieldView {
-        field,
-        label,
-        value,
-        hint,
+        SettingsField::Model => empty_label(&app.settings_input_model),
+        SettingsField::Timeout => {
+            format!("{} segundos · máximo 45", app.settings_input_timeout)
+        }
+        SettingsField::Retries => format!("{} · máximo 3", app.settings_input_retries),
+        SettingsField::RemoteConsent => {
+            toggle_label(app.settings_remote_consent, "Consentido", "Bloqueado")
+        }
+        SettingsField::FallbackEnabled => {
+            toggle_label(app.settings_fallback_enabled, "Ativada", "Desativada")
+        }
+        SettingsField::FallbackBaseUrl => empty_label(&app.settings_input_fallback_base_url),
+        SettingsField::FallbackModel => empty_label(&app.settings_input_fallback_model),
+        SettingsField::ProjectDir => app.settings_input_project_dir.clone(),
+    }
+}
+
+/// Dica da linha do campo: em repouso descreve o campo, e em foco diz o que as
+/// teclas fazem agora — é o que separa "focado" de "editando".
+fn field_hint(app: &AppState, field: SettingsField) -> &'static str {
+    if app.focused_settings_field() != Some(field) {
+        return match field {
+            SettingsField::Provider => "enter troca",
+            SettingsField::ApiKey => "secreto",
+            SettingsField::RemoteConsent | SettingsField::FallbackEnabled => "espaço",
+            SettingsField::ProjectDir => "read-only",
+            _ => "editar",
+        };
+    }
+    if field == SettingsField::Provider {
+        return "enter troca";
+    }
+    if field.is_toggle() {
+        return "espaço alterna";
+    }
+    if app.settings_editing == Some(field) {
+        "editando"
+    } else {
+        "enter edita"
     }
 }
 
@@ -328,20 +397,6 @@ fn toggle_label(enabled: bool, enabled_label: &str, disabled_label: &str) -> Str
     )
 }
 
-fn is_text_field(field: SettingsField) -> bool {
-    matches!(
-        field,
-        SettingsField::BaseUrl
-            | SettingsField::ApiKey
-            | SettingsField::Model
-            | SettingsField::Timeout
-            | SettingsField::Retries
-            | SettingsField::FallbackBaseUrl
-            | SettingsField::FallbackModel
-            | SettingsField::ProjectDir
-    )
-}
-
 fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let columns = Layout::horizontal([
         Constraint::Length(12),
@@ -351,6 +406,11 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Constraint::Length(18),
     ])
     .split(area);
+    // Sem campo de texto em foco não há o que limpar: um botão apagado é mais
+    // honesto do que um clique que não faz nada.
+    let clear_enabled = app
+        .focused_settings_field()
+        .is_some_and(SettingsField::is_text);
     chrome::render_button(
         app,
         frame,
@@ -365,7 +425,7 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         columns[2],
         "Limpar campo",
         SemanticAction::ClearText,
-        chrome::ButtonState::secondary(false),
+        chrome::ButtonState::secondary(false).enabled(clear_enabled),
     );
     chrome::render_button(
         app,
@@ -576,6 +636,9 @@ mod tests {
             AppState::new(Configuration::default()).expect("configuração de teste válida");
         app.settings_provider_idx = 2;
         app.settings_input_base_url = "https://api.openai.com/v1".to_string();
+        // O botão de limpar só existe com um campo de texto em foco; aqui o alvo
+        // é o conjunto de regiões clicáveis do teclado, então o foco é de campo.
+        app.focus = FocusTarget::SettingsField(SettingsField::BaseUrl);
         let expected_fields = app.visible_settings_fields();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -622,5 +685,114 @@ mod tests {
 
         assert!(app.settings_scroll > 0);
         assert!(screen.contains("Modelo alternativo"));
+    }
+
+    /// Fora de um campo de texto não há o que limpar: o botão fica apagado em vez
+    /// de responder a um clique sem efeito.
+    #[test]
+    fn the_clear_button_is_disabled_without_a_text_field_in_focus() {
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
+        app.show_settings = true;
+        app.focus = FocusTarget::SettingsSave;
+
+        let screen = draw(&mut app, 80, 24);
+
+        assert!(screen.contains("Limpar campo"), "{screen}");
+        assert!(
+            !app.hit_regions
+                .iter()
+                .any(|region| region.action == SemanticAction::ClearText),
+            "sem campo de texto em foco o botão não pode ser clicável"
+        );
+    }
+
+    /// O cursor de digitação só existe com o campo aberto: a tela não pode
+    /// prometer uma edição que o `enter` ainda não abriu.
+    #[test]
+    fn the_cursor_only_appears_while_the_field_is_open_for_editing() {
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
+        app.show_settings = true;
+        app.focus = FocusTarget::SettingsField(SettingsField::BaseUrl);
+
+        let screen = draw(&mut app, 80, 24);
+
+        assert!(screen.contains("enter edita"), "{screen}");
+        assert!(
+            !screen.contains('▏'),
+            "sem edição não existe cursor: {screen}"
+        );
+
+        app.settings_editing = Some(SettingsField::BaseUrl);
+        let screen = draw(&mut app, 80, 24);
+
+        assert!(screen.contains('▏'), "{screen}");
+        assert!(screen.contains("Editando URL base"), "{screen}");
+        assert!(screen.contains("editando"), "{screen}");
+    }
+
+    /// O campo alterado ganha uma marca própria: o operador vê o que ainda não
+    /// foi gravado sem precisar abrir o arquivo de configuração.
+    #[test]
+    fn a_changed_field_is_marked_until_the_draft_is_saved() {
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
+        app.show_settings = true;
+        app.settings_input_base_url = "https://rascunho.local/v1".to_string();
+
+        let screen = draw(&mut app, 80, 24);
+        let lines: Vec<&str> = screen.lines().collect();
+        let label_row = lines
+            .iter()
+            .position(|line| line.contains("│URL base"))
+            .expect("o campo precisa estar visível");
+        // O `TestBackend` imprime cada linha entre aspas; a marca de alteração é
+        // a primeira coluna interna do painel, depois da borda.
+        assert!(
+            lines[label_row + 1]
+                .trim_start_matches('"')
+                .starts_with("│•"),
+            "a linha do valor marca o campo alterado: {screen}"
+        );
+        assert!(screen.contains("1 alteração não salva"), "{screen}");
+
+        app.commit_settings(Configuration::default());
+
+        let screen = draw(&mut app, 80, 24);
+        assert!(
+            !screen.contains("alteração não salva"),
+            "depois de salvar não existe pendência: {screen}"
+        );
+    }
+
+    /// Em terminal baixo a coluna de confiabilidade não cabe inteira: o painel
+    /// rola até o campo em foco e anuncia a faixa visível.
+    #[test]
+    fn a_short_terminal_scrolls_the_column_and_shows_the_visible_range() {
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
+        app.show_settings = true;
+        app.settings_fallback_enabled = true;
+        app.settings_field = SettingsField::FallbackModel;
+        app.focus = FocusTarget::SettingsField(SettingsField::FallbackModel);
+
+        let screen = draw(&mut app, 100, 20);
+
+        assert!(screen.contains("Modelo alternativo"), "{screen}");
+        assert!(screen.contains("2-6 de 6"), "{screen}");
+    }
+
+    /// No formulário compacto a rolagem também precisa ser anunciada, senão o
+    /// operador não sabe que existem campos fora da tela.
+    #[test]
+    fn the_compact_form_announces_the_visible_range() {
+        let mut app =
+            AppState::new(Configuration::default()).expect("configuração de teste válida");
+        app.show_settings = true;
+
+        let screen = draw(&mut app, 80, 12);
+
+        assert!(screen.contains("1-3 de 9"), "{screen}");
     }
 }
