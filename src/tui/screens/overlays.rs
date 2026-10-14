@@ -24,7 +24,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(block, popup);
 
     let context = if app.show_settings {
-        "Configure o provedor de IA, consentimento e opções de execução."
+        "Setas movem, enter edita o campo e esc descarta o rascunho."
     } else {
         match app.step {
             AppStep::Splash => "Defina o alvo, o modo de execução e inicie a análise.",
@@ -42,11 +42,11 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Line::from(""),
         shortcut("tab / shift+tab", "mover o foco"),
         shortcut("setas", "navegar ou rolar"),
-        shortcut("enter / espaço", "acionar o item em foco"),
+        shortcut("enter / espaço", "acionar o item em foco ou abrir o campo"),
         shortcut("p", "pausar ou retomar a execução"),
         shortcut("c", "cancelar a execução em andamento"),
         shortcut("ctrl+u", "limpar o campo de texto em foco"),
-        shortcut("esc", "fechar ou voltar"),
+        shortcut("esc", "sair do campo em edição ou voltar"),
         shortcut("f1", "abrir ajuda em qualquer contexto"),
         shortcut("f2", "rastreabilidade da Sprint 1"),
         shortcut("h", "consultar o histórico de execuções"),

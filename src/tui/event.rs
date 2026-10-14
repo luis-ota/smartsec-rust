@@ -142,6 +142,11 @@ fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
             _ => None,
         };
     }
+    // Dentro da edição o espaço é texto: `espaço` só aciona o item em foco
+    // quando o campo não está aberto para digitação.
+    if app.settings_editing.is_some() && key.code == KeyCode::Char(' ') {
+        return Some(SemanticAction::InsertText(" ".to_string()));
+    }
     let navigation = match key.code {
         KeyCode::Tab => Some(SemanticAction::FocusNext),
         KeyCode::BackTab => Some(SemanticAction::FocusPrevious),
@@ -180,19 +185,9 @@ fn accepts_text(app: &AppState) -> bool {
             && app.focus == FocusTarget::OnboardingList;
     }
     if app.show_settings {
-        return matches!(
-            app.focus,
-            FocusTarget::SettingsField(
-                SettingsField::BaseUrl
-                    | SettingsField::ApiKey
-                    | SettingsField::Model
-                    | SettingsField::Timeout
-                    | SettingsField::Retries
-                    | SettingsField::FallbackBaseUrl
-                    | SettingsField::FallbackModel
-                    | SettingsField::ProjectDir
-            )
-        );
+        return app
+            .focused_settings_field()
+            .is_some_and(SettingsField::is_text);
     }
     app.step == AppStep::Splash && app.focus == FocusTarget::SplashTarget
 }
@@ -236,6 +231,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
             if !from_onboarding {
                 app.reset_settings_draft();
             }
+            app.settings_editing = None;
             app.show_settings = true;
             app.focus = FocusTarget::SettingsField(app.settings_field);
         }
@@ -302,6 +298,9 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
 
 fn set_focus(app: &mut AppState, focus: FocusTarget) {
     app.focus = focus;
+    // Trocar de campo fecha a digitação: é o que faz `tab` e as setas saírem do
+    // campo sem precisar de outra tecla.
+    app.settings_editing = None;
     if let FocusTarget::SettingsField(field) = focus {
         app.settings_field = field;
     }
@@ -382,7 +381,9 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
             .into_iter()
             .map(FocusTarget::SettingsField)
             .collect();
-        order.extend([FocusTarget::SettingsSave, FocusTarget::SettingsCancel]);
+        // A ordem segue a leitura da tela: descartar está à esquerda de salvar,
+        // e o botão primário fica como último passo antes de voltar ao topo.
+        order.extend([FocusTarget::SettingsCancel, FocusTarget::SettingsSave]);
         return order;
     }
     if app.show_didactic {
@@ -457,7 +458,9 @@ fn move_vertical(app: &mut AppState, down: bool) {
         FocusTarget::ExecutionLogs | FocusTarget::DidacticContent | FocusTarget::ReportClose => {
             scroll(app, down, 1)
         }
-        FocusTarget::SettingsField(SettingsField::Provider) => move_provider(app, down),
+        FocusTarget::SettingsField(field) if app.show_settings => {
+            move_settings_field(app, field, SettingsAxis::Vertical, down)
+        }
         FocusTarget::CommandList => move_command_cursor(app, down),
         FocusTarget::OnboardingList => move_onboarding_cursor(app, down),
         _ => move_focus(app, down),
@@ -477,19 +480,60 @@ fn move_onboarding_cursor(app: &mut AppState, down: bool) {
     };
 }
 
+/// Setas navegam (↑/↓ na coluna, ←/→ entre colunas); enter/espaço trocam o valor.
 fn move_horizontal(app: &mut AppState, right: bool) {
     match app.focus {
-        FocusTarget::SettingsField(SettingsField::Provider) => move_provider(app, right),
-        FocusTarget::SettingsField(SettingsField::RemoteConsent) => {
-            app.settings_remote_consent = right;
-            app.settings_error = None;
-        }
-        FocusTarget::SettingsField(SettingsField::FallbackEnabled) => {
-            app.settings_fallback_enabled = right;
-            app.settings_error = None;
+        FocusTarget::SettingsField(field) if app.show_settings => {
+            move_settings_field(app, field, SettingsAxis::Horizontal, right);
         }
         _ => move_focus(app, right),
     }
+}
+
+enum SettingsAxis {
+    Vertical,
+    Horizontal,
+}
+
+fn move_settings_field(
+    app: &mut AppState,
+    field: SettingsField,
+    axis: SettingsAxis,
+    forward: bool,
+) {
+    if !app.settings_two_columns {
+        move_focus(app, forward);
+        return;
+    }
+    let [primary, reliability] = app.settings_columns();
+    let columns = [primary, reliability];
+    let Some(column) = columns.iter().position(|fields| fields.contains(&field)) else {
+        return;
+    };
+    let row = columns[column]
+        .iter()
+        .position(|candidate| *candidate == field)
+        .unwrap_or(0);
+    let target = match axis {
+        SettingsAxis::Vertical => {
+            let fields = &columns[column];
+            let length = fields.len();
+            let next = if forward {
+                (row + 1) % length
+            } else {
+                row.checked_sub(1).unwrap_or(length - 1)
+            };
+            fields[next]
+        }
+        SettingsAxis::Horizontal => {
+            let fields = &columns[1 - column];
+            let Some(last) = fields.len().checked_sub(1) else {
+                return;
+            };
+            fields[row.min(last)]
+        }
+    };
+    set_focus(app, FocusTarget::SettingsField(target));
 }
 
 fn activate_focus(app: &mut AppState) {
@@ -570,6 +614,11 @@ fn go_back(app: &mut AppState) -> bool {
         return false;
     }
     if app.show_settings {
+        // Sair da digitação não descarta o rascunho: o operador que apertou `esc`
+        // para fechar o campo não perde o que digitou sem aviso.
+        if app.settings_editing.take().is_some() {
+            return false;
+        }
         app.reset_settings_draft();
         app.show_settings = false;
         app.focus = app.settings_return_focus;
@@ -976,6 +1025,13 @@ fn new_scan(app: &mut AppState) {
 fn select_settings_field(app: &mut AppState, field: SettingsField) {
     app.settings_field = field;
     app.focus = FocusTarget::SettingsField(field);
+    // O clique abre o campo para digitação: entrar e sair a cada clique tornaria
+    // o alvo dependente do estado anterior.
+    if field.is_text() {
+        app.settings_editing = Some(field);
+        app.settings_error = None;
+        return;
+    }
     activate_settings_field(app, field);
 }
 
@@ -991,18 +1047,12 @@ fn activate_settings_field(app: &mut AppState, field: SettingsField) {
         SettingsField::FallbackEnabled => {
             app.settings_fallback_enabled = !app.settings_fallback_enabled
         }
+        // `enter` abre e fecha a digitação do próprio campo.
+        _ if field.is_text() => {
+            app.settings_editing = (app.settings_editing != Some(field)).then_some(field);
+        }
         _ => {}
     }
-}
-
-fn move_provider(app: &mut AppState, down: bool) {
-    let count = LlmProviderKind::all_labels().len();
-    app.settings_provider_idx = if down {
-        (app.settings_provider_idx + 1).min(count - 1)
-    } else {
-        app.settings_provider_idx.saturating_sub(1)
-    };
-    sync_provider_defaults(app);
 }
 
 fn sync_provider_defaults(app: &mut AppState) {
@@ -1016,6 +1066,11 @@ fn sync_provider_defaults(app: &mut AppState) {
 fn insert_text(app: &mut AppState, text: &str) {
     if !accepts_text(app) {
         return;
+    }
+    // Digitar abre a edição: o operador não precisa de uma tecla só para isso,
+    // e o estado visual passa a dizer a verdade sobre o que o `esc` faz.
+    if app.show_settings && !app.onboarding_open() {
+        app.settings_editing = app.focused_settings_field();
     }
     if app.onboarding_open() {
         if !app.settings_api_key_touched {
@@ -1084,6 +1139,9 @@ fn delete_backward(app: &mut AppState) {
         app.settings_input_api_key.pop();
         return;
     }
+    if app.show_settings {
+        app.settings_editing = app.focused_settings_field();
+    }
     match app.focus {
         FocusTarget::SplashTarget => {
             app.config.target_url.pop();
@@ -1129,6 +1187,9 @@ fn clear_text(app: &mut AppState) {
         app.settings_input_api_key.clear();
         app.settings_api_key_touched = true;
         return;
+    }
+    if app.show_settings {
+        app.settings_editing = app.focused_settings_field();
     }
     match app.focus {
         FocusTarget::SettingsField(SettingsField::BaseUrl) => app.settings_input_base_url.clear(),
@@ -2331,5 +2392,284 @@ mod tests {
             .settings_error
             .as_deref()
             .is_some_and(|error| error.contains("entre 1 e 45")));
+    }
+
+    fn settings_app() -> AppState {
+        let mut app = app();
+        dispatch_action(&mut app, SemanticAction::OpenSettings);
+        app
+    }
+
+    /// `enter` abre a digitação do campo de texto e `esc` sai dela sem descartar
+    /// o rascunho; o descarte continua sendo do segundo `esc`, como antes.
+    #[test]
+    fn enter_opens_the_text_field_and_esc_leaves_it_keeping_the_draft() {
+        let mut app = settings_app();
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::BaseUrl));
+        app.settings_input_base_url.clear();
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings_editing, Some(SettingsField::BaseUrl));
+
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.settings_input_base_url, "a");
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.settings_editing, None);
+        assert!(
+            app.show_settings,
+            "sair da edição não pode fechar a tela nem descartar o rascunho"
+        );
+        assert_eq!(app.settings_input_base_url, "a");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.show_settings, "sem edição aberta, esc fecha a tela");
+    }
+
+    /// O primeiro caractere digitado já abre a edição: o operador não precisa
+    /// saber de antemão que existe um estado de edição para digitar.
+    #[test]
+    fn typing_opens_the_editing_and_leaving_the_field_closes_it() {
+        let mut app = settings_app();
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Model));
+
+        press(&mut app, KeyCode::Char('x'));
+
+        assert_eq!(app.settings_editing, Some(SettingsField::Model));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.settings_editing, None);
+        assert_ne!(app.focus, FocusTarget::SettingsField(SettingsField::Model));
+    }
+
+    /// `esc` no meio da digitação é o caminho que o operador usa para sair do
+    /// campo: ele não pode fechar a tela e perder tudo sem aviso.
+    #[test]
+    fn escape_while_editing_keeps_every_field_of_the_draft() {
+        let mut app = settings_app();
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Timeout));
+        app.settings_input_timeout.clear();
+        press(&mut app, KeyCode::Char('9'));
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Retries));
+        app.settings_input_retries.clear();
+        press(&mut app, KeyCode::Char('2'));
+
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Timeout));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+
+        assert!(app.show_settings);
+        assert_eq!(app.settings_input_timeout, "9");
+        assert_eq!(app.settings_input_retries, "2");
+    }
+
+    /// Fora da edição, `espaço` aciona o item em foco (como no resto da TUI);
+    /// dentro dela, `espaço` é texto.
+    #[test]
+    fn space_activates_outside_the_editing_and_types_inside_it() {
+        let mut app = settings_app();
+        set_focus(
+            &mut app,
+            FocusTarget::SettingsField(SettingsField::ProjectDir),
+        );
+        app.settings_input_project_dir.clear();
+
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            app.settings_editing,
+            Some(SettingsField::ProjectDir),
+            "espaço no campo fechado abre a edição"
+        );
+
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.settings_input_project_dir, " ", "espaço digitado");
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings_editing, None, "enter fecha a edição");
+        assert_eq!(app.settings_input_project_dir, " ");
+    }
+
+    /// Em duas colunas, `↑`/`↓` andam dentro da coluna do campo em foco, sem
+    /// atravessar para a coluna vizinha.
+    #[test]
+    fn vertical_arrows_walk_inside_the_column_of_the_focused_field() {
+        let mut app = settings_app();
+        render_app(&mut app, 80, 24);
+        assert!(app.settings_two_columns, "80x24 desenha duas colunas");
+
+        set_focus(
+            &mut app,
+            FocusTarget::SettingsField(SettingsField::Provider),
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::BaseUrl)
+        );
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.focus, FocusTarget::SettingsField(SettingsField::Model));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::ApiKey),
+            "a chave de API fica abaixo do modelo na coluna principal"
+        );
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.focus, FocusTarget::SettingsField(SettingsField::Model));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::BaseUrl)
+        );
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::Provider)
+        );
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::RemoteConsent),
+            "no topo da coluna a navegação dá a volta"
+        );
+
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Timeout));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::Retries),
+            "a coluna de confiabilidade anda por conta própria"
+        );
+    }
+
+    /// `←`/`→` trocam de coluna mantendo a linha; quem troca o valor do provedor
+    /// e dos interruptores é `enter` ou `espaço`.
+    #[test]
+    fn horizontal_arrows_switch_columns_on_the_same_row() {
+        let mut app = settings_app();
+        render_app(&mut app, 80, 24);
+
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Model));
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::FallbackEnabled)
+        );
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.focus, FocusTarget::SettingsField(SettingsField::Model));
+
+        set_focus(
+            &mut app,
+            FocusTarget::SettingsField(SettingsField::RemoteConsent),
+        );
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::ProjectDir),
+            "sem linha equivalente, a coluna vizinha usa a última disponível"
+        );
+
+        set_focus(
+            &mut app,
+            FocusTarget::SettingsField(SettingsField::FallbackEnabled),
+        );
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::Model),
+            "a coluna vizinha usa a linha equivalente"
+        );
+        assert!(
+            !app.settings_fallback_enabled,
+            "a seta move o foco e não troca o valor do interruptor"
+        );
+    }
+
+    /// No formulário compacto só existe uma coluna: as quatro setas percorrem a
+    /// mesma ordem da lista.
+    #[test]
+    fn in_the_compact_form_the_arrows_walk_the_single_list() {
+        let mut app = settings_app();
+        render_app(&mut app, 80, 12);
+        assert!(!app.settings_two_columns, "80x12 desenha a lista compacta");
+
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Retries));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::FallbackEnabled)
+        );
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::ProjectDir)
+        );
+        press(&mut app, KeyCode::Left);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::FallbackEnabled)
+        );
+    }
+
+    /// A tabulação termina nos botões na ordem em que eles aparecem na tela:
+    /// descartar à esquerda, salvar à direita.
+    #[test]
+    fn tab_reaches_the_buttons_in_screen_order() {
+        let mut app = settings_app();
+
+        set_focus(
+            &mut app,
+            FocusTarget::SettingsField(SettingsField::ProjectDir),
+        );
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, FocusTarget::SettingsCancel);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, FocusTarget::SettingsSave);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::Provider),
+            "a tabulação dá a volta para o primeiro campo"
+        );
+    }
+
+    /// O botão de limpar só existe quando há campo de texto em foco: fora dele o
+    /// clique não teria efeito nenhum.
+    #[test]
+    fn the_clear_button_only_answers_with_a_text_field_in_focus() {
+        let mut app = settings_app();
+        set_focus(&mut app, FocusTarget::SettingsSave);
+        render_app(&mut app, 80, 24);
+        assert!(
+            !app.hit_regions
+                .iter()
+                .any(|region| region.action == SemanticAction::ClearText),
+            "sem campo de texto em foco não deve haver botão de limpar"
+        );
+
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::BaseUrl));
+        render_app(&mut app, 80, 24);
+        assert!(app
+            .hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::ClearText));
+    }
+
+    /// O clique no campo de texto abre a edição, para o mouse ter a mesma
+    /// intenção do `enter` no teclado.
+    #[test]
+    fn clicking_a_text_field_opens_it_for_typing() {
+        let mut app = settings_app();
+        render_app(&mut app, 80, 24);
+
+        assert!(!click_action(
+            &mut app,
+            &SemanticAction::SelectSettingsField(SettingsField::BaseUrl)
+        ));
+
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::BaseUrl)
+        );
+        assert_eq!(app.settings_editing, Some(SettingsField::BaseUrl));
     }
 }

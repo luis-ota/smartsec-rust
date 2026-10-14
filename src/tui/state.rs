@@ -138,6 +138,31 @@ pub enum SettingsField {
     ProjectDir,
 }
 
+impl SettingsField {
+    /// Campos que aceitam texto digitado. `ProjectDir` entra na lista porque o
+    /// caminho é editável e validado no salvamento, como os demais.
+    pub fn is_text(self) -> bool {
+        matches!(
+            self,
+            SettingsField::BaseUrl
+                | SettingsField::ApiKey
+                | SettingsField::Model
+                | SettingsField::Timeout
+                | SettingsField::Retries
+                | SettingsField::FallbackBaseUrl
+                | SettingsField::FallbackModel
+                | SettingsField::ProjectDir
+        )
+    }
+
+    pub fn is_toggle(self) -> bool {
+        matches!(
+            self,
+            SettingsField::RemoteConsent | SettingsField::FallbackEnabled
+        )
+    }
+}
+
 pub struct ToolItem {
     pub tool: ToolManifest,
     pub runner: RunnerKind,
@@ -298,6 +323,12 @@ pub struct AppState {
     pub show_command_palette: bool,
     pub command_cursor: usize,
     pub settings_scroll: usize,
+    /// Campo de texto aberto para digitação. Diferenciar "focado" de "editando"
+    /// é o que permite `esc` sair do campo sem descartar o rascunho inteiro.
+    pub settings_editing: Option<SettingsField>,
+    /// Formulário desenhado em duas colunas na última renderização; as setas
+    /// verticais andam dentro da coluna e as horizontais trocam de coluna.
+    pub settings_two_columns: bool,
     pub focus: FocusTarget,
     pub settings_return_focus: FocusTarget,
     pub overlay_return_focus: FocusTarget,
@@ -441,6 +472,8 @@ impl AppState {
             show_command_palette: false,
             command_cursor: 0,
             settings_scroll: 0,
+            settings_editing: None,
+            settings_two_columns: true,
             focus: FocusTarget::SplashTarget,
             settings_return_focus: FocusTarget::SplashTarget,
             overlay_return_focus: FocusTarget::SplashTarget,
@@ -1401,32 +1434,123 @@ impl AppState {
             .collect()
     }
 
-    pub fn visible_settings_fields(&self) -> Vec<SettingsField> {
-        let mut fields = vec![
+    /// Ordem de tabulação: concatenação das colunas; as setas usam o eixo da coluna.
+    pub fn settings_columns(&self) -> [Vec<SettingsField>; 2] {
+        let mut primary = vec![
             SettingsField::Provider,
             SettingsField::BaseUrl,
             SettingsField::Model,
         ];
         if self.settings_connection_is_remote() {
-            fields.extend([SettingsField::ApiKey, SettingsField::RemoteConsent]);
+            primary.extend([SettingsField::ApiKey, SettingsField::RemoteConsent]);
         }
-        fields.extend([
+        let mut reliability = vec![
             SettingsField::Timeout,
             SettingsField::Retries,
             SettingsField::FallbackEnabled,
-        ]);
-        fields.push(SettingsField::ProjectDir);
+        ];
+        // Junto dos limites porque decide o escopo de leitura do agente, não o transporte.
+        reliability.push(SettingsField::ProjectDir);
         if self.settings_fallback_enabled {
-            fields.extend([SettingsField::FallbackBaseUrl, SettingsField::FallbackModel]);
+            reliability.extend([SettingsField::FallbackBaseUrl, SettingsField::FallbackModel]);
         }
-        fields
+        [primary, reliability]
+    }
+
+    pub fn visible_settings_fields(&self) -> Vec<SettingsField> {
+        let [primary, reliability] = self.settings_columns();
+        primary.into_iter().chain(reliability).collect()
+    }
+
+    pub fn focused_settings_field(&self) -> Option<SettingsField> {
+        match self.focus {
+            FocusTarget::SettingsField(field) => Some(field),
+            _ => None,
+        }
+    }
+
+    /// Compara contra `config` e não contra `settings_candidate`: validar o
+    /// candidato abriria o diretório do projeto a cada quadro.
+    pub fn settings_field_changed(&self, field: SettingsField) -> bool {
+        match field {
+            SettingsField::Provider => {
+                LlmProviderKind::all_labels()[self.settings_provider_idx]
+                    != self.config.llm.provider.label()
+            }
+            SettingsField::BaseUrl => {
+                self.settings_effective_base_url() != self.config.llm.base_url
+            }
+            SettingsField::Model => self.settings_effective_model() != self.config.llm.model,
+            SettingsField::ApiKey => {
+                self.settings_api_key_touched
+                    && self.settings_input_api_key != self.config.llm.api_key
+            }
+            SettingsField::Timeout => {
+                self.settings_input_timeout.trim().parse::<u64>().ok()
+                    != Some(self.config.llm.timeout_secs)
+            }
+            SettingsField::Retries => {
+                self.settings_input_retries.trim().parse::<u8>().ok()
+                    != Some(self.config.llm.max_retries)
+            }
+            SettingsField::RemoteConsent => {
+                self.settings_remote_consent != self.config.llm.remote_consent
+            }
+            SettingsField::FallbackEnabled => {
+                self.settings_fallback_enabled != self.config.llm.fallback_enabled
+            }
+            SettingsField::FallbackBaseUrl => {
+                self.settings_input_fallback_base_url.trim() != self.config.llm.fallback_base_url
+            }
+            SettingsField::FallbackModel => {
+                self.settings_input_fallback_model.trim() != self.config.llm.fallback_model
+            }
+            SettingsField::ProjectDir => {
+                self.settings_input_project_dir.trim() != self.settings_saved_project_dir().trim()
+            }
+        }
+    }
+
+    /// Quantos campos visíveis divergem do que está gravado.
+    pub fn settings_dirty_count(&self) -> usize {
+        self.visible_settings_fields()
+            .into_iter()
+            .filter(|field| self.settings_field_changed(*field))
+            .count()
+    }
+
+    fn settings_effective_base_url(&self) -> String {
+        let draft = self.settings_input_base_url.trim();
+        if draft.is_empty() {
+            self.settings_provider().default_base_url().to_string()
+        } else {
+            draft.to_string()
+        }
+    }
+
+    fn settings_effective_model(&self) -> String {
+        let draft = self.settings_input_model.trim();
+        if draft.is_empty() {
+            self.settings_provider().default_model().to_string()
+        } else {
+            draft.to_string()
+        }
+    }
+
+    fn settings_saved_project_dir(&self) -> String {
+        self.config
+            .project_dir
+            .clone()
+            .unwrap_or_else(|| self.config.effective_project_dir().display().to_string())
+    }
+
+    fn settings_provider(&self) -> LlmProviderKind {
+        LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx])
     }
 
     pub fn settings_connection_is_remote(&self) -> bool {
-        let provider =
-            LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
         let mut llm = self.config.llm.clone();
-        llm.provider = provider;
+        llm.provider = self.settings_provider();
         llm.base_url = self.settings_input_base_url.trim().to_string();
         llm.is_remote()
     }
@@ -1455,8 +1579,7 @@ impl AppState {
     /// `save` toca o arquivo do usuário e o keyring: o assistente precisa montar
     /// e validar o candidato antes de decidir se ele será persistido.
     pub fn settings_candidate(&self) -> Result<Configuration, String> {
-        let provider =
-            LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
+        let provider = self.settings_provider();
         let timeout = self
             .settings_input_timeout
             .trim()
@@ -1469,17 +1592,9 @@ impl AppState {
             .map_err(|_| "Informe uma quantidade de tentativas entre 0 e 3".to_string())?;
         let mut candidate = self.config.clone();
         candidate.llm.provider = provider;
-        candidate.llm.base_url = if self.settings_input_base_url.trim().is_empty() {
-            provider.default_base_url().to_string()
-        } else {
-            self.settings_input_base_url.trim().to_string()
-        };
+        candidate.llm.base_url = self.settings_effective_base_url();
         candidate.llm.api_key = self.settings_input_api_key.clone();
-        candidate.llm.model = if self.settings_input_model.trim().is_empty() {
-            provider.default_model().to_string()
-        } else {
-            self.settings_input_model.trim().to_string()
-        };
+        candidate.llm.model = self.settings_effective_model();
         candidate.llm.timeout_secs = timeout;
         candidate.llm.max_retries = retries;
         candidate.llm.remote_consent = self.settings_remote_consent;
@@ -1527,14 +1642,11 @@ impl AppState {
         self.settings_fallback_enabled = self.config.llm.fallback_enabled;
         self.settings_input_fallback_base_url = self.config.llm.fallback_base_url.clone();
         self.settings_input_fallback_model = self.config.llm.fallback_model.clone();
-        self.settings_input_project_dir = self
-            .config
-            .project_dir
-            .clone()
-            .unwrap_or_else(|| self.config.effective_project_dir().display().to_string());
+        self.settings_input_project_dir = self.settings_saved_project_dir();
         self.settings_api_key_touched = false;
         self.settings_error = None;
         self.settings_scroll = 0;
+        self.settings_editing = None;
         if !self
             .visible_settings_fields()
             .contains(&self.settings_field)
@@ -2623,5 +2735,67 @@ mod tests {
         app.log_visible_height = 1;
 
         assert_eq!(app.log_max_scroll(), u16::MAX as usize);
+    }
+
+    /// Rascunho recém-aberto é cópia do gravado: nada pendente e sem aviso.
+    #[test]
+    fn a_fresh_settings_draft_has_no_pending_changes() {
+        let app = app();
+
+        assert_eq!(app.settings_dirty_count(), 0);
+        for field in app.visible_settings_fields() {
+            assert!(
+                !app.settings_field_changed(field),
+                "{field:?} recém-aberto não pode contar como alterado"
+            );
+        }
+    }
+
+    /// Cada campo editado entra na conta do aviso, inclusive o interruptor e o
+    /// diretório do projeto, que não são texto.
+    #[test]
+    fn editing_a_field_marks_it_as_pending_until_it_is_saved() {
+        let mut app = app();
+        app.settings_input_timeout = "7".to_string();
+        app.settings_fallback_enabled = true;
+        app.settings_input_project_dir = "/tmp".to_string();
+
+        assert!(app.settings_field_changed(SettingsField::Timeout));
+        assert!(app.settings_field_changed(SettingsField::FallbackEnabled));
+        assert!(app.settings_field_changed(SettingsField::ProjectDir));
+        assert!(!app.settings_field_changed(SettingsField::BaseUrl));
+        assert_eq!(app.settings_dirty_count(), 3);
+    }
+
+    /// A chave de API só conta como alterada depois que o operador digita: o
+    /// valor em rascunho é o mesmo segredo e não pode aparecer como pendência.
+    #[test]
+    fn the_api_key_only_counts_as_pending_after_being_typed() {
+        let mut app = app();
+        app.settings_provider_idx = 1;
+        app.settings_input_base_url = "https://api.openai.com/v1".to_string();
+        app.settings_input_api_key = "chave-antiga".to_string();
+        app.config.llm.api_key = "chave-antiga".to_string();
+
+        assert!(!app.settings_field_changed(SettingsField::ApiKey));
+
+        app.settings_api_key_touched = true;
+        assert!(!app.settings_field_changed(SettingsField::ApiKey));
+
+        app.settings_input_api_key = "chave-nova".to_string();
+        assert!(app.settings_field_changed(SettingsField::ApiKey));
+    }
+
+    /// Depois de aplicar a configuração, o aviso de pendências não pode
+    /// sobreviver: ele descreveria um estado que não existe mais.
+    #[test]
+    fn applying_the_settings_clears_the_pending_change_count() {
+        let mut app = app();
+        app.settings_input_retries = "3".to_string();
+        assert_eq!(app.settings_dirty_count(), 1);
+
+        app.commit_settings(app.settings_candidate().expect("candidato válido"));
+
+        assert_eq!(app.settings_dirty_count(), 0);
     }
 }
