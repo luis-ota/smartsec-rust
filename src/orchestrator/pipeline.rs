@@ -60,6 +60,9 @@ pub struct Orchestrator {
     /// Relatório da fase do agente de código, com a localização de cada achado
     /// e o registro auditável de cada chamada de ferramenta.
     pub last_code_report: Option<CodeAnalysisReport>,
+    /// Explicações RAG geradas no detalhe do achado (issue #109); o log
+    /// estruturado guarda o veredito da mais recente e a contagem.
+    pub rag_explanations: Vec<crate::cyberrag::service::ExplanationResult>,
 }
 
 impl Orchestrator {
@@ -97,6 +100,7 @@ impl Orchestrator {
             analysis_service: AnalysisService::new(),
             code_audit: None,
             last_code_report: None,
+            rag_explanations: Vec::new(),
         }
     }
 
@@ -888,6 +892,11 @@ impl Orchestrator {
             .then(|| InterruptionReason::max_critical_findings(critical, threshold, tool_name))
     }
 
+    /// Trilha de auditoria do scan, com a mesma origem do log estruturado.
+    pub fn agent_trail(&self) -> std::sync::Arc<crate::code_agent::audit_trail::AgentAuditTrail> {
+        std::sync::Arc::clone(&self.agent_trail)
+    }
+
     pub fn persist_scan_log(&self) -> anyhow::Result<std::path::PathBuf> {
         crate::orchestrator::scan_logger::save_scan_log(&self.scan_metadata())
     }
@@ -958,7 +967,16 @@ impl Orchestrator {
             None => metadata,
         };
         let metadata = metadata.with_agent_trail(self.agent_trail.path());
-        metadata
+        self.rag_explanations
+            .iter()
+            .fold(metadata, |metadata, result| {
+                metadata.with_rag_explanation(result)
+            })
+    }
+
+    /// Registra uma explicação do detalhe do achado para o log estruturado.
+    pub fn record_rag_explanation(&mut self, result: &crate::cyberrag::service::ExplanationResult) {
+        self.rag_explanations.push(result.clone());
     }
 }
 

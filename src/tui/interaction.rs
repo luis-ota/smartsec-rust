@@ -22,6 +22,7 @@ pub enum FocusTarget {
     ResultsDidactic,
     ResultsDetail,
     ResultsBack,
+    ResultsExplain,
     DidacticContent,
     DidacticBack,
     HistoryList,
@@ -65,6 +66,8 @@ pub enum SemanticAction {
     OpenVulnerability(usize),
     ExportMarkdown,
     ShowDidactic,
+    /// Explicação assistida (RAG) do achado aberto no detalhe.
+    ExplainFinding,
     NewScan,
     SelectSettingsField(SettingsField),
     SaveSettings,

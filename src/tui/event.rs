@@ -2,12 +2,13 @@ use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmProviderKind;
 use crate::tui::commands::command_items;
 use crate::tui::interaction::{FocusTarget, SemanticAction};
-use crate::tui::state::{AppState, AppStep, SettingsField};
+use crate::tui::state::{AppState, AppStep, RunEvent, SettingsField};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 pub fn handle_events(app: &mut AppState) -> std::io::Result<bool> {
     if !event::poll(Duration::from_millis(50))? {
@@ -261,6 +262,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
             app.didactic_scroll = 0;
             app.focus = FocusTarget::DidacticContent;
         }
+        SemanticAction::ExplainFinding => start_rag_explanation(app),
         SemanticAction::NewScan => new_scan(app),
         SemanticAction::SelectSettingsField(field) => select_settings_field(app, field),
         SemanticAction::SaveSettings => match app.apply_settings() {
@@ -303,6 +305,59 @@ fn set_focus(app: &mut AppState, focus: FocusTarget) {
     if let FocusTarget::SettingsField(field) = focus {
         app.settings_field = field;
     }
+}
+
+/// Dispara a explicação RAG do achado aberto sem bloquear o loop da TUI.
+fn start_rag_explanation(app: &mut AppState) {
+    let Some(index) = app.result_detail_vuln else {
+        return;
+    };
+    if app.rag_pending.is_some() {
+        return;
+    }
+    let Some(finding) = app.orchestrator.findings.get(index).cloned() else {
+        return;
+    };
+
+    let llm = app.config.llm.clone();
+    let embedding_model = app.config.llm.rag_embedding_model.clone();
+    let trail = app.orchestrator.agent_trail();
+    let (sender, receiver) = mpsc::channel(8);
+    app.rag_receiver = Some(receiver);
+    app.rag_pending = Some(index);
+    app.rag_results.remove(&index);
+    app.exec_logs
+        .push(format!("[rag] gerando explicação do achado {}…", index + 1));
+    app.rag_task = Some(tokio::spawn(async move {
+        let agent = crate::ai::agent::AIAgent::from_config(&llm);
+        let model = agent.model.clone();
+        let label = agent.configured_provider_label();
+        let allowed = agent.allows_target_data();
+        let corpus = crate::cyberrag::corpus::Corpus::embedded();
+        let ontology = crate::cyberrag::ontology::Ontology::embedded();
+        let result = crate::cyberrag::service::ExplanationService::new()
+            .explain(
+                &crate::cyberrag::service::ExplanationContext {
+                    provider: agent.provider_handle(),
+                    model: &model,
+                    provider_label: &label,
+                    target_data_allowed: allowed,
+                    embedding_model: &embedding_model,
+                    corpus: &corpus,
+                    ontology: &ontology,
+                    trail: Some(trail.as_ref()),
+                },
+                index,
+                &finding,
+            )
+            .await;
+        let _ = sender
+            .send(RunEvent::RagExplanationFinished {
+                finding_index: index,
+                result: Box::new(result),
+            })
+            .await;
+    }));
 }
 
 fn focus_order(app: &AppState) -> Vec<FocusTarget> {
@@ -356,6 +411,7 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
             vec![
                 FocusTarget::ResultsDetail,
                 FocusTarget::ResultsBack,
+                FocusTarget::ResultsExplain,
                 FocusTarget::ResultsDidactic,
             ]
         }
@@ -461,6 +517,7 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::ResultsDetail => return,
         FocusTarget::ResultsNewScan => SemanticAction::NewScan,
         FocusTarget::ResultsExport => SemanticAction::ExportMarkdown,
+        FocusTarget::ResultsExplain => SemanticAction::ExplainFinding,
         FocusTarget::ResultsDidactic => SemanticAction::ShowDidactic,
         FocusTarget::SettingsField(field) => {
             activate_settings_field(app, field);
