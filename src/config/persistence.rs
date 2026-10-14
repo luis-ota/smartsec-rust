@@ -24,7 +24,7 @@ pub struct PersistedConfig {
     #[serde(default)]
     pub output_dir: Option<String>,
     /// Limiar da regra automática de interrupção (REQ05). Ausente ou `0`
-    /// mantém a regra desativada, preservando o comportamento anterior.
+    /// mantém a regra desativada.
     #[serde(default)]
     pub max_critical_findings: usize,
     /// Diretório do projeto analisado pelo agente de código (issue #76).
@@ -55,15 +55,10 @@ pub fn config_path() -> PathBuf {
     base.join("smartsec").join("config.toml")
 }
 
-/// Carrega a configuração global.
-///
-/// Um arquivo ausente continua devolvendo os padrões. Um arquivo existente com
-/// TOML inválido é um erro: devolver `default()` silenciosamente faria a
-/// ferramenta perder alvo, ferramentas e provedor sem nenhuma mensagem. O
-/// arquivo nunca é sobrescrito por esta leitura.
-///
-/// A configuração vinda do arquivo global é sempre um piso: `main.rs`
-/// sobrepõe `target_url` e as ferramentas selecionadas pela CLI.
+/// Carrega a configuração global: arquivo ausente devolve os padrões; TOML
+/// inválido é erro, porque cair em `default()` em silêncio faria perder alvo,
+/// ferramentas e provedor. A leitura nunca sobrescreve o arquivo, e a CLI
+/// sobrepõe `target_url` e as ferramentas escolhidas.
 pub fn load_config_file() -> PersistedConfig {
     match try_load_config_file() {
         Ok(config) => config,
@@ -74,18 +69,14 @@ pub fn load_config_file() -> PersistedConfig {
     }
 }
 
-/// Igual a [`load_config_file`], mas devolve o erro em vez de imprimi-lo.
-///
-/// Permite que a TUI e os testes decidam como apresentar a falha.
+/// Igual a [`load_config_file`], mas devolve o erro em vez de imprimi-lo, para
+/// a TUI e os testes decidirem como apresentar a falha.
 pub fn try_load_config_file() -> Result<PersistedConfig, String> {
     try_load_config_file_at(&config_path())
 }
 
 /// Núcleo da carga, parametrizado pelo caminho para permitir teste direto.
-///
-/// Arquivo ausente usa os padrões; arquivo presente e inválido é erro.
 fn try_load_config_file_at(path: &std::path::Path) -> Result<PersistedConfig, String> {
-    // Arquivo ausente não é erro: os padrões valem.
     if !path.exists() {
         return Ok(PersistedConfig::default());
     }

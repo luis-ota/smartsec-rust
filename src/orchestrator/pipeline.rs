@@ -30,8 +30,8 @@ pub struct Orchestrator {
     pub findings: Vec<Vulnerability>,
     pub code_audit: Option<crate::code_audit::CodeAuditReport>,
     /// Canal de pausa, retomada e cancelamento compartilhado com o executor
-    /// Podman e com a interface (REQ14). Substitui as antigas bandeiras
-    /// `paused`/`cancelled`, que nunca chegavam ao container.
+    /// Podman e com a interface (REQ14); bandeiras locais de pausa/cancelamento
+    /// não chegariam ao processo em execução dentro do container.
     ///
     /// O motivo da interrupção mora no canal, e não no orquestrador: a TUI e a
     /// task de execução são `Orchestrator` distintos ligados só por ele, e o
@@ -125,11 +125,9 @@ impl Orchestrator {
         }
     }
 
-    /// Solicita o cancelamento cooperativo da execução.
-    ///
-    /// A ordem chega ao container em execução pelo canal compartilhado: o
-    /// executor encerra o processo com `podman stop` e remove com
-    /// `podman rm --force`, sem depender de `abort()` da task.
+    /// Solicita o cancelamento cooperativo da execução: a ordem chega ao
+    /// container pelo canal compartilhado, ele é encerrado com `podman stop` e
+    /// removido com `podman rm --force`, sem depender de `abort()` da task.
     pub fn cancel_execution(&mut self) {
         if self.control.is_cancelled() {
             return;
@@ -223,11 +221,10 @@ impl Orchestrator {
     /// Executa o ZAP com um plano de automação montado em memória.
     ///
     /// O plano é gravado num diretório temporário do host e montado em somente
-    /// leitura, como os templates do Nuclei. O job `report` do ZAP só sabe
-    /// gravar um arquivo — ele sempre acrescenta a extensão do template ao nome
-    /// e não existe parâmetro de saída em stdout (verificado executando o
-    /// container, `docs/evidence/issue-28-zap.md`) —, então o relatório é
-    /// coletado do diretório de saída gravável antes da remoção do container.
+    /// leitura, como os templates do Nuclei. O job `report` do ZAP sempre
+    /// acrescenta a extensão do template ao nome e não tem saída em stdout
+    /// (verificado executando o container, `docs/evidence/issue-28-zap.md`),
+    /// então o relatório é coletado do diretório de saída antes da remoção.
     async fn execute_zap(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
         let arguments = crate::tools::zap::container_arguments(target).join(" ");
         let mut exec = SecurityTool::new(&tool.manifest.name, &arguments);
@@ -379,10 +376,9 @@ impl Orchestrator {
     /// Executa um runner `repository`: o alvo é um repositório, não um host.
     ///
     /// O repositório local é canonicalizado e montado **somente leitura** em um
-    /// ponto fixo do container; um alvo remoto autorizado é repassado como URI
-    /// e não gera mount algum. Nenhum caminho do host atravessa o comando, e o
-    /// repositório analisado nunca é montado para escrita nem recebe o resultado
-    /// da varredura.
+    /// ponto fixo do container; um alvo remoto autorizado vira URI, sem mount.
+    /// Nenhum caminho do host atravessa o comando, e o repositório nunca é
+    /// montado para escrita nem recebe o resultado da varredura.
     async fn execute_repository(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
         let repository = match crate::tools::repository::resolve(target) {
             Ok(repository) => repository,
@@ -561,13 +557,10 @@ impl Orchestrator {
     /// Interpreta os achados com o serviço único de análise da IA.
     ///
     /// Único caminho para a IA interpretar logs, usado pela TUI e pelo modo
-    /// headless. Concentrar a chamada aqui impede que os dois modos voltem a
-    /// divergir (issue #23) e garante que consentimento, teto de 45 s (RNF04),
-    /// validação da resposta e fallback sejam sempre os mesmos.
-    ///
-    /// O serviço é um campo do orquestrador, e não uma instância criada por
-    /// chamada: os dois modos de execução recebem a mesma configuração de prazo,
-    /// o que torna a unificação observável em vez de apenas declarada.
+    /// headless (issue #23): concentrar a chamada garante que consentimento,
+    /// teto de 45 s (RNF04), validação da resposta e fallback sejam os mesmos
+    /// nos dois modos. O serviço é campo do orquestrador, e não instância por
+    /// chamada, para os dois receberem a mesma configuração de prazo.
     pub async fn analyze_findings(&mut self) -> AnalysisResult {
         self.agent_trail.record_analysis_started(
             &self.config.provider_mode,
@@ -586,16 +579,15 @@ impl Orchestrator {
 
     /// Executa a fase do agente de código, depois dos scanners.
     ///
-    /// A fase é **best effort** por desenho: ela roda depois que os achados já
-    /// estão construídos e não pode impedir o relatório de ser gravado. Se o
-    /// diretório do projeto não puder ser aberto, ou se o provedor não
-    /// suportar tool calling, cada achado recebe "localização não determinada"
-    /// com o motivo registrado, e o pipeline segue para o relatório.
+    /// A fase é **best effort** por desenho: não pode impedir o relatório de ser
+    /// gravado. Se o projeto não puder ser aberto, ou se o provedor não suportar
+    /// tool calling, cada achado recebe "localização não determinada" com o
+    /// motivo registrado, e o pipeline segue para o relatório.
     ///
-    /// `run_command` **não** recebe allowlist aqui: o agente entra em modo
-    /// somente leitura por padrão, e a execução de comandos exigiria um opt-in
-    /// explícito que não existe no contrato da configuração atual. A ferramenta
-    /// permanece registrada e é recusada com mensagem acionável.
+    /// `run_command` **não** recebe allowlist aqui: o modo é somente leitura por
+    /// padrão, e execução de comandos exigiria um opt-in que não existe no
+    /// contrato da configuração atual; a ferramenta fica registrada e é recusada
+    /// com mensagem acionável.
     pub fn audit_code(&mut self) -> crate::code_audit::CodeAuditReport {
         let report = crate::code_audit::audit_project(
             &self.config.effective_project_dir(),
@@ -627,10 +619,9 @@ impl Orchestrator {
                 let model = self.agent.model.clone();
                 let label = self.agent.configured_provider_label();
                 // RNF10 é consultado **antes** do primeiro turno: o consentimento
-                // que a issue #23 já exige para enviar logs é o mesmo que
-                // precisa cobrir trechos do código do alvo, que são o ativo mais
-                // sensível do cliente. Sem esta checagem, um provedor remoto sem
-                // consentimento receberia o código-fonte auditado.
+                // da issue #23 para enviar logs precisa cobrir os trechos do
+                // código do alvo, o ativo mais sensível; sem a checagem, um
+                // provedor remoto sem consentimento receberia o código-fonte.
                 if !self.agent.allows_target_data() {
                     self.agent_trail.record_event(
                         &crate::code_agent::progress::CodeAgentEvent::Finished {
@@ -690,10 +681,9 @@ impl Orchestrator {
 
     /// Escreve a localização e a correção no contrato de cada achado.
     ///
-    /// O índice do relatório casa com a posição do achado na lista original, e
-    /// é essa correspondência que permite gravar o resultado **sem** reordenar
-    /// nem reclassificar: a severidade continua exatamente a que o scanner
-    /// produziu.
+    /// O índice do relatório casa com a posição na lista original: gravar o
+    /// resultado **sem** reordenar nem reclassificar mantém a severidade
+    /// exatamente a que o scanner produziu.
     fn apply_code_report(&mut self, report: &CodeAnalysisReport) {
         for analysis in &report.findings {
             let Some(finding) = self.findings.get_mut(analysis.finding_index) else {
@@ -736,7 +726,7 @@ impl Orchestrator {
                         );
                     real_findings.extend(parsed);
                     if !errors.is_empty() {
-                        // A malformed JSONL record is an execution diagnostic, not a clean scan.
+                        // Registro JSONL malformado é diagnóstico de execução, não varredura limpa.
                         let message = errors.join("; ");
                         exec.execution_error = Some(message);
                     }
@@ -844,12 +834,12 @@ impl Orchestrator {
             })
     }
 
-    /// Executa as ferramentas selecionados respeitando pausa, retomada,
+    /// Executa as ferramentas selecionadas respeitando pausa, retomada,
     /// cancelamento e a regra automática de interrupção.
     ///
     /// O cancelamento encerra o container em execução de forma cooperativa pelo
     /// canal compartilhado; a pausa e a retomada viram `podman pause` e
-    /// `podman unpause` no container real, não apenas uma pausa do laço.
+    /// `podman unpause` no container real.
     #[allow(dead_code)]
     pub async fn run_full_pipeline(
         &mut self,
@@ -1006,9 +996,9 @@ fn now_iso8601() -> String {
 
 /// Diretório temporário que recebe o plano de automação do ZAP.
 ///
-/// O plano é gerado em memória e gravado aqui; o executor o monta em somente
-/// leitura no container. O diretório vive no `TMPDIR` do host, é específico
-/// desta execução e é removido ao final.
+/// O plano é gerado em memória e gravado aqui, montado em somente leitura no
+/// container; o diretório vive no `TMPDIR` do host, é específico desta execução
+/// e é removido ao final.
 fn zap_plan_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "smartsec-zap-plano-{}-{}",
@@ -1349,10 +1339,9 @@ mod tests {
     /// A fase do agente de código grava a origem no achado sem reordenar a lista
     /// nem reclassificar a severidade.
     ///
-    /// É o contrato público da issue #76: o scanner continua sendo a
-    /// autoridade da severidade (TCC_SPEC, seção 7) e o agente apenas aponta
-    /// onde corrigir. Um teste que passasse mesmo reordenando os achados não
-    /// provaria nada.
+    /// Contrato da issue #76: o scanner é a autoridade da severidade (TCC_SPEC,
+    /// seção 7) e o agente apenas aponta onde corrigir; um teste que passasse
+    /// mesmo reordenando os achados não provaria nada.
     #[tokio::test]
     async fn the_code_phase_writes_the_location_without_touching_severity() {
         use crate::domain::vulnerability::CodeLocation;

@@ -6,8 +6,8 @@ use std::collections::HashSet;
 
 /// ID do Nikto que indica que nenhum servidor web respondeu no alvo.
 ///
-/// O Nikto termina com exit status 0 nesse caso, então o item precisa ser
-/// reconhecido como diagnóstico pelo próprio ID, sem procurar por texto.
+/// O Nikto termina com exit status 0 nesse caso, então o item é reconhecido como
+/// diagnóstico pelo próprio ID, sem procurar por texto.
 const ID_SEM_SERVIDOR_WEB: &str = "000029";
 
 /// Título e evidência são limitados para caber no relatório sem truncar a
@@ -17,9 +17,9 @@ const EVIDENCE_LIMIT: usize = 300;
 
 /// Relatório JSON do Nikto para um host.
 ///
-/// Os campos de identificação do host são opcionais porque, quando nenhum
-/// servidor web responde, o Nikto emite um objeto de achado avulso em vez do
-/// relatório completo.
+/// Os campos de identificação do host são opcionais: quando nenhum servidor web
+/// responde, o Nikto emite um objeto de achado avulso em vez do relatório
+/// completo.
 #[derive(Deserialize, Debug)]
 struct NiktoReport {
     #[serde(default)]
@@ -73,9 +73,8 @@ fn truncate(value: &str, limit: usize) -> String {
 
 /// Constrói a URL absoluta a partir do alvo e do caminho devolvido pelo Nikto.
 ///
-/// O Nikto reporta o caminho testado (`/admin/`). Preservar a URL absoluta é
-/// o que torna o achado acionável, e a query string é removida pela
-/// sanitização.
+/// O Nikto reporta o caminho testado (`/admin/`); a URL absoluta torna o achado
+/// acionável, e a query string é removida pela sanitização.
 fn absolute_url(target: &str, path: &str) -> String {
     let path = path.trim();
     if path.is_empty() {
@@ -94,12 +93,10 @@ fn absolute_url(target: &str, path: &str) -> String {
 
 /// Traduz a taxonomia de IDs do Nikto para a severidade do SmartSec.
 ///
-/// O Nikto não emite um campo `severity`: a informação estruturada que ele
-/// publica é a faixa do ID do teste, que separa as categorias do scanner
-/// (`db_tests`, `db_outdated`, `db_realms`, `db_server_msgs`,
-/// `db_httpoptions`, `db_embedded`), e a referência OSVDB. A faixa do scanner é
-/// a fonte autoritativa e por isso define a severidade, sem interpretar o
-/// texto da mensagem.
+/// O Nikto não emite `severity`: a informação estruturada é a faixa do ID do
+/// teste — as categorias do scanner (`db_tests`, `db_outdated`, `db_realms`,
+/// `db_server_msgs`, `db_httpoptions`, `db_embedded`) — e a referência OSVDB;
+/// essa taxonomia é a fonte autoritativa, sem interpretar o texto da mensagem.
 fn severity_for(id: &str, osvdb: &str) -> Severity {
     if has_osvdb_reference(osvdb) {
         return Severity::High;
@@ -113,7 +110,7 @@ fn severity_for(id: &str, osvdb: &str) -> Severity {
         '3' | '4' | '5' => Severity::Medium,
         // `db_outdated`: software desatualizado, risco real de exploração.
         '6' => Severity::Medium,
-        // `db_realms` e `db_content_search`: information disclosure.
+        // `db_realms` e `db_content_search`: exposição de informação.
         '7' | '8' => Severity::Low,
         // `db_tests` e os IDs gerados pelos plugins de cabeçalho e robots:
         // misconfiguração e hardening.
@@ -143,8 +140,8 @@ fn reference_for(id: &str, osvdb: &str) -> String {
 /// completa.
 ///
 /// URL, método HTTP, referência (ID do Nikto e OSVDB) e evidência são
-/// preservados. Itens que o Nikto classifica como diagnóstico não viram
-/// vulnerabilidade: eles são devolvidos como erro de execução.
+/// preservados; itens que o Nikto classifica como diagnóstico não viram
+/// vulnerabilidade, e sim erro de execução.
 #[allow(dead_code)]
 pub fn parse_nikto_findings(json_output: &str, target: &str) -> Vec<Vulnerability> {
     parse_nikto_findings_with_errors(json_output, target).0
@@ -398,7 +395,7 @@ mod tests {
         assert_eq!(severity_for("400001", "0"), Severity::Medium);
         // db_tests e IDs de plugin (misconfiguração e hardening).
         assert_eq!(severity_for("999957", "0"), Severity::Low);
-        // db_server_msgs (information disclosure).
+        // db_server_msgs (exposição de informação).
         assert_eq!(severity_for("800001", "0"), Severity::Low);
         // Referência OSVDB prevalece sobre a faixa.
         assert_eq!(severity_for("000001", "4321"), Severity::High);

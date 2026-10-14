@@ -58,21 +58,15 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn render_overview(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    // Uma linha extra é reservada quando o enriquecimento CVE/NVD degradou, para
-    // que a indisponibilidade da NVD fique visível sem cortar o painel de 80x24.
-    // Altura do resumo: metricas (2) + alvo e projeto na mesma linha (1) +
-    // resumo da IA (1) + auditoria (1), e mais uma quando o aviso de
-    // indisponibilidade do enriquecimento CVE/NVD esta presente. Encolher faria
-    // a linha de auditoria sumir em 80x24, que e o terminal que RNF07 exige.
+    // Altura do resumo com o aviso de indisponibilidade do CVE/NVD: métricas (2)
+    // + alvo e projeto (1) + IA (1) + auditoria (1), mais uma quando o aviso
+    // existe. Encolher faria a auditoria sumir em 80x24, que RNF07 exige.
     let summary_height: u16 = if app.enrichment_warning.is_some() {
         8
     } else {
         7
     };
     let rows = Layout::vertical([
-        // A altura acompanha o conteudo: com o aviso de indisponibilidade do
-        // enriquecimento CVE/NVD o resumo ganha uma linha. Encolher faria a
-        // linha de auditoria sumir em 80x24, que e o terminal que RNF07 exige.
         Constraint::Length(summary_height),
         Constraint::Min(1),
         Constraint::Length(2),
@@ -188,10 +182,9 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
         vec![
             severities[0].clone(),
             severities[1].clone(),
-            // Alvo e projeto analisado dividem a mesma linha: em 80x24 cada
-            // linha extra empurra a linha de auditoria para fora da tela, e a
-            // auditoria e o registro que o TCC exige. Os dois paths continuam
-            // visiveis, cada um com a sua cota de largura.
+            // Alvo e projeto dividem a mesma linha: em 80x24 uma linha extra
+            // empurraria a auditoria para fora da tela, e a auditoria é o
+            // registro que o TCC exige.
             Line::from(vec![
                 Span::styled("alvo  ", Style::default().fg(MUTED)),
                 Span::styled(
@@ -435,11 +428,8 @@ fn append_enrichment(
     }
 }
 
-/// Quebra um texto **possuído** em linhas do terminal.
-///
-/// `append_wrapped` aceita qualquer referência, mas o detalhe do resultado é
-/// montado com `Line<'static>`, então o texto precisa ser propriedade do
-/// próprio `Line` em vez de apontar para o `Vulnerability`.
+/// Quebra um texto **possuído** em linhas do terminal para `Line<'static>`:
+/// o texto precisa ser propriedade do `Line`, não apontar para o `Vulnerability`.
 fn push_wrapped_owned<'a>(lines: &mut Vec<Line<'a>>, value: String, width: usize, color: Color) {
     for line in wrap_text(&value, width.max(1)) {
         lines.push(Line::styled(line, Style::default().fg(color)));
@@ -453,12 +443,9 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
     let inner = block.inner(rows[0]);
     frame.render_widget(block, rows[0]);
     let vulnerabilities = app.vulnerabilities();
-    // O item e clonado, e nao emprestado: as linhas do painel sao `Line<'static>`
-    // porque o painel e redesenhado a cada quadro e o vetor de achados e recriado
-    // a cada chamada, entao elas nao podem depender do emprestimo.
+    // O item é clonado, não emprestado: o vetor de achados é recriado a cada
+    // chamada e as linhas do painel são `Line<'static>`.
     if let Some(item) = vulnerabilities.get(index).cloned() {
-        // `Line<'static>` explicito: as linhas precisam ser independentes do
-        // vetor de achados, que morre no fim desta funcao.
         let mut lines: Vec<Line<'static>> = vec![
             Line::from(vec![
                 Span::styled(
@@ -499,9 +486,8 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
         let evidence = crate::utils::redaction::sanitize_text(&item.evidence);
         append_wrapped(&mut lines, &evidence, inner.width as usize, ACCENT);
         lines.push(Line::from(""));
-        // A origem no código e a correcao proposta pelo agente de codigo (#76)
-        // vem depois da evidencia: a evidencia prova o que o scanner viu, e a
-        // localizacao aponta onde corrigir.
+        // A origem no código (#76) vem depois da evidência: a evidência prova o
+        // que o scanner viu; a localização aponta onde corrigir.
         append_code_location(
             app,
             &mut lines,
@@ -656,9 +642,8 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
 /// Mostra a origem no código e os passos de correção de um achado.
 ///
-/// A ausência de origem é explícita e nunca é substituída por um caminho ou
-/// linha inventados: o painel diz "localização não determinada" e o operador
-/// sabe que precisa de outra fonte, em vez de perseguir um arquivo errado.
+/// A ausência de origem é explícita, nunca substituída por um caminho ou linha
+/// inventados.
 fn append_code_location(
     app: &AppState,
     lines: &mut Vec<Line<'static>>,
@@ -666,10 +651,8 @@ fn append_code_location(
     remediation: Vec<String>,
     width: usize,
 ) {
-    // As linhas são `Line<'static>`: o painel é redesenhado a cada quadro e o
-    // relatório da fase é reconstruído a cada execução, então as poucas strings
-    // envolvidas são clonadas em vez de emprestarem o lifetime do vetor de
-    // achados.
+    // As linhas são `Line<'static>`: as strings são clonadas, não emprestadas do
+    // vetor de achados, recriado a cada quadro.
     lines.push(Line::styled(
         "Localização no código",
         Style::default().fg(TEXT).bold(),

@@ -15,7 +15,7 @@ const PODMAN_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 const ROOTLESS_NETWORK: &str = "pasta:--map-host-loopback=169.254.1.2";
 const DEFAULT_MEMORY_LIMIT: &str = "512m";
 
-/// Opções de montaje do diretório gravável de saída de uma ferramenta.
+/// Opções de montagem do diretório gravável de saída de uma ferramenta.
 ///
 /// É o único ponto de escrita do container fora das tmpfs: o executor cria um
 /// diretório **vazio** no `TMPDIR` do host e o monta em `container_dir` com
@@ -43,13 +43,11 @@ impl WritableOutput {
     /// modo que só o processo e o container o alcançam.
     ///
     /// O `TMPDIR` é **verificado** como `tmpfs` antes de o diretório ser criado,
-    /// conforme a regra de isolamento do TCC. A condição não é presumida: um
-    /// `TMPDIR` que aponte para um diretório comum em disco — o caso de um
-    /// runner de CI, por exemplo — faria o executor montar em bind mount um
-    /// diretório persistente e gravaria o relatório do scanner fora da regra,
-    /// em silêncio. Por isso a criação falha nesse caso; não há degradação para
-    /// escrita fora da regra. Ver [`crate::orchestrator::tmpfs`] para o método de
-    /// verificação e suas limitações.
+    /// conforme a regra de isolamento do TCC: um `TMPDIR` em disco comum — runner
+    /// de CI, por exemplo — montaria um bind mount persistente e gravaria o
+    /// relatório fora da regra, em silêncio; por isso a criação falha em vez de
+    /// degradar. Ver [`crate::orchestrator::tmpfs`] para a verificação e suas
+    /// limitações.
     pub fn new(container_dir: &str, file_name: &str) -> std::io::Result<Self> {
         Self::new_in(
             &std::env::temp_dir(),
@@ -60,13 +58,10 @@ impl WritableOutput {
     }
 
     /// Igual a [`WritableOutput::new`], com o diretório base e a fonte do tipo de
-    /// filesystem injetados.
-    ///
-    /// Existe para que o caminho negativo da verificação (diretório em disco
-    /// comum) seja testável sem depender da máquina de teste: o teste aponta o
-    /// diretório base para um diretório próprio e afirma que nada é criado
-    /// dentro dele quando a regra é violada. O fluxo real sempre usa o `TMPDIR`
-    /// do processo e `/proc/self/mountinfo`.
+    /// filesystem injetados, para que o caminho negativo da verificação
+    /// (diretório em disco comum) seja testável sem depender da máquina: o teste
+    /// aponta um diretório próprio e afirma que nada é criado quando a regra é
+    /// violada. O fluxo real usa o `TMPDIR` do processo e `/proc/self/mountinfo`.
     fn new_in(
         base_dir: &Path,
         container_dir: &str,
@@ -393,10 +388,9 @@ struct ExecutionProfile<'a> {
 
 /// Coletor do trace operacional completo de uma execução Podman.
 ///
-/// Cada linha recebe timestamp e é acumulada para auditoria; quando há um
-/// `sink`, a mesma linha é encaminhada ao vivo (TUI/headless). Nada do que o
-/// Podman emite é descartado: comandos executados, saída do pull de imagem,
-/// saída do scanner e resultado da limpeza.
+/// Cada linha recebe timestamp e é acumulada para auditoria; com um `sink`, vai
+/// ao vivo (TUI/headless). Nada do que o Podman emite é descartado: comandos,
+/// pull da imagem, saída do scanner e limpeza.
 struct TraceCollector {
     sink: Option<mpsc::UnboundedSender<String>>,
     lines: Vec<String>,
@@ -484,28 +478,16 @@ impl PodmanExecutor {
 
     /// Executa a varredura coletando um artefato escrito pelo container.
     ///
-    /// É a contraparte de [`PodmanExecutor::execute_with_mounts`] para
-    /// scanners que **só** conseguem gravar um arquivo estruturado — como o
-    /// ZAP, cujo job `report` sempre acrescenta a extensão do template ao nome e
-    /// portanto nunca escreve no stdout.
-    ///
-    /// O executor cria o diretório de saída vazio no `TMPDIR` do host e monta
-    /// apenas esse diretório, com `rw,noexec,nosuid,nodev`, em
-    /// `output.container_dir`. Depois da execução e **antes** de remover o
-    /// container, o arquivo é lido e devolvido em
-    /// [`ExecutionResult::artifact`].
-    ///
-    /// A coleta não usa `podman cp`: o tmpfs do container é desmontado quando o
-    /// container encerra, então um artefato em `/tmp` (tmpfs) é irrecuperável
-    /// depois da saída. Como o diretório de saída é um bind mount do host, o
-    /// arquivo já está no host e lê-lo diretamente evita uma operação extra de
-    /// host que só funcionaria por acidente (ver
-    /// `docs/evidence/issue-28-zap.md`).
+    /// Contraparte de [`PodmanExecutor::execute_with_mounts`] para scanners que
+    /// **só** gravam arquivo — como o ZAP, cujo job `report` nunca escreve no
+    /// stdout. O artefato é lido de `output` **antes** de o container ser
+    /// removido e devolvido em [`ExecutionResult::artifact`], sem `podman cp`: o
+    /// tmpfs do container é desmontado ao encerrar, e o diretório de saída é bind
+    /// mount do host (ver `docs/evidence/issue-28-zap.md`).
     ///
     /// Artefato ausente não derruba a varredura: o motivo vai para
-    /// [`ExecutionResult::artifact_error`] e a varredura segue marcada como
-    /// falha pelo pipeline, nunca como varredura limpa. O guard de limpeza
-    /// permanece armado em todos esses caminhos, então nenhum container vaza.
+    /// [`ExecutionResult::artifact_error`] e a varredura segue como falha, nunca
+    /// como limpa; o guard de limpeza permanece armado.
     pub async fn execute_with_artifact(
         &self,
         image: &str,
@@ -841,8 +823,8 @@ impl PodmanExecutor {
                     Some(ControlMessage::Event(ContainerControlEvent::Stopped)) => {
                         break ExecutionStatus::Cancelled;
                     }
-                    // O controlador terminou sem cancelar: a execucao segue
-                    // sob observacao apenas do timeout e do processo.
+                    // O controlador terminou sem cancelar: a execução segue
+                    // sob observação apenas do timeout e do processo.
                     None => messages = None,
                 }
             }
@@ -858,10 +840,9 @@ impl PodmanExecutor {
         if let Some(controller) = controller {
             controller.abort();
         }
-        // Corrida entre o fim do processo e o aviso do controlador: quando o
-        // `podman stop` mata o scanner, o `start --attach` pode encerrar antes
-        // de a mensagem chegar. O cancelamento pedido continua sendo o motivo,
-        // e não uma falha do scanner.
+        // Corrida entre o fim do processo e o aviso do controlador: o
+        // `start --attach` pode encerrar antes de a mensagem chegar; o
+        // cancelamento pedido continua sendo o motivo, não uma falha do scanner.
         let status = match (&self.control, &status) {
             (Some(control), ExecutionStatus::Failed(_))
                 if *control.borrow() == RunControl::Cancelled =>
@@ -1102,11 +1083,10 @@ where
                 bytes.extend_from_slice(&chunk);
                 let lossy = String::from_utf8_lossy(&chunk);
                 let raw_line = lossy.trim_end_matches(['\r', '\n']);
-                // O trace vai para o sink da TUI e do modo headless ao vivo, e
-                // também para o log estruturado. Sanitizar aqui é obrigatório:
-                // o stdout do TruffleHog carrega o valor do segredo em `Raw`,
-                // `RawV2`, `Redacted` e `SecretParts`, e sem esta etapa o
-                // segredo apareceria em tela em tempo real.
+                // O trace vai ao vivo para a TUI/headless e para o log
+                // estruturado. Sanitizar aqui é obrigatório: o stdout do TruffleHog
+                // carrega o valor do segredo em `Raw`, `RawV2`, `Redacted` e
+                // `SecretParts`, e sem esta etapa ele apareceria em tela.
                 let display = crate::utils::redaction::sanitize_text(raw_line);
                 let line = format!("[{}] {display}", timestamp());
                 if let Some(sink) = &sink {
@@ -1867,12 +1847,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_stopped_container_is_cancelled_not_failed() {
-        // O `podman stop` mata o scanner e o `start --attach` retorna com 137.
-        // A execução tem de ser registrada como cancelada, e não como falha do
-        // scanner: o cancelamento foi pedido, o scanner não falhou.
-        // O `stop` do fake é lento, e o scanner morre antes dele responder: o
-        // `start --attach` encerra primeiro, com o laço ainda esperando o aviso
-        // do controlador. É a corrida descrita no código.
+        // O `podman stop` mata o scanner e o `start --attach` retorna com 137: a
+        // execução precisa ser registrada como cancelada, não como falha do
+        // scanner. O `stop` do fake é lento e o `start` encerra antes do aviso do
+        // controlador — é a corrida descrita no código.
         let fake = FakePodman::with_control_scripts(
             "printf 'container-123\\n'",
             "sleep 0.4; kill -TERM $$; sleep 30",

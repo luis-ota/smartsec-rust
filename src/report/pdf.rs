@@ -1,20 +1,16 @@
 //! Renderização do relatório em PDF (REQ18).
 //!
-//! O PDF é desenhado a partir da **mesma** string Markdown já sanitizada que
-//! [`super::generator::ReportGenerator::export_to_markdown`] grava. Renderizar
-//! um e outro a partir de uma única fonte é o que impede que os dois artefatos
-//! divirjam: o `.pdf` não tem como mostrar um segredo que o `.md` removeu.
+//! O PDF é desenhado a partir da **mesma** string Markdown sanitizada que
+//! [`super::generator::ReportGenerator::export_to_markdown`] grava: é o que
+//! impede o `.pdf` de mostrar um segredo que o `.md` removeu.
 //!
-//! A fonte é a Noto Sans (SIL OFL 1.1), embutida no repositório. O relatório é
-//! escrito em português brasileiro com acentos, e as 14 fontes padrão do PDF
-//! não têm `cmap` Unicode: sem fonte própria os caracteres saem quebrados.
+//! A fonte é a Noto Sans (SIL OFL 1.1), embutida no repositório — as 14 fontes
+//! padrão do PDF não têm `cmap` Unicode e os acentos sairiam quebrados.
 //!
-//! Limitação medida: com `default-features = false` o `printpdf` 0.12.8 **não**
-//! subdefine a fonte — `font::subset_font` só monta o subconjunto na
-//! configuração `text_layout` e, sem ela, devolve os bytes originais inteiros.
-//! Como `text_layout` é a feature que traria `azul-layout` e `rust-fontconfig`,
-//! cada PDF embute a Noto Sans completa (~290 KB comprimidos, quase tudo do
-//! arquivo). O texto continua correto e extraível; o custo é só de tamanho.
+//! Limitação medida: com `default-features = false` o `printpdf` 0.12.8 não
+//! subdefine a fonte (`font::subset_font` exige a configuração `text_layout`),
+//! então cada PDF embute a Noto Sans completa (~290 KB comprimidos, quase tudo
+//! do arquivo). O texto continua correto e extraível.
 
 use anyhow::{anyhow, Result};
 use printpdf::{
@@ -42,7 +38,7 @@ const SIZE_SUBHEADING: f32 = 10.5;
 const SIZE_BODY: f32 = 9.0;
 const LEADING_BODY: f32 = 12.5;
 const BULLET_INDENT: f32 = 12.0;
-/// Fração da altura útil que um bloco de cabeçalho reserva acima do título.
+/// Espaçamento, em pontos, reservado abaixo de um título de seção.
 const HEADING_SPACE_BELOW: f32 = 4.0;
 /// Espessura do traço que substitui o peso Bold da Noto Sans.
 const BOLD_STROKE_PT: f32 = 0.32;
@@ -81,11 +77,11 @@ const COLOR_TABLE_ZEBRA: Rgb = Rgb {
 /// Largura reservada à coluna de rótulo da tabela de severidades.
 const TABLE_LABEL_WIDTH: f32 = 190.0;
 
-/// Converte um bloco de `Op` de Markdown em bytes de PDF.
+/// Converte o Markdown em bytes de PDF.
 ///
-/// A string recebida já passou por `sanitize_text`/`sanitize_url` e por
-/// [`super::generator::escape_markdown`]; aqui o escape é desfeito para que o
-/// leitor veja o caractere real e não a sequência `\*`.
+/// A string já passou por `sanitize_text`/`sanitize_url` e por
+/// [`super::generator::escape_markdown`]; aqui o escape é desfeito para o leitor
+/// ver o caractere real, não a sequência `\*`.
 pub fn render(markdown: &str) -> Result<Vec<u8>> {
     let font = ParsedFont::from_bytes(NOTO_SANS_REGULAR, 0, &mut Vec::new())
         .ok_or_else(|| anyhow!("a fonte Noto Sans embutida não pôde ser interpretada"))?;
@@ -128,18 +124,16 @@ pub fn render(markdown: &str) -> Result<Vec<u8>> {
 #[derive(Debug, PartialEq)]
 enum Block {
     Heading(u8, String),
-    /// Item de lista no formato `rótulo: valor`, laid out como tabela.
+    /// Item de lista no formato `rótulo: valor`, disposto como tabela.
     Row(String, String),
     Bullet(String),
     Paragraph(String),
     Spacer,
 }
 
-/// Interpreta o subconjunto de Markdown que `compile_report` produz.
-///
-/// Cobre títulos, itens de lista, parágrafos e o parágrafo `**Rótulo:** valor`.
-/// Marcação desconhecida vira texto literal, nunca erro: um achado malformado
-/// não pode impedir a geração do relatório.
+/// Interpreta o subconjunto de Markdown que `compile_report` produz: títulos,
+/// listas, parágrafos e o formato `**Rótulo:** valor`. Marcação desconhecida
+/// vira texto literal, nunca erro — um achado malformado não derruba o relatório.
 fn parse_markdown(markdown: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     for line in markdown.lines() {
@@ -269,9 +263,8 @@ impl Writer<'_> {
 
     /// Linha da tabela de severidades: rótulo na esquerda, valor na direita.
     ///
-    /// Rótulo e valor quebram dentro da própria coluna: um erro de execução
-    /// longo (`Ferramenta | Status | Duração`) não pode vazar para fora da
-    /// margem e sumir da página.
+    /// Cada coluna quebra dentro de si: um erro longo (`Ferramenta | Status |
+    /// Duração`) não pode vazar da margem e sumir da página.
     fn table_row(&mut self, label: &str, value: &str) {
         let label_width = TABLE_LABEL_WIDTH - 12.0;
         let value_width = CONTENT_WIDTH - TABLE_LABEL_WIDTH - 6.0;
@@ -352,9 +345,8 @@ impl Writer<'_> {
             col: Color::Rgb(color.clone()),
         });
         // Cor de traço, modo de renderização e espessura são sempre emitidos: o
-        // modo de renderização e a cor de traço pertencem ao estado de texto do
-        // PDF e sobrevivem ao fim de cada seção. Sem isso, um corpo de texto
-        // logo depois de um título herdaria o traço da cor do título.
+        // estado de texto do PDF sobrevive ao fim da seção, e sem isso um corpo
+        // logo após um título herdaria o traço da cor do título.
         self.ops.push(Op::SetOutlineColor {
             col: Color::Rgb(color.clone()),
         });
@@ -460,9 +452,8 @@ fn point(x: f32, y_from_top: f32) -> LinePoint {
 impl Writer<'_> {
     /// Largura de `text` em pontos, medida com as métricas reais da fonte.
     ///
-    /// A largura real vem do `hmtx` da Noto Sans (1000 upem); estimar por
-    /// contagem de caracteres faria a quebra de linha errar em português, onde
-    /// `ã` e `l` têm larguras muito diferentes.
+    /// A largura vem do `hmtx` da Noto Sans (1000 upem): estimar por contagem de
+    /// caracteres erraria a quebra em português, onde `ã` e `l` diferem muito.
     fn width(&self, text: &str, size: f32) -> f32 {
         let upem = self.font.units_per_em.max(1) as f32;
         text.chars()

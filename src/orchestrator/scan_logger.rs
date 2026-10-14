@@ -76,7 +76,7 @@ pub struct ScanMetadata {
     #[serde(default)]
     pub llm_model: String,
     /// Provedor que **efetivamente** respondeu, em pt-BR. Difere de
-    /// `llm_provider` quando a alternativa local respondem, e vale `Nenhuma`
+    /// `llm_provider` quando a alternativa local responde, e vale `Nenhuma`
     /// quando a análise foi determinística.
     #[serde(default)]
     pub llm_provider_effective: String,
@@ -107,13 +107,12 @@ pub struct ScanMetadata {
     #[serde(default)]
     pub decisions: Vec<DecisionRecord>,
     /// Motivo da interrupção automática (REQ05) ou do cancelamento (REQ14).
-    /// Ausente em logs gravados antes da feature, que continuam legíveis.
+    /// Ausente em logs gravados antes deste campo, que continuam legíveis.
     #[serde(default)]
     pub interruption: Option<crate::orchestrator::control::InterruptionReason>,
     /// Resumo da correlação e do enriquecimento CVE/NVD (issue #19).
-    ///
-    /// `#[serde(default)]` porque logs gravados antes da issue #19 não têm
-    /// esta chave e precisam continuar carregando.
+    /// `#[serde(default)]`: logs gravados antes dela não têm esta chave e
+    /// precisam continuar carregando.
     #[serde(default)]
     pub enrichment: crate::orchestrator::enrichment::EnrichmentSummary,
     /// Diretório canônico do projeto analisado pelo agente de código (#76).
@@ -426,10 +425,9 @@ impl ScanMetadata {
             code_project_dir: sanitize(&self.code_project_dir),
             code_located_count: self.code_located_count,
             code_tool_calls_count: self.code_tool_calls_count,
-            // As chamadas de ferramenta são sanitizadas aqui e não no
-            // registro: um `snippet` de arquivo e um argumento de comando
-            // chegam do código do alvo e podem conter segredo, e o log
-            // estruturado é o arquivo que sobrevive ao scan.
+            // As chamadas são sanitizadas aqui e não no registro: `snippet` de
+            // arquivo e argumentos de comando vêm do código do alvo e podem
+            // conter segredo, e o log é o arquivo que sobrevive ao scan.
             code_tool_calls: self
                 .code_tool_calls
                 .iter()
@@ -493,9 +491,9 @@ pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Re
 
 /// Lista o resumo de todos os scans estruturados gravados em um diretório.
 ///
-/// A listagem é somente leitura: nenhum arquivo do diretório é criado,
-/// reescrito ou removido. Registros ilegíveis são devolvidos em
-/// [`ScanHistory::unreadable`] em vez de sumirem em silêncio.
+/// A listagem é somente leitura (nada é criado, reescrito ou removido), e
+/// registros ilegíveis voltam em [`ScanHistory::unreadable`] em vez de sumirem
+/// em silêncio.
 pub fn list_scan_logs_from_dir(dir: &PathBuf) -> Result<ScanHistory> {
     let mut history = ScanHistory {
         directory_exists: dir.exists(),
@@ -754,18 +752,15 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// O `serde(default)` precisa estar em **todos** os campos novos, e não só
-    /// em alguns. Este teste serializa um metadado completo e remove os campos
-    /// de proveniência um a um: basta um deles sem `#[serde(default)]` para a
-    /// desserialização de um histórico antigo falhar, e a falha só apareceria em
-    /// produção, ao abrir um scan gravado antes desta issue.
-    /// O motivo da falha precisa sobreviver à redação.
+    /// O `serde(default)` precisa estar em **todos** os campos novos: basta um
+    /// deles sem a anotação para um histórico antigo deixar de carregar, e a
+    /// falha só apareceria em produção, ao abrir um scan gravado antes.
     ///
-    /// Regressão: a sanitização de texto de scanner substitui a linha inteira
-    /// por `[REDACTED]` quando encontra `request`, e o erro de transporte do
-    /// cliente HTTP sempre menciona "request". O campo `llm_failure_reason`
-    /// virava `[REDACTED]` em toda queda de provedor, ou seja, o registro
-    /// dizia que houve fallback sem dizer por quê.
+    /// O motivo da falha precisa sobreviver à redação. Regressão: a sanitização
+    /// de texto de scanner substitui a linha inteira por `[REDACTED]` quando
+    /// encontra `request`, e o erro de transporte do cliente HTTP sempre menciona
+    /// "request"; o campo `llm_failure_reason` virava `[REDACTED]` em toda queda
+    /// de provedor, dizendo que houve fallback sem dizer por quê.
     #[test]
     fn failure_reason_survives_redaction_with_the_reason_intact() {
         let metadata = ScanMetadata::new(
@@ -921,11 +916,9 @@ mod tests {
 
     /// Um log gravado **antes** da issue #76 precisa continuar carregando.
     ///
-    /// A falha seria silenciosa em produção: o histórico é aberto por um
-    /// operador, semanas depois, muito longe do commit que quebrou a leitura.
-    /// Por isso o teste desserializa um JSON com a forma real de um arquivo
-    /// antigo — sem nenhum dos campos novos, nem no cabeçalho nem dentro do
-    /// achado.
+    /// A falha seria silenciosa em produção: o histórico é aberto semanas depois,
+    /// longe do commit que quebrou a leitura. Por isso o JSON abaixo reproduz a
+    /// forma real de um arquivo antigo, sem nenhum campo novo.
     #[test]
     fn a_scan_log_written_before_the_code_agent_still_loads() {
         let legacy = r#"{

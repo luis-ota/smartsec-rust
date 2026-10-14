@@ -58,10 +58,9 @@ impl ReportGenerator {
         md.push_str(&format!("**Modo:** {}\n\n", config.execution_type));
         md.push_str("**Dados:** REAL\n\n");
         append_enrichment_section(&mut md, enrichment);
-        // O diretório do projeto entra no cabeçalho mesmo quando nenhum achado
-        // foi localizado: ele declara **qual árvore foi analisada**, e um
-        // relatório que não diz isso deixa a auditoria sem forma de saber se a
-        // fase de código rodou sobre o repositório certo.
+        // O diretório entra no cabeçalho mesmo sem achados: declara **qual
+        // árvore foi analisada**, e sem isso a auditoria não sabe se a fase de
+        // código rodou sobre o repositório certo.
         if let Some(project_dir) = project_dir {
             md.push_str(&format!(
                 "**Projeto analisado:** {}\n\n",
@@ -85,11 +84,9 @@ impl ReportGenerator {
         if !ai_analysis.trim().is_empty() {
             md.push_str("## Análise da IA\n\n");
             // A análise da IA passa pela mesma sanitização dos demais campos
-            // dinâmicos antes de ser escapada para Markdown. É o único trecho
-            // do relatório produzido por um modelo, e um modelo pode
-            // parafrasear o valor de um segredo detectado em vez de copiá-lo —
-            // o que a sanitização por palavra-chave do scanner não alcança
-            // depois que o texto passou por ele.
+            // dinâmicos: é o único trecho produzido por um modelo, que pode
+            // parafrasear um segredo em vez de copiá-lo — e isso escapa à
+            // sanitização por palavra-chave do scanner.
             let sanitized_analysis = crate::utils::redaction::sanitize_text(ai_analysis);
             md.push_str(&escape_markdown_block(&sanitized_analysis));
             md.push_str("\n\n");
@@ -236,12 +233,9 @@ fn append_code_analysis(md: &mut String, vulnerability: &Vulnerability) {
     }
 }
 
-/// Seção dedicada à análise do código.
-///
-/// A seção lista **todos** os achados, inclusive os sem origem, com o motivo da
-/// recusa quando houver. Omitir os não localizados faria o relatório parecer
-/// mais preciso do que foi: o número de achados sem origem é informação de
-/// auditoria, não ruído.
+/// Lista **todos** os achados, inclusive os sem origem (com o motivo, quando
+/// houver): omitir os não localizados faria o relatório parecer mais preciso do
+/// que foi, e a contagem sem origem é informação de auditoria.
 fn append_code_analysis_section(md: &mut String, vulns: &[Vulnerability]) {
     let located = vulns.iter().filter(|v| v.code_location.is_some()).count();
     md.push_str("\n## Localização no código\n\n");
@@ -310,29 +304,26 @@ fn write_report_file(path: &str, bytes: &[u8]) -> anyhow::Result<()> {
     })
 }
 
-/// Caracteres whose *inline* syntax is escapable by backslash in CommonMark.
+/// Caracteres cuja sintaxe *inline* é escapável com barra invertida no CommonMark.
 ///
-/// `<` and `>` are escapable too, which is what stops text coming from a scanner
-/// from being read as HTML. The list is deliberately narrow: `.`, `:`, `/`, `!`,
-/// `(`, `)`, `{`, `}` and `$` are left alone because they carry no inline
-/// meaning once `[`, `]`, `<` and `>` are escaped, and escaping them would
-/// corrupt legitimate report text such as `nginx/1.24.0 (Ubuntu)`, `3.14` and
+/// `<` e `>` também são escapáveis, e é isso que impede texto vindo de um
+/// scanner de ser lido como HTML. A lista é deliberadamente estreita: `.`, `:`,
+/// `/`, `!`, `(`, `)`, `{`, `}` e `$` ficam de fora porque não têm significado
+/// inline depois que `[`, `]`, `<` e `>` são escapados, e escapá-los
+/// corromperia texto legítimo como `nginx/1.24.0 (Ubuntu)`, `3.14` e
 /// `http://alvo.local/api/v1`.
 const MARKDOWN_ESCAPABLE: &[char] = &['\\', '`', '*', '_', '[', ']', '<', '>', '|', '~'];
 
-/// Characters that only mean something at the *start of a line*: headings,
-/// bullet and ordered lists, block quotes and setext underlines.
-///
-/// These are escaped only when they lead a line, so `pt-BR`, `--` and `+55 11`
-/// inside a sentence stay readable while a description line cannot promote
-/// itself to a heading.
+/// Caracteres que só significam algo no *início de uma linha*: cabeçalhos,
+/// listas, citações e sublinhas setext. São escapados apenas quando abrem a
+/// linha, então `pt-BR`, `--` e `+55 11` numa frase continuam legíveis sem que
+/// uma descrição se promova a cabeçalho.
 const MARKDOWN_LINE_PREFIX: &[char] = &['#', '-', '+', '>', '='];
 
 /// Marcador emitido por `sanitize_text` quando uma linha inteira é removida.
 ///
-/// Ele é produzido pelo SmartSec, não pelo scanner, então não é conteúdo
-/// dinâmico e não pode ser escapado: escapado viraria `\[REDACTED\]` no
-/// Markdown e o contrato de redação documentado nos testes deixaria de valer.
+/// É produzido pelo SmartSec, não pelo scanner: escapar viraria `\[REDACTED\]`
+/// no Markdown e quebraria o contrato de redação documentado nos testes.
 const REDACTION_MARKER: &str = "[REDACTED]";
 
 /// O mesmo marcador depois de passar por [`escape_markdown`], que colocaria uma
@@ -357,9 +348,8 @@ pub fn escape_markdown_block(text: &str) -> String {
 
 /// Implementação comum dos dois escapes.
 ///
-/// `block` habilita o escape de caractere inicial de linha e preserva a quebra
-/// de linha; no modo de linha única a quebra vira espaço, porque um título não
-/// pode abrir um bloco novo nem deslocar o conteúdo seguinte.
+/// `block` escapa o caractere inicial de linha e preserva a quebra; na linha
+/// única a quebra vira espaço, para o título não abrir um bloco novo.
 fn escape_with(text: &str, block: bool) -> String {
     let mut escaped = String::with_capacity(text.len());
     let mut line_start = true;
@@ -507,10 +497,9 @@ mod tests {
     use crate::domain::vulnerability::FindingSource;
     use crate::domain::Severity;
 
-    /// O relatório precisa declarar qual árvore de código foi analisada, mesmo
-    /// quando nenhum achado foi localizado. Sem isso, um relatório com a seção
-    /// "Localização no código" vazia seria indistinguível de uma fase que rodou e
-    /// não encontrou origem.
+    /// O relatório precisa declarar qual árvore foi analisada mesmo sem achados:
+    /// uma seção "Localização no código" vazia seria indistinguível de uma fase
+    /// que rodou e não encontrou origem.
     #[test]
     fn the_report_declares_the_analyzed_project() {
         let report = ReportGenerator::compile_report(
@@ -661,8 +650,8 @@ mod tests {
 
     /// Tabela de caracteres: o que precisa ser escapado e o que não pode ser.
     ///
-    /// A segunda coluna é o que o leitor precisa enxergar; a primeira garante que
-    /// nenhum caractere de sintaxe sobreviva sem escape.
+    /// A segunda coluna é o que o leitor enxerga; a primeira garante que nenhum
+    /// caractere de sintaxe sobreviva sem escape.
     #[test]
     fn escape_covers_markdown_syntax_without_touching_legitimate_text() {
         let escapados = [

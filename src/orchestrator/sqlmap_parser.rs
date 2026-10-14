@@ -50,9 +50,9 @@ fn clean_line(line: &str) -> String {
 
 /// Remove o prefixo `[hh:mm:ss] [LEVEL] ` das linhas do SQLMap.
 ///
-/// A mesma mensagem aparece com `[ERROR]` ou `[CRITICAL]` dependendo de o
-/// scanner estar conectado a um terminal, então o nível nunca é usado para
-/// decidir o significado da linha.
+/// A mesma mensagem aparece com `[ERROR]` ou `[CRITICAL]` conforme o scanner
+/// esteja conectado a um terminal, então o nível nunca decide o significado da
+/// linha.
 fn strip_timestamp(line: &str) -> Option<&str> {
     let rest = line.strip_prefix('[')?;
     let (_, rest) = rest.split_once(']')?;
@@ -87,8 +87,8 @@ fn field_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 /// Separa o parâmetro e o método HTTP de `Parameter: id (GET)`.
 ///
-/// O SQLMap escreve o método entre parênteses no fim do campo. Parâmetros sem
-/// parênteses continuam válidos: o método é simplesmente desconhecido.
+/// O SQLMap escreve o método entre parênteses no fim do campo; sem parênteses o
+/// parâmetro continua válido, com método desconhecido.
 fn split_parameter(field: &str) -> (String, Option<String>) {
     let field = field.trim();
     match field.rfind('(') {
@@ -119,20 +119,13 @@ fn split_parameter(field: &str) -> (String, Option<String>) {
 
 /// Traduz a taxonomia de tipos do próprio SQLMap para a severidade do SmartSec.
 ///
-/// O SQLMap não emite CVSS nem severidade: a informação estruturada que ele
-/// publica sobre a injeção é o campo `Type`, que é a classificação do próprio
-/// scanner para a técnica confirmada. Essa taxonomia é a fonte autoritativa,
-/// sem interpretar o texto da mensagem.
-///
-/// - `error-based` e `UNION query` exponham dados do banco diretamente na
-///   resposta e sobem para ALTA.
-/// - `stacked queries` executa statements arbitrários e é CRÍTICA. Não faz
-///   parte do conjunto `BEUT` adotado pelo manifesto, mas a taxonomia do
-///   scanner é preservada caso outra configuração o habilite.
-/// - `boolean-based blind` e `time-based blind` confirmam a falha de
-///   sanitização sem devolver conteúdo, e ficam em MÉDIA.
-/// - Qualquer tipo novo publicado pelo scanner é MÉDIA, nunca inferior: uma
-///   injeção confirmada pelo SQLMap é no mínimo esse nível.
+/// O SQLMap não emite CVSS nem severidade: o campo `Type` é a classificação
+/// autoritativa do scanner para a técnica confirmada, sem interpretar o texto
+/// da mensagem. `error-based` e `UNION query` (dados do banco na resposta) são
+/// ALTA; `stacked queries` (statements arbitrários) é CRÍTICA, fora do conjunto
+/// `BEUT` do manifesto mas preservada caso outra configuração a habilite;
+/// `boolean-based blind` e `time-based blind` confirmam a falha sem devolver
+/// conteúdo e ficam em MÉDIA; tipo novo é MÉDIA, nunca inferior.
 fn severity_for(injection_type: &str) -> Severity {
     match injection_type.trim().to_ascii_lowercase().as_str() {
         "error-based" | "union query" => Severity::High,
@@ -163,32 +156,25 @@ impl Injection {
 
 /// Lê o bloco de injeções confirmadas do SQLMap.
 ///
-/// O formato foi verificado na execução real e tem duas particularidades que a
-/// leitura precisa respeitar:
+/// Verificado na execução real: um `Parameter:` abre um grupo, não um achado —
+/// o parâmetro é escrito uma vez e cada `Type:` é um ponto de injeção distinto
+/// que herda o parâmetro corrente. Um novo `Parameter:` reinicia o grupo
+/// (separado do anterior por `---`) quando mais de um parâmetro é vulnerável:
 ///
-/// 1. **um `Parameter:` abre um grupo de técnicas, não um achado.** O SQLMap
-///    escreve o parâmetro uma vez e lista em seguida vários conjuntos de
-///    `Type:`, `Title:` e `Payload:` separados por linha em branco. Cada
-///    `Type:` é um ponto de injeção distinto que herda o parâmetro corrente:
+/// ```text
+/// Parameter: id (GET)
+///     Type: boolean-based blind
+///     Title: AND boolean-based blind - WHERE or HAVING clause
+///     Payload: ...
 ///
-///    ```text
-///    Parameter: id (GET)
-///        Type: boolean-based blind
-///        Title: AND boolean-based blind - WHERE or HAVING clause
-///        Payload: ...
-///
-///        Type: UNION query
-///        Title: Generic UNION query (NULL) - 1 column
-///        Payload: ...
-///    ```
-///
-/// 2. **um novo `Parameter:` reinicia o grupo**, separado do anterior por uma
-///    linha `---`, quando mais de um parâmetro é vulnerável.
+///     Type: UNION query
+///     Title: Generic UNION query (NULL) - 1 column
+///     Payload: ...
+/// ```
 ///
 /// O `Payload:` é consumido e descartado: é um fragmento com forma de query
-/// string, e a regra de sanitização do projeto proíbe query string em finding.
-/// O `Type` e o `Title`, que são a taxonomia do próprio scanner sobre a
-/// injeção, já descrevem o achado.
+/// string, e a regra do projeto proíbe query string em finding; `Type` e
+/// `Title`, a taxonomia do próprio scanner, já descrevem o achado.
 fn parse_injection_block(lines: &[&str]) -> (Vec<Injection>, Vec<String>) {
     let mut injections: Vec<Injection> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
@@ -258,11 +244,11 @@ fn parse_injection_block(lines: &[&str]) -> (Vec<Injection>, Vec<String>) {
     (injections, errors)
 }
 
-/// Fecha o grupo do `Parameter:` corrente e registra o erro quando o grupo
-/// não recebeu nenhum `Type:`.
+/// Fecha o grupo do `Parameter:` corrente e registra o erro quando o grupo não
+/// recebeu nenhum `Type:`.
 ///
-/// Um grupo sem tipo é um bloco truncado ou de formato diferente: não pode
-/// virar achado (não há classificação da injeção) nem varredura limpa.
+/// Um grupo sem tipo é bloco truncado ou de formato diferente: não pode virar
+/// achado (não há classificação da injeção) nem varredura limpa.
 fn close_group(
     active: &Option<(String, Option<String>)>,
     group_has_type: bool,
@@ -281,12 +267,11 @@ fn close_group(
 
 /// Sufixos que o SQLMap acrescenta ao diagnóstico e que não descrevem a falha.
 ///
-/// A linha de erro do SQLMap vem precedida de uma `[CRITICAL]` de retry com o
-/// texto "sqlmap is going to retry the request(s)". Essa frase contém a
-/// palavra `request`, que `utils::redaction` trata como chave de corpo HTTP e
-/// portanto redigiria a mensagem inteira, escondendo do operador o diagnóstico
-/// real. Usar a **última** linha que casa com o marcador e remover os sufixos
-/// conhecidos deixa a mensagem essencial, que sobrevive à sanitização.
+/// A linha de erro vem precedida de uma `[CRITICAL]` de retry com o texto
+/// "sqlmap is going to retry the request(s)". Essa frase contém `request`, que
+/// `utils::redaction` trata como chave de corpo HTTP e redigiria a mensagem
+/// inteira; usar a **última** linha que casa e remover os sufixos conhecidos
+/// deixa a mensagem essencial, que sobrevive à sanitização.
 const SUFFIXOS_DE_DIAGNOSTICO: &[&str] = &[
     ", skipping to the next target",
     ". sqlmap is going to retry the request(s)",
@@ -294,9 +279,9 @@ const SUFFIXOS_DE_DIAGNOSTICO: &[&str] = &[
 
 /// Procura, no stdout, um diagnóstico de falha de execução.
 ///
-/// O SQLMap sempre termina com status 0, mesmo quando não alcança o alvo, e
-/// escreve o diagnóstico no stdout — o `stderr` fica vazio. Sem esta busca a
-/// varredura seria reportada como limpa.
+/// O SQLMap sempre termina com status 0, mesmo sem alcançar o alvo, e escreve o
+/// diagnóstico no stdout (`stderr` vazio); sem esta busca a varredura seria
+/// reportada como limpa.
 fn failure_message(output: &str) -> Option<String> {
     DIAGNOSTICOS_DE_FALHA.iter().find_map(|marker| {
         let line = output
@@ -329,15 +314,13 @@ fn failure_message(output: &str) -> Option<String> {
 
 /// Parseia a saída do SQLMap e retorna achados reais com proveniência completa.
 ///
-/// Parâmetro, método HTTP, tipo e título da injeção são preservados: o `Type` e
-/// o `Title` são a taxonomia do próprio scanner sobre a injeção confirmada. A
-/// evidência nunca inclui o `Payload`, que é um fragmento com forma de query
-/// string.
+/// Parâmetro, método HTTP, tipo e título são preservados (`Type` e `Title` são
+/// a taxonomia do scanner); a evidência nunca inclui o `Payload`, fragmento com
+/// forma de query string.
 ///
-/// Diagnósticos de varredura limpa (nenhum parâmetro injetável) não viram
-/// vulnerabilidade nem erro. Já uma saída que o SQLMap não conseguiu produzir,
-/// um alvo inalcançável e um alvo inválido viram erro de execução: saída não
-/// reconhecida nunca é tratada como varredura limpa.
+/// Varredura limpa (nenhum parâmetro injetável) não vira vulnerabilidade nem
+/// erro. Saída não produzida, alvo inalcançável e alvo inválido viram erro de
+/// execução: saída não reconhecida nunca é varredura limpa.
 #[allow(dead_code)]
 pub fn parse_sqlmap_findings(output: &str, target: &str) -> Vec<Vulnerability> {
     parse_sqlmap_findings_with_errors(output, target).0
@@ -373,9 +356,9 @@ pub fn parse_sqlmap_findings_with_errors(
         .any(|line| clean_line(line).contains(DIAGNOSTICO_SEM_INJECTION));
 
     if !reports_injections && !reports_clean_scan {
-        // Nem o cabeçalho de injeção nem o diagnóstico de varredura limpa: o
-        // texto não é um resultado do SQLMap reconhecível, e isso não pode
-        // virar "varredura limpa".
+        // Nem cabeçalho de injeção nem diagnóstico de varredura limpa: o texto
+        // não é resultado reconhecível do SQLMap e não pode virar "varredura
+        // limpa".
         return (
             Vec::new(),
             vec![

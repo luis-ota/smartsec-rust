@@ -33,9 +33,8 @@ pub fn requirement_rows(app: &AppState) -> Vec<RequirementRow> {
 
 /// Evidência de pausa, retomada ou cancelamento aplicados ao container real.
 ///
-/// Só conta como verificado quando o trace do Podman mostra o comando
-/// correspondente: um botão pressionado não é evidência de que o container foi
-/// de fato pausado.
+/// Só conta como verificado com o comando no trace do Podman: um botão
+/// pressionado não prova que o container foi pausado.
 fn control_row(app: &AppState) -> RequirementRow {
     let mut applied: Vec<&str> = Vec::new();
     for execution in &app.orchestrator.execution_history {
@@ -98,9 +97,8 @@ fn push_unique(values: &mut Vec<&'static str>, value: &'static str) {
 
 /// Linha REQ16 da matriz: onde a origem de cada achado foi localizada.
 ///
-/// A linha distingue as duas situations que se confundem na tela — a fase rodou
-/// e não achou origem, ou a fase nunca rodou. Sem essa distinção, uma varredura
-/// sem análise de código pareceria igual a uma análise que não localizou nada.
+/// Distingue "a fase rodou e não achou origem" de "a fase nunca rodou": sem isso,
+/// uma varredura sem análise de código pareceria não ter localizado nada.
 fn code_row(app: &AppState) -> RequirementRow {
     let findings = &app.orchestrator.findings;
     let located = findings
@@ -303,13 +301,9 @@ fn ai_row(app: &AppState) -> RequirementRow {
     }
 }
 
-/// Proveniência da análise exibida na matriz: o resultado precisa dizer modelo,
-/// provedor efetivo e horário, em vez de apresentar a IA como caixa-preta.
-///
-/// Reaproveita `AnalysisResult::provenance`, o mesmo texto que o modo headless
-/// imprime e que vai para o log estruturado. A matriz montava a frase por
-/// conta própria e já mostrava menos que o headless — que é exatamente a
-/// divergência que a issue #23 elimina.
+/// Proveniência da análise exibida na matriz: modelo, provedor efetivo e
+/// horário, via `AnalysisResult::provenance` — o mesmo texto do headless e do log
+/// estruturado, para a matriz não divergir (issue #23).
 fn analysis_provenance(analysis: &crate::ai::analysis_service::AnalysisResult) -> String {
     format!(" · análise: {}", analysis.provenance())
 }
@@ -514,11 +508,8 @@ mod tests {
         assert!(ai.detail.contains("motivo:"), "{ai:?}");
     }
 
-    /// A TUI e o modo headless precisam descrever a análise com o mesmo texto.
-    ///
-    /// A matriz de rastreabilidade já montava a frase por conta própria e
-    /// mostrava menos que o headless. Este teste trava as duas pontas no mesmo
-    /// `AnalysisResult` para que a divergência não volte a aparecer.
+    /// A TUI e o modo headless precisam descrever a análise com o mesmo texto:
+    /// este teste trava as duas pontas no mesmo `AnalysisResult` (issue #23).
     #[test]
     fn traceability_shows_the_same_provenance_line_as_the_headless_mode() {
         use crate::ai::analysis_service::{AnalysisResult, AnalysisSource};

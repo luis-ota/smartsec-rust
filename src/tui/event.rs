@@ -861,9 +861,8 @@ fn cancel_execution(app: &mut AppState) {
 
 /// Exporta o relatório nos caminhos pedidos por `output_file`/`output_dir`.
 ///
-/// A TUI usava antes um `smartsec-report.md` fixo no diretório atual e ignorava
-/// a configuração; agora ela compartilha `report::resolve_report_path` com o
-/// modo headless, para que os dois modos gravem onde o usuário pediu.
+/// Usa `report::resolve_report_path`, o mesmo do modo headless, para que os dois
+/// modos gravem onde o usuário pediu.
 fn export_markdown(app: &mut AppState) {
     if app.step == AppStep::Results {
         let report = app.export_md();

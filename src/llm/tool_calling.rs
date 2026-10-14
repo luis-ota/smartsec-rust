@@ -1,15 +1,12 @@
 //! Protocolo de tool calling no formato aceito por provedores OpenAI-compatible.
 //!
-//! O módulo define apenas o formato de_transporte: quem decide o que pode ser
-//! chamado é o registro de ferramentas locais do agente de código
-//! (`crate::code_agent::tools`), e o provedor apenas transporta a lista de
-//! especificações e as chamadas devolvidas pelo modelo.
+//! O módulo define apenas o formato de transporte: quem decide o que pode ser
+//! chamado é o registro de ferramentas locais (`crate::code_agent::tools`), e o
+//! provedor apenas transporta as especificações e as chamadas do modelo.
 //!
 //! Um provedor que não implementa `LLMProvider::execute_tool_turn` **não declara
-//! suporte a tool calling**. Essa ausência é deliberada e é o que permite ao
-//! agente de código cair no fallback determinístico sem inventar arquivo, linha
-//! ou trecho: um provedor mudo nunca recebe uma resposta que oSmartSec poderia
-//! apresentar como observação do código do alvo.
+//! suporte a tool calling**: a ausência é deliberada, e o agente de código cai no
+//! fallback determinístico em vez de apresentar como observação algo inventado.
 
 use crate::code_agent::tools::ToolSpec;
 use serde_json::{json, Value};
@@ -37,7 +34,7 @@ pub struct ToolCall {
 
 /// Resposta de um turno: texto do modelo e chamadas de ferramenta pedidas.
 ///
-/// Um turno sem `tool_calls` e com texto vazio é treated como resposta inútil
+/// Um turno sem `tool_calls` e com texto vazio é tratado como resposta inútil
 /// pelo agente de código, que encerra o laço com o motivo registrado.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolTurn {

@@ -73,10 +73,9 @@ fn finding() -> Vulnerability {
     }
 }
 
-/// Criterio de aceite 1: a TUI abre com configuracao de IA invalida e diz o
-/// que esta errado na linha de status, que e a primeira coisa que o operador
-/// ve. O texto e o mesmo do erro do headless, entao a mensagem nao mente nem
-/// muda conforme a interface.
+/// Criterio de aceite 1: a TUI abre com configuracao de IA invalida e mostra o
+/// problema na linha de status. O texto e o mesmo do erro do headless, entao a
+/// mensagem nao muda conforme a interface.
 #[test]
 fn the_splash_shows_the_configuration_problem_instead_of_refusing_to_open() {
     let mut app = app();
@@ -93,8 +92,8 @@ fn the_splash_shows_the_configuration_problem_instead_of_refusing_to_open() {
     );
 }
 
-/// Sem problema de configuracao, a linha de status segue Offer o que
-/// promete: nada de aviso fantasma.
+/// Sem problema de configuracao, a linha de status segue o que promete: nada de
+/// aviso fantasma.
 #[test]
 fn a_valid_configuration_shows_no_warning_on_the_splash() {
     let mut app = app();
@@ -347,8 +346,8 @@ fn result_empty_list_detail_and_didactic_match_80x24_snapshots() {
     assert_snapshot(&mut app, &["Explicação didática", "Em linguagem direta"]);
 }
 
-/// Detalhe com evidência longa e saneada: o link com o scanner é o primeiro
-///citizen da tela de evidência e nunca pode vazar credencial.
+/// Detalhe com evidência longa e saneada: o link com o scanner é o elemento
+/// central da tela de evidência e nunca pode vazar credencial.
 #[test]
 fn finding_detail_shows_long_and_sanitized_evidence() {
     let mut app = app();

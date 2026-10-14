@@ -16,19 +16,16 @@ const HTTP_PAYLOAD_KEYS: &[&str] = &["curl-command", "request", "response"];
 
 /// Chaves do registro do TruffleHog que carregam o **valor** do segredo.
 ///
-/// O TruffleHog entrega o segredo completo em `Raw`, `RawV2` e `SecretParts`.
 /// Medido em container real: um achado de chave privada chegou ao stdout com
 /// `"Raw":"-----BEGIN RSA PRIVATE KEY-----\nMIIE<MASCARADO>…"` e
 /// `"SecretParts":{"token":"-----BEGIN RSA PRIVATE KEY-----\n…"}`.
 ///
-/// `Redacted` também é removido: ele truca o segredo no meio e não é estável
-/// entre versões, então não serve como evidência nem como registro fiel.
+/// `Redacted` também sai: ele trunca o segredo no meio e não é estável entre
+/// versões, então não serve como evidência nem como registro fiel.
 const TRUFFLEHOG_SECRET_KEYS: &[&str] = &["raw", "rawv2", "secretparts", "redacted"];
 
-/// Marcadores que identificam um registro do TruffleHog.
-///
-/// As chaves acima são removidas apenas em objetos que são registro do
-/// TruffleHog, para não atingir um campo homônimo de outro scanner.
+/// Marcadores que identificam um registro do TruffleHog; as chaves acima só são
+/// removidas nesses objetos, sem atingir campo homônimo de outro scanner.
 const TRUFFLEHOG_MARKERS: &[&str] = &["detectorname", "sourcemetadata"];
 
 /// Verifica se o objeto é um registro do TruffleHog.
@@ -39,12 +36,9 @@ fn is_trufflehog_result(object: &serde_json::Map<String, Value>) -> bool {
     })
 }
 
-/// Sanitiza texto técnico antes de exibi-lo ou persistí-lo.
-///
-/// Registros JSONL de scanners preservam os metadados do achado, mas descartam
-/// requests, responses e comandos curl, que podem conter corpos, cookies e
-/// credenciais do alvo. Linhas textuais com nomes sensíveis são substituídas
-/// integralmente para não depender do formato usado por cada ferramenta.
+/// Sanitiza texto técnico antes de exibi-lo ou persistí-lo: registros JSONL
+/// perdem requests, responses e curl (que podem carregar credenciais) e linhas
+/// com nomes sensíveis são substituídas por inteiro.
 pub fn sanitize_text(value: &str) -> String {
     value
         .lines()
@@ -146,18 +140,11 @@ fn sanitize_string_value(value: &str) -> String {
     sanitize_embedded_url(value)
 }
 
-/// Sanitiza um diagnóstico produced pelo próprio SmartSec, e não pela saída de
-/// um scanner.
-///
-/// A substituição integral de linhas existe para descartar corpos HTTP,
-/// comandos curl e credenciais que só o scanner produz. Aplicada a uma mensagem
-/// de erro do transporte ela destruiria o campo inteiro: o erro típico do
-/// cliente é "error sending request for url (...)", que contém a palavra
-/// "request" e seria gravado inteiro como `[REDACTED]`, tornando o motivo da
-/// falha em um campo sem informação.
-///
-/// Aqui a credencial continua removida e a query string da URL continua
-/// descartada; o que deixa de acontecer é o descarte do resto da frase.
+/// Sanitiza um diagnóstico produzido pelo próprio SmartSec, não pela saída de um
+/// scanner: a substituição integral de linhas existe para descartar corpos HTTP
+/// e curl que só o scanner produz, mas no transporte destruiria o campo — o erro
+/// típico "error sending request for url (...)" contém "request" e viraria
+/// `[REDACTED]` inteiro. Aqui a credencial e a query string continuam removidas.
 pub fn sanitize_diagnostic(value: &str) -> String {
     value
         .lines()

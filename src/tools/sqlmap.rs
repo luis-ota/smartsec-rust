@@ -1,81 +1,66 @@
-/// Imagem e versão do SQLMap usadas pelo manifesto embutido.
-///
-/// A imagem é fixada por digest para que a versão do scanner seja auditável no
-/// log estruturado (RNF09) e não dependa de uma tag mutável. É a imagem
-/// oficial do Parrot Security Project, com tag versionada, multi-arch e
-/// construída em 2026-08-17.
+/// Imagem e versão do SQLMap do manifesto embutido: imagem oficial do Parrot
+/// Security, multi-arch e construída em 2026-08-17, fixada por digest para a
+/// versão ser auditável no log (RNF09) sem depender de tag mutável.
 pub const SQLMAP_IMAGE: &str = "docker.io/parrotsec/sqlmap:7.3@sha256:31bb35cd9fdc8c00d3673d26c48a59d2d8ea3c4955c252fb5dee2f96992b4596";
 /// Versão do SQLMap reportada por `--version` dentro da imagem fixada.
 pub const SQLMAP_VERSION: &str = "1.10.4";
 
-/// Respostas fixadas para os prompts do SQLMap, em pares `pergunta=resposta`.
+/// Respostas fixadas para os prompts do SQLMap, em pares `pergunta=resposta`,
+/// casados por *substring* em `lib/core/common.py` (`readInput`), sem ler o TTY.
 ///
-/// A origem é `lib/core/common.py` (`readInput`), que casa cada chave como
-/// *substring* do texto da pergunta e devolve o valor sem ler o terminal.
-///
-/// `exploit=N` é o item crítico e o motivo de `--answers` existir no comando.
-/// Sem ele o SQLMap, em modo `--batch`, responde `Y` a "do you want to exploit
-/// this SQL injection?" e sai do escopo da varredura para enumerar banco,
-/// tabelas e colunas do alvo. Os demais fixam em `N`/`Y`/`C` o que já é o
-/// default do `--batch`, para que a execução seja determinística mesmo se o
-/// default mudar em outra versão da imagem.
+/// `exploit=N` é o item crítico: sem ele o `--batch` responde `Y` a "do you want
+/// to exploit this SQL injection?" e enumera o banco alvo; os demais fixam em
+/// `N`/`Y`/`C` o que já é default, para a execução ser determinística.
 pub const SQLMAP_ANSWERS: &str =
     "exploit=N,keep testing=N,reduce the number of requests=Y,proceed=C";
 
 /// Argumentos do container para varredura de SQL injection sem arquivo e sem
 /// shell.
 ///
-/// A imagem declara `ENTRYPOINT ["sqlmap"]`, e o executor monta
-/// `podman create … IMAGEM <argumentos>`. Repetir `sqlmap` como primeiro item
-/// deixa o comando explícito e equivalente ao que a issue descreve; verificado
-/// no container que `sqlmap --version` e `--version` produzem a mesma saída.
+/// A imagem declara `ENTRYPOINT ["sqlmap"]` e o executor monta
+/// `podman create … IMAGEM <argumentos>`; repetir `sqlmap` como primeiro item é
+/// equivalente a não repetir — verificado no container que `sqlmap --version` e
+/// `--version` produzem a mesma saída — e o `command_template` exige que o
+/// primeiro item seja o executável.
 ///
 /// Cada item é um argumento literal: nenhum shell é usado.
 ///
 /// Origem empírica de cada flag (medida em container, ver
 /// `docs/evidence/issue-15-sqlmap.md`):
 ///
-/// - `--batch` é obrigatório. Sem ele o SQLMap cai em `_input()` e **trava**
-///   indefinidamente esperando o prompt "Do you want to reduce the number of
-///   requests? [Y/n]" — medido: 45 s sem término, 3 s com a flag. Sem
-///   `--batch` a leitura só não bloqueia por acidente, quando o stdin não é
-///   um TTY e o scanner adivinha o default; `--batch` é a garantia.
-/// - `--answers` impede o *takeover*. Em `--batch` o default de "do you want
-///   to exploit this SQL injection?" é `Y`, e o `Y` inicia a enumeração do
-///   banco alvo. Com `exploit=N` a pergunta é respondida com `N` e a varredura
-///   termina no diagnóstico.
+/// - `--batch` é obrigatório: sem ele o SQLMap cai em `_input()` e **trava** no
+///   prompt "Do you want to reduce the number of requests? [Y/n]" — medido: 45 s
+///   sem término, 3 s com a flag.
+/// - `--answers` impede o *takeover*: em `--batch` o default de "do you want to
+///   exploit this SQL injection?" é `Y`, e o `Y` inicia a enumeração do banco
+///   alvo; `exploit=N` termina a varredura no diagnóstico.
 /// - `--disable-coloring` remove os códigos ANSI que o SQLMap emite quando
-///   perceives um terminal, e que corromperiam o texto lido pelo parser.
-/// - `--flush-session` ignora `session.sqlite`. O tmpfs do container já é
-///   efêmero, mas a flag garante que o resultado não dependa de estado
-///   reaproveitado caso o `--output-dir` passe a ser um volume.
-/// - `--technique=BEUT` limita a agressividade. O default do SQLMap é `BEUSTQ`
-///   e inclui `S` (stacked queries) e `Q` (inline queries), que executam
-///   statements adicionais no banco do alvo. Manter `B`, `E`, `U` e `T`
-///   preserva as quatro técnicas de detecção (boolean-based, error-based,
-///   UNION e time-based) sem escrita no banco. Na execução real sem esta flag
-///   o log mostra `SQLite > 2.0 stacked queries (heavy query - comment)` e
-///   `SQLite > 2.0 stacked queries (heavy query)`, ausentes com ela.
-/// - `--level=2` inclui o valor do parâmetro e a query string. O nível 3 adiciona
-///   polimento de payload `OR`/`AND`, multiplicando as requisições sem
-///   encontrar injeção que o nível 2 não encontra. O nível 1 não testa a query
-///   string, justamente onde muitos parâmetros são aceitos.
+///   percebe um terminal e que corromperiam o texto lido pelo parser.
+/// - `--flush-session` ignora `session.sqlite`: o tmpfs já é efêmero, mas a flag
+///   garante que o resultado não dependa de estado reaproveitado caso o
+///   `--output-dir` passe a ser um volume.
+/// - `--technique=BEUT` limita a agressividade: o default `BEUSTQ` inclui `S`
+///   (stacked) e `Q` (inline), que executam statements adicionais no banco do
+///   alvo; `BEUT` mantém as técnicas de detecção sem escrita, e medido, sem a
+///   flag o log mostra `SQLite > 2.0 stacked queries (heavy query - comment)`.
+/// - `--level=2` inclui o valor do parâmetro e a query string; o nível 3 só
+///   multiplica requisições com polimento `OR`/`AND` e o nível 1 não testa a
+///   query string, justamente onde muitos parâmetros são aceitos.
 /// - `--risk=2` é o mínimo que ainda testa *time-based blind*, a técnica que
-///   revela injeção cega sem retorno de conteúdo. O risco 3 adiciona consultas pesadas
-///   (`heavy query`) e mais requisições contra o banco do alvo.
+///   revela injeção cega sem retorno de conteúdo; o risco 3 adiciona consultas
+///   pesadas (`heavy query`) contra o banco do alvo.
 /// - `--threads=1` combina com o `--cpus 1` do executor: mais threads só
-///   disputa o único CPU e aumenta a chance de *timeout* na conexão.
+///   disputaria o único CPU e aumentaria a chance de *timeout* na conexão.
 /// - `--timeout=10` e `--retries=1` cortam o default `--timeout=30
 ///   --retries=3`. Medido sem limite: um request consumiu 30 s e o SQLMap
 ///   imprime `connection timed out to the target URL. sqlmap is going to
 ///   retry the request(s)`.
-/// - `--time-sec=3` é o atraso usado na detecção *time-based blind*. O default
-///   é 5 s; 3 s basta para o alvo autorizado, local ou de rede próxima, e
-///   mantém a técnica viável dentro do timeout do executor.
-/// - `--output-dir=/tmp` grava log, sessão e CSV no tmpfs. Sem a flag o SQLMap
-///   usa `$HOME/.local/share/sqlmap`, que é somente leitura no executor e faz
-///   o scanner emitir `unable to create history directory ... Read-only file
-///   system`.
+/// - `--time-sec=3` é o atraso da detecção *time-based blind*: o default é 5 s,
+///   e 3 s basta para o alvo autorizado, local ou de rede próxima, mantendo a
+///   técnica viável dentro do timeout do executor.
+/// - `--output-dir=/tmp` grava log, sessão e CSV no tmpfs; sem a flag o SQLMap
+///   usa `$HOME/.local/share/sqlmap`, somente leitura no executor, e emite
+///   `unable to create history directory ... Read-only file system`.
 pub fn container_arguments(target: &str) -> Vec<String> {
     vec![
         "sqlmap".to_string(),

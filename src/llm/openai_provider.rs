@@ -71,9 +71,8 @@ pub const DEFAULT_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(8);
 
 impl OpenAIProvider {
-    /// Monta o corpo da requisição. Sem ferramentas declaradas, o campo
-    /// `tools` é omitido para que o caminho de análise de logs continue
-    /// idêntico ao anterior (e aceito por provedores sem tool calling).
+    /// Monta o corpo da requisição. Sem ferramentas declaradas, o campo `tools`
+    /// é omitido, para o caminho de análise de logs seguir como antes.
     fn chat_body(
         model: &str,
         messages: Vec<Value>,
@@ -175,9 +174,8 @@ fn next_backoff(current: Duration) -> Duration {
     (current * 2).min(RETRY_MAX_DELAY)
 }
 
-/// Espera entre 50% e 100% do backoff. Evita que dois clientes que receberam 429
-/// no mesmo segundo voltem a bater no provedor juntos; um LCG semeado pelo
-/// relógio basta e dispensa uma dependência nova.
+/// Espera entre 50% e 100% do backoff, para que dois clientes que receberam 429
+/// no mesmo segundo não voltem juntos; um LCG do relógio dispensa dependência.
 fn jittered(base: Duration) -> Duration {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -203,7 +201,7 @@ fn retry_after_of(answer: &reqwest::Response) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-/// Mensagem de limite de uso no formato que resolve o problema: o que agotou,
+/// Mensagem de limite de uso no formato que resolve o problema: o que esgotou,
 /// o que o provedor pediu e o que fazer agora.
 fn rate_limit_message(attempts: u8, retry_after: Option<Duration>) -> String {
     let requested = retry_after.map_or_else(
@@ -280,8 +278,8 @@ impl LLMProvider for OpenAIProvider {
 /// Converte os argumentos serializados pelo modelo em JSON estruturado.
 ///
 /// JSON inválido vira objeto vazio em vez de erro: a validação de contrato
-/// pertence ao registro de ferramentas, que responde com recusa acionável
-/// ("exige o argumento de texto \"path\"") em vez de derrubar o turno inteiro.
+/// pertence ao registro de ferramentas, que recusa com mensagem acionável em vez
+/// de derrubar o turno inteiro.
 fn parse_arguments(raw: &str) -> Value {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

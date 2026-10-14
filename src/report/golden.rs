@@ -1,21 +1,14 @@
-//! Testes degolden do relatório: o Markdown byte a byte e o texto do PDF.
+//! Testes de golden do relatório: o Markdown byte a byte e o texto do PDF.
 //!
-//! O Markdown é comparado byte a byte com um golden versionado, porque
-//! `compile_report` é determinístico: qualquer mudança no formato do relatório
-//! é uma mudança de contrato e tem de ser explícita no diff.
+//! O Markdown é comparado byte a byte porque `compile_report` é determinístico:
+//! mudar o formato é mudar o contrato, e isso tem de ser explícito no diff. O
+//! PDF carrega identificadores de objeto e um timestamp de criação que mudam a
+//! cada execução, então o golden é o *texto* relido do artefato com o parser do
+//! `printpdf`, sem depender de binário do sistema.
 //!
-//! O PDF não pode ser comparado byte a byte: o `printpdf` grava identificadores
-//! de objeto e um timestamp de criação que mudam a cada execução. O que é
-//! determinístico — e é o que importa — é o *texto* do documento. O teste
-//! então relê o PDF gerado com o próprio parser do `printpdf`, extrai o texto de
-//! cada página e compara com um golden do texto que o leitor deve enxergar.
-//! Assim a asserção é sobre o artefato real em disco, não sobre uma estrutura
-//! interna, e sem depender do Poppler nem de qualquer binário do sistema.
-//!
-//! Limitação declarada: a extração reconstrói o texto a partir do `ToUnicode`
-//! CMap do subconjunto da fonte. Ela valida o conteúdo visível, mas não a
-//! posição exata de cada glifo nem a geometria da caixa — o layout é
-//! verificado por [`crate::report::pdf`] (margem, quebra e subconjunto).
+//! Limitação declarada: a extração reconstrói o texto pelo CMap `ToUnicode` do
+//! subconjunto da fonte; valida o conteúdo visível, não a posição de cada glifo
+//! nem a geometria da caixa — o layout é verificado por [`crate::report::pdf`].
 
 use super::generator::{escape_markdown, ReportGenerator};
 use super::pdf;
@@ -70,7 +63,7 @@ fn cenario() -> (
         },
         Vulnerability {
             // Título com marcação e HTML: precisa chegar escapado no Markdown e
-            //legível no PDF.
+            // legível no PDF.
             title: "Cabeçalhos `Server` e *X-Powered-By* <div>".to_string(),
             severity: Severity::Medium,
             description: "Cabeçalhos revelam a pilha tecnológica do servidor.".to_string(),
@@ -147,10 +140,8 @@ fn markdown_do_cenario() -> String {
     )
 }
 
-/// Extrai o texto de cada página do PDF realmente gravado em `bytes`.
-///
-/// Não usa `PdfPage::extract_text` diretamente: o documento é relido do disco
-/// pelo parser para que o teste valide o artefato, e não a estrutura em memória.
+/// Extrai o texto de cada página do PDF relendo `bytes` com o parser, para o
+/// teste validar o artefato gravado e não a estrutura em memória.
 fn texto_do_pdf(bytes: &[u8]) -> String {
     let documento = printpdf::PdfDocument::parse(
         bytes,
@@ -167,11 +158,10 @@ fn texto_do_pdf(bytes: &[u8]) -> String {
         .join("\n")
 }
 
-/// Versão do texto do PDF com todo o espaço em branco colapsado.
+/// Versão do texto do PDF com o espaço em branco colapsado.
 ///
-/// A tabela de severidades põe rótulo e valor em colunas separadas, então o
-/// texto extraído os traz em linhas distintas. Para comparar semântica entre os
-/// dois artefatos é preciso olhar o texto corrido, não linha a linha.
+/// A tabela de severidades separa rótulo e valor em colunas, que a extração traz
+/// em linhas distintas; a comparação semântica precisa do texto corrido.
 fn texto_plano(texto: &str) -> String {
     texto.split_whitespace().collect::<Vec<_>>().join(" ")
 }

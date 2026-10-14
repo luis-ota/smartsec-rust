@@ -1,12 +1,11 @@
 //! Canal de controle compartilhado entre a interface e o executor Podman
 //! (REQ14) e a regra automática de interrupção (REQ05).
 //!
-//! A pausa, a retomada e o cancelamento deixam de ser bandeiras locais: eles
-//! atravessam o `Orchestrator` e chegam ao `PodmanExecutor`, que age sobre o
-//! container real (`podman pause`, `podman unpause`, `podman stop` seguido de
-//! `podman rm --force`). O canal é um `watch` de valor enum, para que o
-//! executor sempre observe o estado mais recente, inclusive quando a ordem
-//! chega enquanto o `create` ou o `start` ainda está em voo.
+//! Pausa, retomada e cancelamento atravessam o `Orchestrator` até o
+//! `PodmanExecutor`, que age sobre o container real (`podman pause`,
+//! `podman unpause`, `podman stop` + `podman rm --force`); o `watch` de valor
+//! enum garante que o executor veja o estado mais recente, mesmo se a ordem
+//! chegar durante o `create` ou o `start`.
 //!
 //! O módulo não depende de nenhum outro do projeto, para poder ser reusado
 //! isoladamente pelos testes de integração do executor.
@@ -46,9 +45,8 @@ impl RunControl {
 
 /// Motivo auditável de uma interrupção (REQ05 e REQ14).
 ///
-/// `ScanMetadata` é desserializado de históricos antigos, por isso todo campo
-/// novo é `#[serde(default)]`: um log gravado antes desta feature continua
-/// legível, com o motivo vazio.
+/// `ScanMetadata` é desserializado de históricos antigos: campos novos levam
+/// `#[serde(default)]` e um log anterior continua legível, com o motivo vazio.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InterruptionReason {
     /// Regra ou origem: `max_critical_findings`, `cancelado_pelo_usuario` ou

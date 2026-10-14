@@ -37,8 +37,8 @@ const PLACEHOLDERS: &[&str] = &[
 enum Token {
     Ident(String),
     Str(String),
-    /// String com prefixo `f` e interpolacao: o conteudo e montado em tempo de
-    /// execucao, ao contrario de `Str`.
+    /// String com prefixo `f` e interpolação: o conteúdo é montado em tempo de
+    /// execução, ao contrário de `Str`.
     FStr(String),
     Punct(char),
 }
@@ -111,7 +111,7 @@ fn tokenize(line: &str) -> Vec<Token> {
                 && matches!(chars.get(index), Some('"') | Some('\''));
             if is_string_prefix {
                 // Consome a aspa e emite um literal marcado, para que a regra de
-                // SQLi diferencie interpolacao de literal puro.
+                // SQLi diferencie interpolação de literal puro.
                 let quote = chars[index];
                 let mut value = String::new();
                 let mut cursor = index + 1;
@@ -250,7 +250,7 @@ fn push_logical(out: &mut Vec<LogicalLine>, buffer: &mut String, start: usize) {
     buffer.clear();
 }
 
-/// A varredura que alimenta o pipeline: so credencial, por enquanto.
+/// A varredura que alimenta o pipeline: só credencial, por enquanto.
 pub fn scan(file: &str, text: &str) -> Vec<CodeAuditFinding> {
     let mut findings = Vec::new();
     for logical in logical_lines(text) {
@@ -262,16 +262,14 @@ pub fn scan(file: &str, text: &str) -> Vec<CodeAuditFinding> {
     findings
 }
 
-/// Regra desligada: a medicao em 3.105.085 linhas deu 100% de falso positivo.
+/// Regra desligada: a medição em 3.105.085 linhas deu 100% de falso positivo.
 ///
-/// Em 8.384 arquivos reais a regra produziu 73 achados e zero verdadeiro
-/// positivo, porque casa o nome do metodo sem olhar o receptor: `self.execute`
-/// do setuptools, `gdb.execute`, e os internos do proprio sqlite3. Falso
-/// positivo em ferramenta de seguranca treina o revisor a descartar achado, e
-/// torna a densidade de achados do TCC uma metrica sem significado.
-///
-/// A deteccao volta sobre o modulo `ast` do proprio Python, que resolve
-/// receptor, binding e linha exata. Ver docs/evidence/auditoria-codigo-fp.md.
+/// Em 8.384 arquivos reais produziu 73 achados e zero verdadeiro positivo,
+/// porque casa o nome do método sem olhar o receptor (`self.execute` do
+/// setuptools, `gdb.execute`, internos do próprio sqlite3); falso positivo em
+/// ferramenta de segurança treina o revisor a descartar achado. A detecção volta
+/// sobre o módulo `ast` do Python, que resolve receptor, binding e linha exata.
+/// Ver docs/evidence/auditoria-codigo-fp.md.
 #[allow(dead_code)]
 fn sql_injection(file: &str, logical: &LogicalLine) -> Option<CodeAuditFinding> {
     let call_at = find_sql_call(&logical.tokens)?;
@@ -463,9 +461,9 @@ const NAO_SAO_SEGREDOS: &[&str] = &["hash", "enc", "encoded", "alg", "len", "fil
 
 /// O identificador nomeia uma credencial?
 ///
-/// O nome é lido por segmento: `DB_PASSWORD`, `self.db_password` e
-/// `AWS_SECRET_KEY` nomeiam a mesma coisa, e exigir que o termo fosse a palavra
-/// inteira ou o sufixo descartava as duas formas mais comuns em projeto Python.
+/// O nome é lido por segmento (`DB_PASSWORD`, `self.db_password` e
+/// `AWS_SECRET_KEY` nomeiam a mesma coisa); exigir o termo como palavra inteira
+/// descartaria as formas mais comuns em projeto Python.
 fn is_key_word(identifier: &str, candidate: &str) -> bool {
     if EXATOS.contains(&candidate) {
         return identifier == candidate;
@@ -486,7 +484,7 @@ fn is_key_word(identifier: &str, candidate: &str) -> bool {
     false
 }
 
-/// A varredura completa, incluindo a regra de injecao desligada.
+/// A varredura completa, incluindo a regra de injeção desligada.
 #[cfg(test)]
 pub fn scan_emitting_sql_injection(file: &str, text: &str) -> Vec<CodeAuditFinding> {
     let mut findings = Vec::new();

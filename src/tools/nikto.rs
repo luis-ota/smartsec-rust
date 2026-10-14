@@ -1,27 +1,21 @@
-/// Imagem e versão do Nikto usadas pelo manifesto embutido.
-///
-/// A imagem é fixada por digest para que a versão do scanner seja auditável no
-/// log estruturado (RNF09) e não dependa de uma tag mutável.
+/// Imagem e versão do Nikto do manifesto embutido, fixadas por digest para a
+/// versão ser auditável no log estruturado (RNF09) sem depender de tag mutável.
 pub const NIKTO_IMAGE: &str = "docker.io/alpine/nikto:2.2.0@sha256:eb2fe88217ec32695f3843f67c7a7f1628b484b653e99015aac69c586eb2a88b";
 /// Versão do Nikto reportada por `-Version` dentro da imagem fixada.
 pub const NIKTO_VERSION: &str = "2.1.6";
 
 /// Argumentos do container para varredura estruturada em JSON no stdout.
 ///
-/// A imagem declara `ENTRYPOINT ["nikto.pl"]`, e o executor monta
-/// `podman create … IMAGEM <argumentos>`. O executável é repetido como primeiro
-/// item para deixar o comando explícito e equivalente ao que a issue descreve;
-/// o Nikto ignora o token e a saída é idêntica à execução sem ele.
+/// A imagem declara `ENTRYPOINT ["nikto.pl"]` e o executável é repetido como
+/// primeiro item; o Nikto ignora o token a mais e a saída é idêntica.
 ///
 /// Cada item é um argumento literal: nenhum shell é usado.
 ///
-/// - `-o -` faz o Nikto escrever o relatório JSON no stdout em vez de criar
-///   arquivo. Sem essa flag o Nikto aborta com `+ ERROR: Output file format
-///   specified without a name`, e escrever em arquivo é incompatível com o
-///   filesystem somente leitura do executor.
-/// - `-ask no` impede o prompt "submit this information to CIRT.net", que
-///   contaminaria o JSON com texto interativo.
-/// - `-nointeractive` desliga perguntas interativas em geral.
+/// - `-o -` escreve o relatório JSON no stdout em vez de criar arquivo; sem ela
+///   o Nikto aborta com `+ ERROR: Output file format specified without a name`,
+///   e gravar arquivo é incompatível com o filesystem somente leitura.
+/// - `-ask no` e `-nointeractive` impedem perguntas interativas (como
+///   "submit this information to CIRT.net") de contaminar o JSON.
 /// - `-maxtime` limita o tempo por host, mantendo a execução dentro do timeout
 ///   do executor.
 pub fn container_arguments(target: &str) -> Vec<String> {

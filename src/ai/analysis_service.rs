@@ -3,22 +3,15 @@ use crate::domain::vulnerability::Vulnerability;
 use std::time::Duration;
 
 /// Teto de tempo da interpretação por IA (RNF04: até 45 segundos por
-/// ferramenta). O prazo cobre provedor principal e alternativa local, para que
-/// uma análise nunca bloqueie o scan além do orçamento do requisito.
-///
-/// O orçamento é dividido por `crate::ai::agent::primary_budget`, e a fração
-/// fica declarada junto de quem a aplica para que as duas metades do teto não
-/// possam divergir. O provedor configurado recebe `timeout_secs` de até 45 s, o
-/// mesmo valor do teto: sem fatia reservada, um provedor que trava consome o
-/// prazo inteiro e a alternativa local nunca é chamada, o que tornaria o
-/// fallback (RNF06) decorativo exatamente no cenário de queda que ele cobre.
+/// ferramenta), dividido entre principal e alternativa local por
+/// `crate::ai::agent::primary_budget`; nunca bloqueia o scan além do orçamento.
 const ANALYSIS_TIMEOUT_SECS: u64 = 45;
 
 /// Marcador de abertura do bloco de conteúdo não confiável enviado ao modelo.
 ///
-/// Tudo entre `UNTRUSTED_OPEN` e `UNTRUSTED_CLOSE` foi coletado do alvo e é
-/// **dado a analisar**, nunca instrução a executar. Delimitar explicitamente o
-/// trecho é o que impede que o conteúdo do scanner seja lido como comando.
+/// Tudo entre este marcador e `UNTRUSTED_CLOSE` foi coletado do alvo e é
+/// **dado a analisar**, nunca instrução a executar: é o que impede o conteúdo
+/// do scanner de ser lido como comando.
 const UNTRUSTED_OPEN: &str = "<ACHADOS_DO_ALVO>";
 const UNTRUSTED_CLOSE: &str = "</ACHADOS_DO_ALVO>";
 
@@ -27,9 +20,8 @@ const NEUTRALIZED_LINE: &str = "[trecho do alvo neutralizado: tentativa de inje�
 
 /// Delimitadores de sistema e de conversa removidos do conteúdo do scanner.
 ///
-/// Removidos sempre, mesmo fora das tentativas de injeção, porque um título
-/// hostil que repita estas marcações poderia encerrar o bloco de dados e falar
-/// com o modelo diretamente.
+/// Removidos sempre, mesmo fora das tentativas de injeção: um título hostil que
+/// repita estas marcações encerraria o bloco de dados e falaria com o modelo.
 const SYSTEM_DELIMITERS: &[&str] = &[
     "<ACHADOS_DO_ALVO>",
     "</ACHADOS_DO_ALVO>",
@@ -109,9 +101,8 @@ pub enum AnalysisSource {
 
 /// Resultado auditável da interpretação dos logs por IA.
 ///
-/// Carrega obrigatoriamente modelo, provedor efetivo, uso de fallback, motivo
-/// da falha (quando houver) e horário, para que o relatório identifique quem
-/// produziu o texto em vez de presenter a IA como caixa-preta.
+/// Carrega modelo, provedor efetivo, uso de fallback, motivo da falha e horário,
+/// para que o relatório apresente quem produziu o texto, não uma caixa-preta.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnalysisResult {
     /// Texto exibido na TUI, no modo headless e persistido no log estruturado.
@@ -136,11 +127,8 @@ pub struct AnalysisResult {
 
 /// Serviço único de interpretação dos achados por IA.
 ///
-/// Existe como serviço único e explícito para que a TUI e o modo headless não
-/// voltem a divergir: a issue #23 nasceu da TUI exibir uma animação diferente da
-/// análise do headless. `Orchestrator::analyze_findings` é o único caminho
-/// público para a IA interpretar os achados; qualquer outro fluxo deve chamar o
-/// serviço, nunca `AIAgent` diretamente.
+/// Centraliza o caminho para que a TUI e o modo headless não voltem a divergir
+/// (issue #23): `Orchestrator::analyze_findings` é o único acesso público à IA.
 pub struct AnalysisService {
     deadline: Duration,
 }
@@ -154,10 +142,9 @@ impl AnalysisService {
 
     /// Interpreta os achados dos scanners e devolve um resultado estruturado.
     ///
-    /// Ordem garantida: consentimento e configuração válidos, chamada ao
-    /// provedor primário, validação da resposta, alternativa local e, por
-    /// último, a análise determinística. A severidade do scanner é autoritativa
-    /// em todos os caminhos (TCC_SPEC.md, seção 7).
+    /// Ordem garantida: consentimento e configuração válidos, provedor primário,
+    /// validação da resposta, alternativa local e análise determinística. A
+    /// severidade do scanner é autoritativa em todos os caminhos (TCC_SPEC § 7).
     pub async fn analyze(&self, agent: &mut AIAgent, findings: &[Vulnerability]) -> AnalysisResult {
         let verified = AIAgent::local_analysis(findings);
         let (prompt, neutralized_snippets) = build_prompt(findings);
@@ -187,9 +174,8 @@ impl AnalysisService {
                 } else {
                     AnalysisSource::PrimaryProvider
                 };
-                // A queda do principal é registrada mesmo quando a alternativa
-                // respondeu com sucesso: sem isso, o log mostraria um fallback
-                // sem causa, parecendo escolha do operador em vez de falha.
+                // A queda do principal é registrada mesmo com sucesso da
+                // alternativa: sem isso o log mostraria um fallback sem causa.
                 result.failure_reason = outcome.primary_error.clone();
                 let response = AIAgent::parse_llm_response(&outcome.response);
                 match AIAgent::validated_guidance(&response) {
@@ -229,9 +215,8 @@ impl AnalysisService {
     /// Executa um prompt contratual (por exemplo, o plano do Nuclei) com a
     /// mesma cadeia de provedores e o mesmo teto de tempo da análise.
     ///
-    /// Devolve `None` quando nenhuma IA respondeu; o chamador mantém a política
-    /// determinística. O texto nunca é inventado: só é repassado se veio do
-    /// provedor.
+    /// Devolve `None` quando nenhuma IA respondeu; o texto nunca é inventado,
+    /// só é repassado o que veio do provedor.
     pub async fn request(&self, agent: &mut AIAgent, prompt: &str) -> Option<String> {
         agent
             .execute_with_fallback(prompt, self.deadline)
@@ -273,10 +258,8 @@ impl AnalysisResult {
 
 /// Monta o prompt tratando cada campo do scanner como dado não confiável.
 ///
-/// Cada linha recebida é higienizada (`sanitize_text`), tem os delimitadores de
-/// sistema removidos e é neutralizada se contiver tentativa de injeção. O
-/// resultado é devolvido junto da contagem de trechos neutralizados, que vai
-/// para o log estruturado.
+/// Cada linha é higienizada, tem os delimitadores de sistema removidos e é
+/// neutralizada se contiver injeção; devolve também a contagem de neutralizados.
 fn build_prompt(findings: &[Vulnerability]) -> (String, usize) {
     let mut neutralized = 0usize;
     let lines: Vec<String> = findings
@@ -298,13 +281,9 @@ fn build_prompt(findings: &[Vulnerability]) -> (String, usize) {
 
 /// Neutraliza conteúdo do scanner que tenta virar instrução para o modelo.
 ///
-/// Devolve o texto seguro e se houve neutralização.
-///
-/// A busca por termos de injeção roda sobre o **texto inteiro**, e não linha a
-/// linha. Um alvo que quebrasse a ordem em duas linhas ("ignore" / "as
-/// instruções anteriores") escaparia de uma checagem por linha, já que nenhum
-/// dos trechos isolados contém a frase. A neutralização em si é aplicada por
-/// linha, para preservar o restante do achado quando apenas um trecho é hostil.
+/// A busca roda sobre o **texto inteiro** (uma ordem quebrada em duas linhas
+/// escaparia da checagem por linha), mas a neutralização é aplicada por linha,
+/// preservando o restante do achado. Devolve o texto e se houve neutralização.
 fn neutralize_untrusted(value: &str) -> (String, bool) {
     let sanitized = crate::utils::redaction::sanitize_text(value);
     let mut neutralized = false;
@@ -328,13 +307,12 @@ fn neutralize_untrusted(value: &str) -> (String, bool) {
 
 /// Remove os delimitadores de sistema e de conversa do trecho do alvo.
 ///
-/// A comparação ignora maiúsculas e minúsculas: um alvo que escreva
-/// `</achados_do_alvo>` ou `<|IM_START|>` produz o mesmo efeito sobre o modelo
-/// que a forma canônica, e uma checagem sensível a caixa deixaria a marcação
-/// passar intacta para dentro do prompt.
+/// A comparação ignora maiúsculas e minúsculas: `</achados_do_alvo>` tem o mesmo
+/// efeito sobre o modelo que a forma canônica, e uma checagem sensível a caixa
+/// deixaria a marcação passar intacta.
 ///
-/// Informa se removeu algo: um título que traz marcação de chat ou de prompt é
-/// conteúdo hostil mesmo sem ordem em texto, e precisa ficar registrado.
+/// Informa se removeu algo: marcação de chat ou de prompt é conteúdo hostil
+/// mesmo sem ordem em texto, e precisa ficar registrado.
 fn strip_system_delimiters(line: &str) -> (String, bool) {
     let mut cleaned = line.to_string();
     let mut hostile = false;
@@ -351,20 +329,17 @@ fn strip_system_delimiters(line: &str) -> (String, bool) {
 /// Substitui todas as ocorrências de `needle` em `haystack` sem diferenciar
 /// maiúsculas de minúsculas.
 ///
-/// A varredura é feita sobre caracteres, e não sobre índices de byte de uma
-/// cópia minúscula: `to_lowercase` pode alterar o comprimento em bytes, e usar
-/// a posição da cópia para cortar o original panicaria ou cortaria no meio de um
-/// caractere.
+/// A varredura é sobre caracteres, não índices de byte de uma cópia minúscula:
+/// `to_lowercase` altera o comprimento e o corte partiria um caractere no meio.
 fn replace_ignore_case(haystack: &str, needle: &str) -> (String, bool) {
     let target: Vec<char> = needle.to_lowercase().chars().collect();
     if target.is_empty() {
         return (haystack.to_string(), false);
     }
     let source: Vec<char> = haystack.chars().collect();
-    // Cada caractere minúsculo precisa ocupar exatamente uma posição, senão os
-    // índices deixariam de corresponder aos do texto original. `İ` e `ß`, por
-    // exemplo, viram duas letras em minúsculas; nesses casos mantemos o
-    // caractere original, que já não corresponde aos delimitadores buscados.
+    // Cada caractere minúsculo precisa ocupar uma posição, senão os índices
+    // deixariam de corresponder ao original: `İ` e `ß` viram duas letras em
+    // minúsculas e, nesses casos, o caractere original é mantido.
     let lowered: Vec<char> = source
         .iter()
         .map(|character| {
@@ -502,9 +477,8 @@ mod tests {
     /// Confirma que os campos que a TUI e o headless leem para descrever a
     /// análise são construídos com valor real, e não apenas declarados.
     ///
-    /// A construção é verificada campo a campo de propósito: um campo presente
-    /// na struct e sempre vazio na prática passaria em qualquer teste que
-    /// apenas compilasse o tipo.
+    /// Verificado campo a campo: um campo presente na struct e sempre vazio
+    /// passaria em qualquer teste que apenas compilasse o tipo.
     #[tokio::test]
     async fn all_five_provenance_fields_are_actually_populated_on_success() {
         let mut agent = agent_with(Box::new(RespondingProvider(
@@ -630,9 +604,7 @@ mod tests {
         assert_eq!(result.model, "llama3.1:8b");
         assert_eq!(result.configured_provider, "OpenAI");
         // A queda do principal é registrada mesmo com sucesso da alternativa:
-        // um fallback sem causa pareceria uma escolha do operador. O texto exato
-        // vem do transporte do provedor, então o teste exige causa, não
-        // uma redação específica.
+        // o teste exige causa, não uma redação específica do transporte.
         assert!(
             result
                 .failure_reason
@@ -652,14 +624,9 @@ mod tests {
 
     /// Regressão do orçamento dividido.
     ///
-    /// Com a configuração validada, `timeout_secs` do provedor principal chega a
-    /// 45 s, exatamente o teto da análise. Antes da divisão do prazo, o
-    /// primário que travava consumia o orçamento inteiro e a alternativa local
-    /// nunca era chamada: o timeout do provedor (1 s) era o único caminho de
-    /// queda, e o RNF06 ficava decorativo sempre que o provedor apenas
-    /// travasse. Este teste usa um primário que aceita a conexão e nunca
-    /// responde, com o timeout interno maior que a metade do orçamento, e
-    /// exige que a alternativa responda na mesma execução.
+    /// Com `timeout_secs` do principal no teto de 45 s, um primário que trava
+    /// consumiria o orçamento inteiro e a alternativa local nunca seria chamada
+    /// (o RNF06 ficaria decorativo); o teste usa um primário que nunca responde.
     #[tokio::test]
     async fn hanging_primary_still_leaves_budget_for_the_local_alternative() {
         let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -670,9 +637,7 @@ mod tests {
         });
         let mut primary = provider(format!("http://{silent_address}/v1"));
         // Maior que a fatia do primário (3/4 de 3 s = 2,25 s): o corte vem do
-        // orçamento da análise, não do timeout do provedor. O prazo total é
-        // generoso o bastante para que a alternativa local, que precisa abrir a
-        // própria conexão, tenha folga mesmo em máquina carregada.
+        // orçamento da análise, não do timeout do provedor.
         primary.timeout_secs = 30;
         primary.max_retries = 0;
 
@@ -961,9 +926,8 @@ mod tests {
 
     /// Regressão da busca por linha inteira.
     ///
-    /// A checagem por termos de injeção rodava por linha, e um alvo podia
-    /// quebrar a ordem em duas linhas para escapar: "ignore" sozinho e "as
-    /// instruções anteriores" em outra não contêm a frase em nenhum dos trechos.
+    /// A checagem por termos rodava por linha, e quebrar a ordem em duas linhas
+    /// escapava: "ignore" e "as instruções anteriores" não contêm a frase.
     #[tokio::test]
     async fn injection_split_across_lines_is_still_neutralized() {
         let prompts = Arc::new(Mutex::new(Vec::new()));
@@ -993,9 +957,8 @@ mod tests {
         assert_eq!(sent.len(), 1);
         let prompt = &sent[0];
         // A asserção olha só o bloco de dados: o contrato do prompt cita
-        // "reclassifique" e "ignore" por instrução, e comparar o prompt inteiro
-        // reprovaria a própria proteção. O bloco é o último par de marcadores,
-        // porque o contrato também nomeia a tag de abertura.
+        // "reclassifique" e "ignore", e o prompt inteiro reprovaria a proteção.
+        // O bloco é o último par de marcadores.
         let (_, after_open) = prompt
             .rmatch_indices(UNTRUSTED_OPEN)
             .next()
@@ -1013,9 +976,8 @@ mod tests {
 
     /// Regressão do `replace` sem distinção de caixa.
     ///
-    /// Um alvo que escrevesse `</achados_do_alvo>` em minúsculas escapava da
-    /// remoção de delimitadores, sensível a caixa, e podia encerrar o bloco de
-    /// dados para falar com o modelo diretamente.
+    /// `</achados_do_alvo>` em minúsculas escapava da remoção sensível a caixa e
+    /// encerrava o bloco de dados para falar com o modelo diretamente.
     #[tokio::test]
     async fn delimiters_in_lowercase_cannot_close_the_untrusted_block() {
         let prompts = Arc::new(Mutex::new(Vec::new()));

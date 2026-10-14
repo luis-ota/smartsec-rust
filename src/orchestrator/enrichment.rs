@@ -4,21 +4,21 @@
 //!
 //! 1. Os achados saem dos parsers e passam pela [correlação][correlate], que
 //!    consolida o que é o mesmo problema e preserva todas as origens.
-//! 2. Só então o enriquecimento é consultado: um CVE aforementioned por
+//! 2. Só então o enriquecimento é consultado: um CVE mencionado por
 //!    qualquer origem do grupo enriquece o grupo inteiro.
-//! 3. Por fim a divergência entre a severidade do scanner e a da NVD é
-//!    registrada, sem alterar nenhuma das duas.
+//! 3. A divergência entre a severidade do scanner e a da NVD é registrada, sem
+//!    alterar nenhuma das duas.
 //!
 //! ## A indisponibilidade não impede o relatório base
 //!
 //! Se a NVD estiver fora do ar, o enrichment devolve os achados **inalterados**
-//! e um [`NvdReport`] com a causa em pt-BR. Não há `unwrap`, `expect` nem
-//! `panic` neste módulo: um `unwrap()` aqui reprovaria a issue.
+//! e um [`NvdReport`] com a causa em pt-BR; não há `unwrap`, `expect` nem
+//! `panic` neste módulo.
 //!
 //! ## Limite de taxa
 //!
 //! Os identificadores são consultados **sequencialmente**, com espera do
-//! intervalo mínimo entre eles. É o que respeita o limite publicado da NVD
+//! intervalo mínimo entre eles: é o que respeita o limite publicado da NVD
 //! ([5 req/30 s][rate] sem chave, [50 req/30 s][rate] com chave) sem depender
 //! de reentrada da API.
 //!
@@ -138,16 +138,10 @@ fn apply_enrichment(findings: &mut [Vulnerability], cve_id: &str, enrichment: Cv
     }
 }
 
-/// Identificadores CVE que valem uma consulta, para um achado ou para o grupo.
-///
-/// A mesma extração da [correlação][crate::orchestrator::correlation] é
-/// reutilizada: se dois achados foramconsidered o mesmo problema, a consulta
-/// também é a mesma.
 /// Identificadores CVE citados pelo achado e por todas as suas origens.
 ///
 /// A extração é a mesma da [correlação][crate::orchestrator::correlation]: se
-/// dois achados foram considerados o mesmo problema, a consulta também é a
-/// mesma.
+/// dois achados foram considerados o mesmo problema, a consulta também é a mesma.
 fn group_cve_ids(finding: &Vulnerability) -> Vec<String> {
     let mut ids = crate::orchestrator::correlation::cve_ids_of(&finding.evidence);
     for origin in &finding.origins {

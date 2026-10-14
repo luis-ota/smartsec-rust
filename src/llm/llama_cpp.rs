@@ -2,8 +2,8 @@ use crate::llm::openai_provider::OpenAIProvider;
 
 /// Provedor local `llama.cpp`.
 ///
-/// O `llama-server` expõe a API compatível com OpenAI, então a implementação é
-/// a mesma; o que muda é o endpoint e a ausência de credencial obrigatória.
+/// O `llama-server` expõe a API compatível com OpenAI, então a implementação é a
+/// mesma; o que muda é o endpoint e a credencial, que aqui é opcional.
 pub fn llama_cpp_provider(
     base_url: &str,
     api_key: &str,
