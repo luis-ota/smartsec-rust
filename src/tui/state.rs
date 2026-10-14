@@ -147,7 +147,7 @@ pub struct ToolItem {
     pub status: ToolStatus,
 }
 
-enum RunEvent {
+pub(crate) enum RunEvent {
     ToolStarted(usize),
     /// O container em execução mudou de estado por pausa, retomada ou
     /// cancelamento pedido pelo usuário.
@@ -174,6 +174,11 @@ enum RunEvent {
     },
     /// Linha de resumo da correlação e do enriquecimento CVE/NVD.
     EnrichmentSummary(String),
+    /// Fim da explicação RAG pedida no detalhe do achado (issue #109).
+    RagExplanationFinished {
+        finding_index: usize,
+        result: Box<crate::cyberrag::service::ExplanationResult>,
+    },
     Completed {
         orchestrator: Box<Orchestrator>,
         audit_log: Result<PathBuf, String>,
@@ -217,6 +222,10 @@ pub struct AppState {
     pub result_cursor: usize,
     pub result_scroll: usize,
     pub result_detail_vuln: Option<usize>,
+    /// Explicação RAG por achado, exibida no detalhe (issue #109).
+    pub rag_results: std::collections::BTreeMap<usize, crate::cyberrag::service::ExplanationResult>,
+    /// Achado com explicação em andamento.
+    pub rag_pending: Option<usize>,
     pub detail_scroll: usize,
     pub detail_max_scroll: usize,
     pub md_exported: bool,
@@ -296,6 +305,8 @@ pub struct AppState {
     pub hit_regions: Vec<HitRegion>,
     run_receiver: Option<mpsc::Receiver<RunEvent>>,
     run_task: Option<JoinHandle<()>>,
+    pub(crate) rag_receiver: Option<mpsc::Receiver<RunEvent>>,
+    pub(crate) rag_task: Option<JoinHandle<()>>,
     /// Linhas de log descartadas por saturação do canal (política de drop).
     log_drop_counter: Arc<AtomicU64>,
 }
@@ -437,6 +448,10 @@ impl AppState {
             hit_regions: Vec::new(),
             run_receiver: None,
             run_task: None,
+            rag_results: std::collections::BTreeMap::new(),
+            rag_pending: None,
+            rag_receiver: None,
+            rag_task: None,
             log_drop_counter: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -566,6 +581,11 @@ impl AppState {
         self.spawn_onboarding_probe();
         self.poll_onboarding_events().await;
         self.process_run_events().await;
+        let had_pending = self.rag_pending;
+        self.process_rag_events();
+        if had_pending.is_some() && self.rag_pending.is_none() {
+            self.persist_rag_explanation();
+        }
     }
 
     /// Indica se há uma camada sobreposta capturando a interação.
@@ -703,6 +723,8 @@ impl AppState {
                         self.enrichment_warning = Some(line.clone());
                     }
                 }
+                // A explicação RAG usa canal próprio (`process_rag_events`).
+                RunEvent::RagExplanationFinished { .. } => {}
                 RunEvent::Completed {
                     orchestrator,
                     audit_log,
@@ -788,6 +810,69 @@ impl AppState {
             self.focus = FocusTarget::ResultsList;
         } else {
             self.run_receiver = Some(receiver);
+        }
+    }
+
+    /// Drena a explicação RAG pedida no detalhe (issue #109).
+    fn process_rag_events(&mut self) {
+        let Some(mut receiver) = self.rag_receiver.take() else {
+            return;
+        };
+        let mut keep = true;
+        loop {
+            match receiver.try_recv() {
+                Ok(RunEvent::RagExplanationFinished {
+                    finding_index,
+                    result,
+                }) => {
+                    self.apply_rag_result(finding_index, *result);
+                    keep = false;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    if self.rag_pending.is_some() {
+                        self.rag_pending = None;
+                        self.record_run_issue(
+                            RunIssueScope::Ai,
+                            "a explicação RAG encerrou sem resultado",
+                        );
+                    }
+                    keep = false;
+                    break;
+                }
+            }
+        }
+        if keep {
+            self.rag_receiver = Some(receiver);
+        } else {
+            self.rag_task.take();
+        }
+    }
+
+    /// Aplica o resultado da explicação na tela e no log estruturado.
+    ///
+    /// A gravação do log fica fora daqui: o teste do fluxo de memória não pode
+    /// escrever no diretório de configuração do usuário.
+    fn apply_rag_result(
+        &mut self,
+        finding_index: usize,
+        result: crate::cyberrag::service::ExplanationResult,
+    ) {
+        self.rag_pending = None;
+        self.exec_logs.push(format!("[rag] {}", result.summary()));
+        self.orchestrator.record_rag_explanation(&result);
+        self.rag_results.insert(finding_index, result);
+    }
+
+    /// Re-grava o log do scan com o veredito mais recente da explicação RAG.
+    fn persist_rag_explanation(&mut self) {
+        if let Err(error) = self.orchestrator.persist_scan_log() {
+            self.record_run_issue(
+                RunIssueScope::Ai,
+                format!("o log do scan não pôde ser regravado após a explicação: {error}"),
+            );
         }
     }
 
@@ -2084,6 +2169,60 @@ mod tests {
         )
         .await;
         assert_eq!(app.ai_activity, AiActivity::GeneratingGuidance);
+    }
+
+    fn rag_result(approved: bool) -> crate::cyberrag::service::ExplanationResult {
+        crate::cyberrag::service::ExplanationResult {
+            finding_index: 0,
+            text: if approved {
+                "Explicação".to_string()
+            } else {
+                String::new()
+            },
+            example: None,
+            claims: Vec::new(),
+            verdict: crate::cyberrag::ontology::OntologyVerdict {
+                aprovado: approved,
+                verificadas: usize::from(approved),
+                rejeitadas: Vec::new(),
+            },
+            provider: "NVIDIA NIM".to_string(),
+            model: "modelo".to_string(),
+            failure_reason: (!approved).then(|| "o provedor falhou".to_string()),
+            generated_at: "2026-10-14T00:00:00Z".to_string(),
+            retrieval_mode: "lexical".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rag_explanation_updates_the_state_and_the_structured_log() {
+        let mut app = app();
+        app.orchestrator.findings = vec![finding(Severity::High, "Achado")];
+        let (sender, receiver) = run_channel();
+        app.rag_receiver = Some(receiver);
+        app.rag_pending = Some(0);
+        sender
+            .try_send(RunEvent::RagExplanationFinished {
+                finding_index: 0,
+                result: Box::new(rag_result(true)),
+            })
+            .expect("canal aberto");
+
+        app.process_rag_events();
+
+        assert_eq!(app.rag_pending, None);
+        assert!(app
+            .rag_results
+            .get(&0)
+            .is_some_and(|stored| stored.approved()));
+        assert!(app.exec_logs.iter().any(|line| line.starts_with("[rag]")));
+        let metadata = app.orchestrator.scan_metadata();
+        assert_eq!(metadata.rag_explanations_count, 1);
+        assert!(
+            metadata.rag_ontology_verdict.contains("aprovada"),
+            "{}",
+            metadata.rag_ontology_verdict
+        );
     }
 
     #[tokio::test]

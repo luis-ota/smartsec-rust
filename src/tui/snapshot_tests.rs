@@ -346,6 +346,86 @@ fn result_empty_list_detail_and_didactic_match_80x24_snapshots() {
     assert_snapshot(&mut app, &["Explicação didática", "Em linguagem direta"]);
 }
 
+/// A explicação assistida (RAG) mostra o exemplo e o veredito, ou a recusa
+/// explícita com motivo.
+#[test]
+fn finding_detail_shows_the_rag_explanation_or_the_refusal() {
+    let mut app = app();
+    app.step = AppStep::Results;
+    app.orchestrator.findings = vec![finding()];
+    app.result_detail_vuln = Some(0);
+    app.focus = FocusTarget::ResultsDetail;
+
+    app.detail_scroll = usize::MAX;
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Detalhe do achado",
+            "Explicação assistida (RAG)",
+            "Explicar (IA)",
+        ],
+    );
+    assert!(
+        snapshot.contains("validada por ontologia"),
+        "estado inicial orienta a ação\n{snapshot}"
+    );
+
+    app.rag_pending = Some(0);
+    app.detail_scroll = usize::MAX;
+    let (snapshot, _) = render_80x24(&mut app);
+    assert!(snapshot.contains("gerando explicação…"), "{snapshot}");
+
+    app.rag_pending = None;
+    app.rag_results.insert(0, rag_result(true));
+    app.detail_scroll = usize::MAX;
+    let (snapshot, _) = render_80x24(&mut app);
+    assert!(
+        snapshot.contains("A entrada é concatenada na consulta."),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains("veredito"), "{snapshot}");
+    assert!(snapshot.contains("padrão seguro"), "{snapshot}");
+
+    app.rag_results.insert(0, rag_result(false));
+    app.detail_scroll = usize::MAX;
+    let (snapshot, _) = render_80x24(&mut app);
+    assert!(
+        snapshot.contains("não consegui explicar isto com segurança."),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains("o provedor falhou"), "{snapshot}");
+}
+
+fn rag_result(approved: bool) -> crate::cyberrag::service::ExplanationResult {
+    crate::cyberrag::service::ExplanationResult {
+        finding_index: 0,
+        text: if approved {
+            "A entrada é concatenada na consulta.".to_string()
+        } else {
+            String::new()
+        },
+        example: approved.then(|| crate::cyberrag::service::RetrievedExample {
+            id: "injecao_sql".to_string(),
+            titulo: "Injeção de SQL".to_string(),
+            padrao_seguro: "Use consulta parametrizada.".to_string(),
+            linguagem: Some("python".to_string()),
+            vulneravel: Some("cursor.execute(query + user)".to_string()),
+            corrigido: Some("cursor.execute(query, (user,))".to_string()),
+        }),
+        claims: Vec::new(),
+        verdict: crate::cyberrag::ontology::OntologyVerdict {
+            aprovado: approved,
+            verificadas: usize::from(approved),
+            rejeitadas: Vec::new(),
+        },
+        provider: "NVIDIA NIM".to_string(),
+        model: "modelo".to_string(),
+        failure_reason: (!approved).then(|| "o provedor falhou".to_string()),
+        generated_at: "2026-10-14T00:00:00Z".to_string(),
+        retrieval_mode: "lexical".to_string(),
+    }
+}
+
 /// Detalhe com evidência longa e saneada: o link com o scanner é o elemento
 /// central da tela de evidência e nunca pode vazar credencial.
 #[test]

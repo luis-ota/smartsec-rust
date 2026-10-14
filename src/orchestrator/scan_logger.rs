@@ -348,7 +348,6 @@ impl ScanMetadata {
     }
 
     /// A contagem acumula; o veredito no log é o da explicação mais recente.
-    #[allow(dead_code)] // consumido pela TUI do detalhe do achado no PR seguinte
     pub fn with_rag_explanation(
         mut self,
         result: &crate::cyberrag::service::ExplanationResult,

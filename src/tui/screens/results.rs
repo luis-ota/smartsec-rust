@@ -508,6 +508,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
             SUCCESS,
         );
         append_enrichment(&mut lines, &item, inner.width as usize);
+        append_rag_explanation(app, index, &mut lines, inner.width as usize);
         let has_scroll = lines.len() > inner.height as usize;
         let indicator_height = u16::from(has_scroll);
         let viewport = Rect::new(
@@ -570,6 +571,14 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
         "Voltar",
         SemanticAction::Back,
         chrome::ButtonState::secondary(app.focus == FocusTarget::ResultsBack),
+    );
+    chrome::render_button(
+        app,
+        frame,
+        actions[1],
+        "Explicar (IA)",
+        SemanticAction::ExplainFinding,
+        chrome::ButtonState::secondary(app.focus == FocusTarget::ResultsExplain),
     );
     chrome::render_button(
         app,
@@ -637,6 +646,80 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         "Voltar",
         SemanticAction::Back,
         chrome::ButtonState::secondary(app.focus == FocusTarget::DidacticBack),
+    );
+}
+
+/// Explicação assistida do achado: aprovada (com o exemplo do corpus) ou a
+/// recusa explícita — nunca um texto sem veredito.
+fn append_rag_explanation(
+    app: &AppState,
+    index: usize,
+    lines: &mut Vec<Line<'static>>,
+    width: usize,
+) {
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "Explicação assistida (RAG)",
+        Style::default().fg(TEXT).bold(),
+    ));
+    if app.rag_pending == Some(index) {
+        push_wrapped_owned(lines, "gerando explicação…".to_string(), width, MUTED);
+        return;
+    }
+    let Some(result) = app.rag_results.get(&index) else {
+        push_wrapped_owned(
+            lines,
+            "use \"Explicar (IA)\" para gerar uma explicação validada por ontologia.".to_string(),
+            width,
+            MUTED,
+        );
+        return;
+    };
+    if !result.approved() {
+        push_wrapped_owned(
+            lines,
+            "não consegui explicar isto com segurança.".to_string(),
+            width,
+            WARNING,
+        );
+        if let Some(reason) = result.failure_reason.as_deref() {
+            push_wrapped_owned(lines, reason.to_string(), width, MUTED);
+        }
+        return;
+    }
+    push_wrapped_owned(lines, result.text.clone(), width, MUTED);
+    if let Some(example) = result.example.as_ref() {
+        let language = example
+            .linguagem
+            .clone()
+            .unwrap_or_else(|| "código".to_string());
+        push_wrapped_owned(
+            lines,
+            format!("exemplo do corpus: {} ({language})", example.titulo),
+            width,
+            ACCENT,
+        );
+        for (label, code) in [
+            ("vulnerável", example.vulneravel.as_deref()),
+            ("corrigido", example.corrigido.as_deref()),
+        ] {
+            let Some(code) = code else { continue };
+            for line in code.lines() {
+                push_wrapped_owned(lines, format!("  {label}: {line}"), width, MUTED);
+            }
+        }
+        push_wrapped_owned(
+            lines,
+            format!("padrão seguro: {}", example.padrao_seguro),
+            width,
+            SUCCESS,
+        );
+    }
+    push_wrapped_owned(
+        lines,
+        format!("veredito: {}", result.verdict.summary()),
+        width,
+        SUCCESS,
     );
 }
 
