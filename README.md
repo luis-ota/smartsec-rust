@@ -4,7 +4,22 @@ Plataforma de analise de seguranca — prototipo escrito em Rust com interface d
 
 ## Instalacao
 
+Um comando, sem `sudo` (Linux `x86_64` ou `aarch64`):
+
 ```bash
+curl -fsSL https://github.com/luis-ota/smartsec-rust/releases/latest/download/install.sh | sh
+```
+
+O instalador baixa o pacote da release, confere o `SHA256SUMS` publicado e
+checa Podman rootless, o backend de rede `pasta` e os templates do Nuclei
+antes do primeiro scan. Versao fixa: `SMARTSEC_VERSION=v0.2.0`; destino:
+`SMARTSEC_INSTALL_DIR=~/.local/bin`.
+
+Compilando do codigo (desenvolvimento):
+
+```bash
+git clone https://github.com/luis-ota/smartsec-rust
+cd smartsec-rust
 ./scripts/install.sh
 ```
 
@@ -46,6 +61,7 @@ parte do catalogo executavel.
 - **Seis scanners reais**, cada um com imagem fixada por digest, rodando em container rootless
 - **Analise IA** com llama.cpp local por padrao e suporte a OpenAI / NVIDIA NIM / endpoint customizado
 - **Agente de codigo** que aponta `arquivo:linha` de cada achado depois dos scanners, em modo somente leitura
+- **Explicação assistida (RAG)** por achado: contexto recuperado num corpus próprio, validação simbólica contra ontologia e recusa explícita quando não há base segura ([docs/cyberrag.md](docs/cyberrag.md))
 - **Relatorio Markdown e PDF** com a mesma base sanitizada, entao os dois nao divergem
 - **Historico consultavel** por CLI e pela TUI, com log estruturado por execucao
 - **Evidencia segura** — sem corpos HTTP, credenciais ou query strings
