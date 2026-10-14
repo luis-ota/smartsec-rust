@@ -2,18 +2,15 @@
 //!
 //! Desenho derivado do artigo "Ontology-Aware RAG for Improved Question-Answering
 //! in Cybersecurity Education" (Zhao et al., IEEE BigData 2025, DOI
-//! 10.1109/BigData66926.2025.11401740, arXiv:2412.14191). A validação é a NOSSA
-//! adaptação: o artigo envia a ontologia a um juiz-LLM e recebe `Pass/Not Pass`;
-//! aqui as afirmações da resposta são conferidas contra triplas locais, de forma
-//! determinística e sem rede. O arquivo de ontologia é autoral — nada foi copiado
-//! do repositório de referência, que não tem licença.
+//! 10.1109/BigData66926.2025.11401740, arXiv:2412.14191). A validação simbólica
+//! local substitui o juiz-LLM do artigo (adaptação em docs/cyberrag.md); a
+//! ontologia é autoral — nada copiado do repo de referência (sem licença).
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Tipos de entidade aceitos pela ontologia.
 const ENTITY_KINDS: [&str; 4] = ["fraqueza", "ativo", "mitigacao", "tecnica"];
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -55,7 +52,6 @@ struct OntologyFile {
     triplas: Vec<OntologyTriple>,
 }
 
-/// Uma afirmação da resposta do modelo, a ser conferida contra a ontologia.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OntologyClaim {
     pub sujeito: String,
@@ -63,24 +59,21 @@ pub struct OntologyClaim {
     pub objeto: String,
 }
 
-/// Motivo pelo qual uma afirmação não foi aceita.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimRejection {
     pub claim: OntologyClaim,
     pub motivo: String,
 }
 
-/// Resultado da validação de um conjunto de afirmações.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OntologyVerdict {
-    /// Só aprova com pelo menos uma afirmação e nenhuma rejeição.
+    /// Só aprova com ≥1 afirmação e nenhuma rejeição.
     pub aprovado: bool,
     pub verificadas: usize,
     pub rejeitadas: Vec<ClaimRejection>,
 }
 
 impl OntologyVerdict {
-    /// Linha curta para a TUI, o relatório e o log estruturado.
     pub fn summary(&self) -> String {
         if self.aprovado {
             return format!(
@@ -105,7 +98,6 @@ impl OntologyVerdict {
     }
 }
 
-/// Ontologia carregada: entidades, relações, triplas e índices de rótulos.
 #[derive(Debug, Clone)]
 pub struct Ontology {
     meta: OntologyMeta,
@@ -117,23 +109,17 @@ pub struct Ontology {
 }
 
 impl Ontology {
-    /// Carrega a ontologia embutida no binário.
-    ///
-    /// O `expect` é deliberado: o arquivo faz parte do binário e a suíte valida
-    /// tanto o schema quanto a consistência dele com o corpus.
     pub fn embedded() -> Self {
         Self::from_toml(include_str!("../../assets/cyberrag/ontology.toml"))
             .expect("a ontologia embutida precisa ser um TOML válido")
     }
 
-    /// Carrega a ontologia de um arquivo do disco; usado para override local.
     pub fn from_path(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("Falha ao ler a ontologia em {path:?}"))?;
         Self::from_toml(&text)
     }
 
-    /// Interpreta o TOML e valida os invariantes de forma.
     pub fn from_toml(text: &str) -> Result<Self> {
         let file: OntologyFile = toml::from_str(text).context("TOML de ontologia inválido")?;
 
@@ -246,7 +232,6 @@ impl Ontology {
         self.triples.len()
     }
 
-    /// Ids das fraquezas declaradas; usado na consistência com o corpus.
     pub fn weakness_ids(&self) -> BTreeSet<&str> {
         self.entities
             .iter()
@@ -255,7 +240,6 @@ impl Ontology {
             .collect()
     }
 
-    /// Todas as triplas que saem de uma fraqueza, para inspeção e testes.
     pub fn triples_of(&self, relation: &str) -> Vec<(&str, &str)> {
         self.triples
             .iter()
@@ -264,10 +248,8 @@ impl Ontology {
             .collect()
     }
 
-    /// Vocabulário para o prompt de geração: ids, rótulos e relações.
-    ///
-    /// O modelo só consegue produzir afirmações verificáveis se o vocabulário
-    /// fechado estiver explícito no turno.
+    /// Vocabulário fechado do turno de geração: sem ele o modelo não produz
+    /// afirmações verificáveis.
     pub fn vocabulary_for_prompt(&self) -> String {
         let mut vocabulary = String::from("Entidades (id · tipo · rótulos):\n");
         for entity in &self.entities {
@@ -284,12 +266,8 @@ impl Ontology {
         vocabulary
     }
 
-    /// Confere cada afirmação contra as triplas declaradas.
-    ///
-    /// A resolução aceita id ou rótulo (com acento ou não): o modelo pode
-    /// escrever "injeção de SQL" ou `injecao_sql`, e as duas formas são a mesma
-    /// entidade. Uma afirmação sem tripla correspondente é rejeitada — nunca
-    /// passa como válida por parecer plausível.
+    /// Resolução por id ou rótulo (acento-insensível). Sem tripla correspondente,
+    /// a afirmação é rejeitada — plausível não basta.
     pub fn validate_claims(&self, claims: &[OntologyClaim]) -> OntologyVerdict {
         let mut rejeitadas = Vec::new();
         let mut verificadas = 0usize;
@@ -357,8 +335,6 @@ fn insert_label(index: &mut BTreeMap<String, String>, label: &str, id: &str) -> 
     }
 }
 
-/// Normaliza um rótulo para comparação: caixa baixa, sem acento, sem espaços
-/// duplicados e sem pontuação de borda.
 pub(crate) fn normalize_label(value: &str) -> String {
     let folded = crate::cyberrag::fold_accents(&value.to_lowercase());
     folded

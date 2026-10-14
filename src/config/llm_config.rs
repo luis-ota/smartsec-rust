@@ -151,6 +151,9 @@ pub struct LlmConfig {
     pub fallback_base_url: String,
     #[serde(default = "default_fallback_model")]
     pub fallback_model: String,
+    /// Modelo de embeddings; vazio liga a recuperação lexical do cyberrag.
+    #[serde(default)]
+    pub rag_embedding_model: String,
 }
 
 impl std::fmt::Debug for LlmConfig {
@@ -167,6 +170,7 @@ impl std::fmt::Debug for LlmConfig {
             .field("fallback_enabled", &self.fallback_enabled)
             .field("fallback_base_url", &self.fallback_base_url)
             .field("fallback_model", &self.fallback_model)
+            .field("rag_embedding_model", &self.rag_embedding_model)
             .finish()
     }
 }
@@ -218,6 +222,9 @@ impl LlmConfig {
                 );
             }
             validate_model(&self.fallback_model)?;
+        }
+        if !self.rag_embedding_model.trim().is_empty() {
+            validate_model(&self.rag_embedding_model)?;
         }
         Ok(())
     }
@@ -294,6 +301,7 @@ impl Default for LlmConfig {
             fallback_enabled: false,
             fallback_base_url: default_fallback_base_url(),
             fallback_model: default_fallback_model(),
+            rag_embedding_model: String::new(),
         }
     }
 }
@@ -445,6 +453,18 @@ mod tests {
         assert_eq!(config.provider, LlmProviderKind::LlamaCpp);
         assert!(config.base_url.is_empty());
         assert!(config.model.is_empty());
+        // Log gravado antes do campo continua válido e nasce sem embeddings.
+        assert!(config.rag_embedding_model.is_empty());
+    }
+
+    #[test]
+    fn rejects_an_embedding_model_with_spaces() {
+        let config = LlmConfig {
+            rag_embedding_model: "modelo com espaco".to_string(),
+            ..remote_de_teste()
+        };
+
+        assert!(config.validate().unwrap_err().contains("modelo"));
     }
 
     #[test]
