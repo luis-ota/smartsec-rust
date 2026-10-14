@@ -48,8 +48,11 @@ jobs:
           - alvo: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
             deb: true
+          # O aarch64 roda NATIVO no runner ARM: cross-compilar exigiria os
+          # índices apt binary-arm64, que só existem em ports.ubuntu.com e
+          # quebravam o setup dos espelhos amd64 do runner.
           - alvo: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04
+            runner: ubuntu-22.04-arm
             deb: false
     steps:
       - name: Obter o codigo
@@ -71,26 +74,9 @@ jobs:
         with:
           shared-key: smartsec-release-${{ matrix.alvo }}
 
-      - name: Instalar o toolchain de compilacao cruzada (aarch64)
-        if: matrix.alvo == 'aarch64-unknown-linux-gnu'
-        run: |
-          set -euo pipefail
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            gcc-aarch64-linux-gnu libdbus-1-dev:arm64
-
       - name: Compilar o binario release
         run: |
           set -euo pipefail
-          if [ "${{ matrix.alvo }}" = 'aarch64-unknown-linux-gnu' ]; then
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-            # O `ring` (rustls) compila C: sem CC/AR explicitos o build cruzado
-            # falha ou linka o gcc errado.
-            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-            export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
-            export PKG_CONFIG_ALLOW_CROSS=1
-          fi
           cargo build -j 1 --release --locked --target "${{ matrix.alvo }}" --bin smartsec
           ls -lh "target/${{ matrix.alvo }}/release/smartsec"
 
@@ -99,10 +85,8 @@ jobs:
           set -euo pipefail
           binario="target/${{ matrix.alvo }}/release/smartsec"
           file "$binario"
-          if [ "${{ matrix.alvo }}" = 'x86_64-unknown-linux-gnu' ]; then
-            "$binario" --version
-            "$binario" --help
-          fi
+          "$binario" --version
+          "$binario" --help
 
       - name: Empacotar tar.gz
         run: |
@@ -176,14 +160,16 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
+      # O checkout precisa vir ANTES do download: com `clean: true` ele esvazia
+      # o workspace e apagaria o diretório `artefatos` recém-baixado.
+      - name: Obter o codigo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Baixar os artefatos
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           path: artefatos
           merge-multiple: true
-
-      - name: Obter o codigo
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # O bootstrap do `curl | sh` e publicado como asset `install.sh`; ele baixa
       # o pacote do alvo certo, confere o SHA256 e delega ao install.sh completo
@@ -191,6 +177,9 @@ jobs:
       - name: Preparar o install.sh do curl | sh
         run: install -m 0755 scripts/install-remote.sh install.sh
 
+      # Os checksums e os artefatos vivem em `artefatos/` durante o job; o
+      # conteúdo do SHA256SUMS fica com `./nome` para o usuário conferir na
+      # pasta onde baixou.
       - name: Calcular os checksums dos artefatos publicados
         run: |
           set -euo pipefail
@@ -215,8 +204,8 @@ jobs:
             printf 'Ou baixe o pacote do seu alvo e rode `./install.sh` (docs/INSTALACAO.md).\n\n'
             printf '| Arquivo | SHA256 |\n|---|---|\n'
             while read -r soma arquivo; do
-              printf '| `%s` | `%s` |\n' "$arquivo" "$soma"
-            done <SHA256SUMS
+              printf '| `%s` | `%s` |\n' "${arquivo#./}" "$soma"
+            done <artefatos/SHA256SUMS
           } >NOTAS.md
           cat NOTAS.md
           gh release create "$TAG" \
@@ -224,4 +213,4 @@ jobs:
             --notes-file NOTAS.md \
             --verify-tag \
             ./install.sh \
-            ./*.tar.gz ./*.deb ./SHA256SUMS
+            artefatos/*.tar.gz artefatos/*.deb artefatos/SHA256SUMS
