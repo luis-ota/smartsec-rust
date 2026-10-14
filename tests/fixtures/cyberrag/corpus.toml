@@ -1,0 +1,36 @@
+# Fixture de teste do corpus do agente de explicação (conteúdo mínimo).
+[[entradas]]
+id = "injecao_sql"
+classe = "injecao_sql"
+cwe = "CWE-89"
+titulo = "Injeção de SQL por concatenação de entrada"
+descricao = "Entrada do usuário concatenada no comando SQL permite alterar a consulta."
+padrao_seguro = "Use consulta parametrizada e valide a entrada."
+referencias = ["CWE-89"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+cursor.execute("SELECT * FROM users WHERE name = '" + user + "'")
+"""
+corrigido = """
+cursor.execute("SELECT * FROM users WHERE name = ?", (user,))
+"""
+
+[[entradas]]
+id = "credencial_hardcoded"
+classe = "credencial_hardcoded"
+cwe = "CWE-798"
+titulo = "Credencial escrita no código-fonte"
+descricao = "Segredo fixo no repositório continua válido para quem já o copiou, mesmo após a troca."
+padrao_seguro = "Leia o segredo de variável de ambiente ou de um cofre de segredos."
+referencias = ["CWE-798"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+DB_PASSWORD = "senha-exemplo"
+"""
+corrigido = """
+DB_PASSWORD = os.environ["DB_PASSWORD"]
+"""

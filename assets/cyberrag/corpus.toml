@@ -1,0 +1,933 @@
+# assets/cyberrag/corpus.toml
+# Corpus autoral de fraquezas do CyberRAG (Fatia B1) - SmartSec.
+#
+# Atribuição obrigatória: estrutura inspirada, com reimplementação independente e texto
+# integralmente autoral, no artigo "Ontology-Aware RAG for Improved Question-Answering in
+# Cybersecurity Education", Zhao, Agrawal, Zhang, Kumarage, Tan, Deng, Chen, Liu (ASU) -
+# IEEE BigData 2025, pp. 3161-3170, DOI 10.1109/BigData66926.2025.11401740; arXiv:2412.14191
+# (artigo sob CC BY 4.0).
+# Nenhum trecho do repositório de referência (sem licença) nem de páginas do CWE foi copiado.
+# Referências aparecem somente como identificadores curtos.
+
+[[entradas]]
+id = "credencial_hardcoded"
+classe = "credencial_hardcoded"
+cwe = "CWE-798"
+titulo = "Credencial de acesso embutida no código-fonte"
+descricao = "Senhas, tokens e chaves fixados no código continuam válidos depois do deploy e acabam copiados para repositórios, artefatos de build e backups, onde ficam visíveis para qualquer leitor. Como não passam por rotação nem por controle de acesso, o vazamento exige recompilar ou reeditar o sistema e, mesmo assim, mantém o acesso ativo."
+padrao_seguro = "Carregar o segredo em tempo de execução a partir de variável de ambiente ou de um cofre de segredos, mantendo o arquivo de configuração local fora do versionamento e com rotação prevista. O valor nunca deve aparecer em log, mensagem de erro ou código de teste."
+referencias = ["CWE-798", "OWASP Secrets Management Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+import requests
+
+TOKEN_API = "token-exemplo-nao-real"
+
+def sincroniza():
+    return requests.get("https://api.interna.local/dados", headers={"Authorization": TOKEN_API})
+"""
+corrigido = """
+import os
+import requests
+
+def sincroniza():
+    token = os.environ["TOKEN_API"]
+    return requests.get("https://api.interna.local/dados", headers={"Authorization": token})
+"""
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+const jwt = require("jsonwebtoken");
+
+const CHAVE_ASSINATURA = "segredo-exemplo-123";
+
+function geraToken(usuario) {
+  return jwt.sign({ sub: usuario.id }, CHAVE_ASSINATURA);
+}
+"""
+corrigido = """
+const jwt = require("jsonwebtoken");
+
+function geraToken(usuario) {
+  return jwt.sign({ sub: usuario.id }, process.env.CHAVE_ASSINATURA);
+}
+"""
+
+[[entradas]]
+id = "injecao_sql"
+classe = "injecao_sql"
+cwe = "CWE-89"
+titulo = "Injeção de SQL por concatenação de entrada"
+descricao = "Montar a consulta por concatenação faz a entrada do usuário virar parte da sintaxe SQL, permitindo alterar o comando, ler outras tabelas e modificar dados. O problema não está no valor recebido, e sim na mistura entre dado e instrução dentro da mesma string."
+padrao_seguro = "Enviar a consulta com marcadores de posição e passar os valores separadamente, deixando o driver tratar o dado apenas como valor. Quando a entrada define identificador de coluna ou tabela, comparar com uma lista fixa de opções permitidas."
+referencias = ["CWE-89", "OWASP SQL Injection Prevention Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+def busca_usuario(cursor, nome):
+    consulta = "SELECT id, nome FROM usuarios WHERE nome = '" + nome + "'"
+    cursor.execute(consulta)
+    return cursor.fetchall()
+"""
+corrigido = """
+def busca_usuario(cursor, nome):
+    consulta = "SELECT id, nome FROM usuarios WHERE nome = %s"
+    cursor.execute(consulta, (nome,))
+    return cursor.fetchall()
+"""
+
+[[entradas.exemplos]]
+linguagem = "java"
+vulneravel = """
+public String buscaMatricula(String nome, Statement st) throws SQLException {
+    String sql = "SELECT matricula FROM usuarios WHERE nome = '" + nome + "'";
+    try (ResultSet rs = st.executeQuery(sql)) {
+        return rs.next() ? rs.getString(1) : null;
+    }
+}
+"""
+corrigido = """
+public String buscaMatricula(String nome, Connection con) throws SQLException {
+    String sql = "SELECT matricula FROM usuarios WHERE nome = ?";
+    try (PreparedStatement ps = con.prepareStatement(sql)) {
+        ps.setString(1, nome);
+        try (ResultSet rs = ps.executeQuery()) {
+            return rs.next() ? rs.getString(1) : null;
+        }
+    }
+}
+"""
+
+[[entradas]]
+id = "xss"
+classe = "xss"
+cwe = "CWE-79"
+titulo = "Execução de script injetado na página da vítima"
+descricao = "Quando dados controlados pelo usuário entram na página sem tratamento, o navegador executa o script embutido naquele conteúdo, dentro do contexto do próprio site. Com isso o atacante pode desviar a sessão do visitante, reescrever a interface exibida e agir em nome dele sem que perceba."
+padrao_seguro = "Escapar a saída de acordo com o contexto onde o dado será inserido (texto HTML, atributo ou bloco de script) e nunca inserir entrada do usuário como HTML bruto. Cabeçalhos de política de conteúdo reduzem o impacto, mas não substituem o escape."
+referencias = ["CWE-79", "OWASP Cross Site Scripting Prevention Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+app.get("/comentarios", (req, res) => {
+  const comentario = req.query.texto;
+  res.send("<p>Comentario: " + comentario + "</p>");
+});
+"""
+corrigido = """
+const escapeHtml = require("escape-html");
+
+app.get("/comentarios", (req, res) => {
+  const comentario = escapeHtml(req.query.texto);
+  res.send("<p>Comentario: " + comentario + "</p>");
+});
+"""
+
+[[entradas.exemplos]]
+linguagem = "php"
+vulneravel = """
+<?php
+$nome = $_GET['nome'];
+echo "<h1>Ola, " . $nome . "</h1>";
+"""
+corrigido = """
+<?php
+$nome = htmlspecialchars($_GET['nome'], ENT_QUOTES, 'UTF-8');
+echo "<h1>Ola, " . $nome . "</h1>";
+"""
+
+[[entradas]]
+id = "path_traversal"
+classe = "path_traversal"
+cwe = "CWE-22"
+titulo = "Leitura de arquivos fora do diretório previsto"
+descricao = "Sequências com pontos e barras fazem o caminho montado a partir da entrada escapar do diretório esperado e alcançar configuração, chaves e dados de outros usuários. O servidor entrega o arquivo com as permissões do próprio processo, então o limite do diretório público deixa de existir."
+padrao_seguro = "Não aceitar caminho vindo do cliente: usar um identificador lógico e resolver o arquivo no servidor contra uma lista de itens permitidos. Se o nome for inevitável, normalizar o caminho e confirmar que ele permanece dentro do diretório base."
+referencias = ["CWE-22", "OWASP Path Traversal"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.get("/arquivos")
+def baixar():
+    nome = request.args.get("nome", "")
+    return send_file(os.path.join(BASE, nome))
+"""
+corrigido = """
+NOMES_PERMITIDOS = {"resumo.pdf", "detalhe.csv"}
+
+@app.get("/arquivos")
+def baixar():
+    nome = request.args.get("nome", "")
+    if nome not in NOMES_PERMITIDOS:
+        abort(404)
+    return send_file(os.path.join(BASE, nome))
+"""
+
+[[entradas.exemplos]]
+linguagem = "java"
+vulneravel = """
+public String abre(String relatorio) throws IOException {
+    Path caminho = Paths.get("/var/dados", relatorio);
+    return Files.readString(caminho);
+}
+"""
+corrigido = """
+private static final Set<String> PERMITIDOS = Set.of("resumo.pdf", "detalhe.csv");
+
+public String abre(String relatorio) throws IOException {
+    Path base = Paths.get("/var/dados").toRealPath();
+    Path caminho = base.resolve(relatorio).normalize();
+    if (!PERMITIDOS.contains(relatorio) || !caminho.startsWith(base)) {
+        throw new IllegalArgumentException("arquivo nao permitido");
+    }
+    return Files.readString(caminho);
+}
+"""
+
+[[entradas]]
+id = "injecao_comando"
+classe = "injecao_comando"
+cwe = "CWE-78"
+titulo = "Execução de comandos do sistema via interpretador de shell"
+descricao = "Ao entregar entrada do usuário a um interpretador de shell, metacaracteres como ponto e vírgula e pipe passam a ser interpretados e executam instruções adicionais. O efeito é a execução de comandos com os privilégios do serviço, muito além da ação original prevista."
+padrao_seguro = "Chamar o programa diretamente, sem shell, passando argumentos como lista, e validar cada argumento contra uma lista permitida. A linha de comando nunca deve ser montada por concatenação de texto."
+referencias = ["CWE-78", "OWASP OS Command Injection Defense Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.post("/ping")
+def ping():
+    host = request.form["host"]
+    return os.popen("ping -c 1 " + host).read()
+"""
+corrigido = """
+HOSTS_PERMITIDOS = {"10.0.0.10", "10.0.0.11"}
+
+@app.post("/ping")
+def ping():
+    host = request.form["host"]
+    if host not in HOSTS_PERMITIDOS:
+        abort(400)
+    return subprocess.run(["ping", "-c", "1", host], capture_output=True, text=True).stdout
+"""
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+const { exec } = require("child_process");
+
+app.get("/backup", (req, res) => {
+  exec("tar -czf /tmp/backup.tgz " + req.query.diretorio, (erro, saida) => res.send(saida));
+});
+"""
+corrigido = """
+const { execFile } = require("child_process");
+
+app.get("/backup", (req, res) => {
+  const diretorio = req.query.diretorio;
+  if (!/^[a-z0-9_-]+$/.test(diretorio)) return res.status(400).end();
+  execFile("tar", ["-czf", "/tmp/backup.tgz", diretorio], (erro, saida) => res.send(saida));
+});
+"""
+
+[[entradas]]
+id = "ssrf"
+classe = "ssrf"
+cwe = "CWE-918"
+titulo = "Requisição do servidor para destino controlado pelo atacante"
+descricao = "A aplicação busca uma URL informada pelo usuário, mas a requisição sai do servidor e alcança endereços que o visitante não acessaria, como serviços internos e endpoints de metadados de nuvem. O atacante usa a aplicação como intermediária confiável para mapear e explorar a rede interna."
+padrao_seguro = "Restringir os destinos a uma lista fixa de hosts e esquemas permitidos e, quando o domínio for realmente livre, resolver o nome e bloquear loopback, faixas internas e endereços de metadados antes de conectar."
+referencias = ["CWE-918", "OWASP SSRF Prevention Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.post("/previa")
+def previa():
+    url = request.json["url"]
+    return requests.get(url).text
+"""
+corrigido = """
+DESTINOS_PERMITIDOS = {"https://imagens.exemplo.local/logo.png"}
+
+@app.post("/previa")
+def previa():
+    url = request.json["url"]
+    if url not in DESTINOS_PERMITIDOS:
+        abort(400)
+    return requests.get(url, timeout=5).text
+"""
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+app.post("/webhook", async (req, res) => {
+  const resposta = await fetch(req.body.destino);
+  res.send(await resposta.text());
+});
+"""
+corrigido = """
+const DESTINOS_PERMITIDOS = new Set(["https://servico-exemplo.local/eventos"]);
+
+app.post("/webhook", async (req, res) => {
+  if (!DESTINOS_PERMITIDOS.has(req.body.destino)) return res.status(400).end();
+  const resposta = await fetch(req.body.destino);
+  res.send(await resposta.text());
+});
+"""
+
+[[entradas]]
+id = "deserializacao_insegura"
+classe = "deserializacao_insegura"
+cwe = "CWE-502"
+titulo = "Desserialização de conteúdo controlado pelo usuário"
+descricao = "Formatos que carregam objetos, e não apenas dados, deixam o próprio conteúdo escolher classes e construir instâncias durante a leitura. Um desserializador genérico pode executar código ou abrir conexões antes de a aplicação validar qualquer campo."
+padrao_seguro = "Preferir formatos puramente declarativos, como JSON, convertendo depois para tipos conhecidos de forma explícita. Quando o formato binário for indispensável, limitar a leitura a uma lista de classes previstas e conferir o objeto resultante."
+referencias = ["CWE-502", "OWASP Deserialization Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+import pickle
+
+@app.post("/importar")
+def importar():
+    dados = pickle.loads(request.data)
+    return {"itens": len(dados)}
+"""
+corrigido = """
+import json
+
+@app.post("/importar")
+def importar():
+    dados = json.loads(request.data)
+    if not isinstance(dados, list):
+        abort(400)
+    return {"itens": len(dados)}
+"""
+
+[[entradas.exemplos]]
+linguagem = "java"
+vulneravel = """
+public Preferencias carrega(InputStream corpo) throws Exception {
+    try (ObjectInputStream fluxo = new ObjectInputStream(corpo)) {
+        return (Preferencias) fluxo.readObject();
+    }
+}
+"""
+corrigido = """
+private static final ObjectInputFilter FILTRO = info -> {
+    Class<?> classe = info.serialClass();
+    if (classe == null) return ObjectInputFilter.Status.UNDECIDED;
+    return classe == Preferencias.class ? ObjectInputFilter.Status.ALLOWED
+                                        : ObjectInputFilter.Status.REJECTED;
+};
+
+public Preferencias carrega(InputStream corpo) throws Exception {
+    try (ObjectInputStream fluxo = new ObjectInputStream(corpo)) {
+        fluxo.setObjectInputFilter(FILTRO);
+        return (Preferencias) fluxo.readObject();
+    }
+}
+"""
+
+[[entradas]]
+id = "xxe"
+classe = "xxe"
+cwe = "CWE-611"
+titulo = "Entidades externas resolvidas pelo parser XML"
+descricao = "Um parser XML configurado para resolver entidades externas lê arquivos locais ou busca URLs indicadas no próprio documento enviado. O XML vira um caminho de leitura de arquivos e de requisições disparadas pelo servidor, inclusive contra a rede interna."
+padrao_seguro = "Desativar a resolução de entidades externas, o acesso à rede e a validação de DTD no parser, aceitando apenas o subconjunto de XML necessário. Manter a biblioteca de parsing atualizada e restringir o tamanho do documento."
+referencias = ["CWE-611", "OWASP XML External Entity Prevention Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+from lxml import etree
+
+@app.post("/nota")
+def nota():
+    arvore = etree.parse(request.stream)
+    return {"numero": arvore.findtext("numero")}
+"""
+corrigido = """
+from lxml import etree
+
+PARSER_SEGURO = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+
+@app.post("/nota")
+def nota():
+    arvore = etree.parse(request.stream, PARSER_SEGURO)
+    return {"numero": arvore.findtext("numero")}
+"""
+
+[[entradas.exemplos]]
+linguagem = "java"
+vulneravel = """
+DocumentBuilderFactory fabrica = DocumentBuilderFactory.newInstance();
+Document documento = fabrica.newDocumentBuilder().parse(corpo);
+return documento.getElementsByTagName("numero").item(0).getTextContent();
+"""
+corrigido = """
+DocumentBuilderFactory fabrica = DocumentBuilderFactory.newInstance();
+fabrica.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+fabrica.setXIncludeAware(false);
+fabrica.setExpandEntityReferences(false);
+Document documento = fabrica.newDocumentBuilder().parse(corpo);
+return documento.getElementsByTagName("numero").item(0).getTextContent();
+"""
+
+[[entradas]]
+id = "csrf"
+classe = "csrf"
+cwe = "CWE-352"
+titulo = "Ação autenticada disparada por outra origem"
+descricao = "O navegador envia os cookies do site automaticamente, então uma página de terceiros consegue disparar operações autenticadas sem o usuário perceber. O alvo é a confiança que o servidor deposita na requisição apenas por ela carregar a sessão da vítima."
+padrao_seguro = "Exigir em toda requisição que altera estado um token imprevisível, vinculado à sessão e não recuperável por outra origem, comparado com tempo constante. Marcar o cookie de sessão como SameSite reduz o vetor, mas não dispensa o token."
+referencias = ["CWE-352", "OWASP Cross-Site Request Forgery Prevention Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.post("/conta/email")
+def atualiza_email():
+    usuario = sessao_atual()
+    usuario.email = request.form["email"]
+    db.session.commit()
+    return redirect("/conta")
+"""
+corrigido = """
+@app.post("/conta/email")
+def atualiza_email():
+    enviado = request.form.get("csrf_token", "")
+    if not secrets.compare_digest(enviado, session["csrf_token"]):
+        abort(403)
+    usuario = sessao_atual()
+    usuario.email = request.form["email"]
+    db.session.commit()
+    return redirect("/conta")
+"""
+
+[[entradas.exemplos]]
+linguagem = "php"
+vulneravel = """
+<?php
+$usuario = usuario_atual();
+$usuario->email = $_POST['email'];
+$usuario->save();
+echo "Email atualizado";
+"""
+corrigido = """
+<?php
+if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) {
+    http_response_code(403);
+    exit;
+}
+$usuario = usuario_atual();
+$usuario->email = $_POST['email'];
+$usuario->save();
+echo "Email atualizado";
+"""
+
+[[entradas]]
+id = "open_redirect"
+classe = "open_redirect"
+cwe = "CWE-601"
+titulo = "Redirecionamento para destino externo informado pelo usuário"
+descricao = "A aplicação aceita um destino de redirecionamento vindo de parâmetro e encaminha o visitante para o site indicado, mantendo o domínio confiável na primeira etapa do fluxo. Isso dá credibilidade a páginas de phishing e a formulários falsos de coleta de credenciais."
+padrao_seguro = "Usar apenas destinos internos previstos em lista permitida, ou um identificador que o servidor converte no caminho correto, nunca a URL completa recebida. Rejeitar valores absolutos e esquemas externos antes de responder."
+referencias = ["CWE-601", "OWASP Unvalidated Redirects and Forwards Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.get("/entrar")
+def entrar():
+    destino = request.args.get("proximo", "/painel")
+    return redirect(destino)
+"""
+corrigido = """
+DESTINOS_PERMITIDOS = {"/painel", "/perfil"}
+
+@app.get("/entrar")
+def entrar():
+    destino = request.args.get("proximo", "/painel")
+    if destino not in DESTINOS_PERMITIDOS:
+        destino = "/painel"
+    return redirect(destino)
+"""
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+app.get("/sair", (req, res) => {
+  res.redirect(req.query.proximo);
+});
+"""
+corrigido = """
+const DESTINOS_PERMITIDOS = new Set(["/painel", "/entrar"]);
+
+app.get("/sair", (req, res) => {
+  const destino = DESTINOS_PERMITIDOS.has(req.query.proximo) ? req.query.proximo : "/painel";
+  res.redirect(destino);
+});
+"""
+
+[[entradas]]
+id = "upload_inseguro"
+classe = "upload_inseguro"
+cwe = "CWE-434"
+titulo = "Upload de arquivo executável em área servida"
+descricao = "Aceitar o arquivo enviado sem conferir tipo, tamanho e destino permite gravar conteúdo executável dentro da área publicada pela aplicação. Basta que o nome termine em uma extensão interpretada pelo servidor para o arquivo virar código em execução."
+padrao_seguro = "Validar tipo e tamanho, renomear o arquivo com identificador gerado pelo servidor e guardá-lo fora da árvore servida diretamente. Se o conteúdo precisar ser público, entregue-o por rota controlada que confere permissão."
+referencias = ["CWE-434", "OWASP File Upload Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "php"
+vulneravel = """
+<?php
+$destino = __DIR__ . '/uploads/' . basename($_FILES['arquivo']['name']);
+move_uploaded_file($_FILES['arquivo']['tmp_name'], $destino);
+echo "Arquivo enviado";
+"""
+corrigido = """
+<?php
+$tipos = ['image/png' => 'png', 'image/jpeg' => 'jpg'];
+$tipo = mime_content_type($_FILES['arquivo']['tmp_name']);
+if (!isset($tipos[$tipo]) || $_FILES['arquivo']['size'] > 2_000_000) {
+    http_response_code(400);
+    exit;
+}
+$destino = dirname(__DIR__) . '/armazenamento/' . bin2hex(random_bytes(8)) . '.' . $tipos[$tipo];
+move_uploaded_file($_FILES['arquivo']['tmp_name'], $destino);
+"""
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.post("/avatar")
+def avatar():
+    arquivo = request.files["avatar"]
+    arquivo.save(os.path.join(PASTA_PUBLICA, arquivo.filename))
+    return {"ok": True}
+"""
+corrigido = """
+EXTENSOES = {".png", ".jpg"}
+
+@app.post("/avatar")
+def avatar():
+    arquivo = request.files["avatar"]
+    extensao = os.path.splitext(arquivo.filename)[1].lower()
+    if extensao not in EXTENSOES:
+        abort(400)
+    nome = secrets.token_hex(8) + extensao
+    arquivo.save(os.path.join(PASTA_PRIVADA, nome))
+    return {"nome": nome}
+"""
+
+[[entradas]]
+id = "criptografia_fraca"
+classe = "criptografia_fraca"
+cwe = "CWE-327"
+titulo = "Uso de algoritmo criptográfico obsoleto"
+descricao = "Algoritmos como MD5, SHA-1 e DES já não oferecem resistência suficiente: colisões e quebras são viáveis com recursos comuns. Senhas protegidas assim caem rápido por tabelas pré-calculadas e por tentativa exaustiva, mesmo que pareçam embaralhadas."
+padrao_seguro = "Escolher algoritmo moderno e adequado ao uso: derivação de chave com custo ajustável para senhas (bcrypt, scrypt ou Argon2) e cifra autenticada para dados em repouso. Migrar hashes antigos no próximo login bem-sucedido, sem exigir troca imediata."
+referencias = ["CWE-327", "OWASP Password Storage Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+import hashlib
+
+def hash_senha(senha):
+    return hashlib.md5(senha.encode()).hexdigest()
+"""
+corrigido = """
+import bcrypt
+
+def hash_senha(senha):
+    return bcrypt.hashpw(senha.encode(), bcrypt.gensalt(rounds=12))
+"""
+
+[[entradas.exemplos]]
+linguagem = "java"
+vulneravel = """
+MessageDigest digest = MessageDigest.getInstance("SHA-1");
+byte[] hash = digest.digest(senha.getBytes(StandardCharsets.UTF_8));
+return Base64.getEncoder().encodeToString(hash);
+"""
+corrigido = """
+byte[] sal = new byte[16];
+new SecureRandom().nextBytes(sal);
+PBEKeySpec spec = new PBEKeySpec(senha.toCharArray(), sal, 210_000, 256);
+SecretKeyFactory fabrica = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+byte[] hash = fabrica.generateSecret(spec).getEncoded();
+return Base64.getEncoder().encodeToString(sal) + ":" + Base64.getEncoder().encodeToString(hash);
+"""
+
+[[entradas]]
+id = "autenticacao_fraca"
+classe = "autenticacao_fraca"
+cwe = "CWE-287"
+titulo = "Decisão de acesso baseada em valor controlado pelo cliente"
+descricao = "Confiar em cabeçalho, parâmetro de papel ou comparação simples de senha equivale a aceitar a palavra do visitante sobre quem ele é. Fluxos assim cedem acesso indevido sem exigir credencial válida e sem segundo fator para operações sensíveis."
+padrao_seguro = "Verificar a credencial no servidor com hash e comparação de tempo constante, derivar o papel sempre da sessão autenticada e exigir segundo fator em ações sensíveis. A resposta de falha deve ser genérica e idêntica para usuário existente ou inexistente."
+referencias = ["CWE-287", "OWASP Authentication Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+app.get("/admin", (req, res) => {
+  if (req.headers["x-papel"] === "admin") {
+    return res.json({ relatorio: "consolidado-exemplo" });
+  }
+  res.status(403).end();
+});
+"""
+corrigido = """
+app.get("/admin", (req, res) => {
+  const sessao = verificaTokenDeSessao(req.cookies.sessao);
+  if (!sessao || sessao.papel !== "admin") return res.status(403).end();
+  res.json({ relatorio: "consolidado-exemplo" });
+});
+"""
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.post("/login")
+def login():
+    usuario = usuarios_por_nome(request.json.get("usuario", ""))
+    if usuario is not None and usuario.senha == request.json.get("senha", ""):
+        return {"token": emite_token(usuario)}
+    return {"erro": "falha no login"}, 401
+"""
+corrigido = """
+@app.post("/login")
+def login():
+    usuario = usuarios_por_nome(request.json.get("usuario", ""))
+    if usuario is None or not bcrypt.checkpw(request.json.get("senha", "").encode(), usuario.senha_hash):
+        return {"erro": "credenciais invalidas"}, 401
+    if not totp.verifica(usuario.segredo_totp, request.json.get("codigo", "")):
+        return {"erro": "credenciais invalidas"}, 401
+    return {"token": emite_token(usuario)}
+"""
+
+[[entradas]]
+id = "sessao_insegura"
+classe = "sessao_insegura"
+cwe = "CWE-384"
+titulo = "Identificador de sessão mantido após o login"
+descricao = "Reaproveitar o mesmo identificador de sessão antes e depois da autenticação permite que um valor conhecido pelo atacante passe a valer como sessão autenticada. Cookies sem HttpOnly, Secure e SameSite ampliam a exposição por script ou por conexão sem TLS."
+padrao_seguro = "Regenerar o identificador de sessão no login e em toda mudança de privilégio, invalidando o valor anterior, e emitir o cookie com HttpOnly, Secure e SameSite. Definir expiração curta e destruir a sessão de fato no logout."
+referencias = ["CWE-384", "OWASP Session Management Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.post("/login")
+def login():
+    if confere_credenciais(request.form["usuario"], request.form["senha"]):
+        session["usuario"] = request.form["usuario"]
+        return redirect("/painel")
+"""
+corrigido = """
+@app.post("/login")
+def login():
+    if confere_credenciais(request.form["usuario"], request.form["senha"]):
+        session.clear()
+        session["identificador"] = secrets.token_urlsafe(32)
+        session["usuario"] = request.form["usuario"]
+        return redirect("/painel")
+"""
+
+[[entradas.exemplos]]
+linguagem = "php"
+vulneravel = """
+<?php
+session_start();
+$_SESSION['usuario'] = $_POST['usuario'];
+echo "Sessao iniciada para " . $_SESSION['usuario'];
+"""
+corrigido = """
+<?php
+session_set_cookie_params(['httponly' => true, 'secure' => true, 'samesite' => 'Lax']);
+session_start();
+session_regenerate_id(true);
+$_SESSION['usuario'] = $_POST['usuario'];
+echo "Sessao iniciada";
+"""
+
+[[entradas]]
+id = "configuracao_insegura"
+classe = "configuracao_insegura"
+cwe = "CWE-16"
+titulo = "Padrão de desenvolvimento mantido em produção"
+descricao = "Opções convenientes em desenvolvimento, como modo de depuração ligado, escuta em todas as interfaces e origem de CORS livre, viajam para produção junto com a aplicação. O resultado é superfície extra exposta sem que nenhuma linha de código tenha mudado."
+padrao_seguro = "Fixar explicitamente as opções sensíveis: depuração desligada, escuta restrita às interfaces necessárias e lista fechada de origens e métodos em CORS. Tratar configuração como código revisado, versionado e diferente entre ambientes."
+referencias = ["CWE-16", "OWASP Security Headers"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+from flask import Flask
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app, origins="*", supports_credentials=True)
+
+app.run(debug=True, host="0.0.0.0")
+"""
+corrigido = """
+from flask import Flask
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app, origins=["https://app.exemplo.local"], supports_credentials=True)
+
+app.run(debug=False, host="127.0.0.1")
+"""
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+const app = require("express")();
+
+app.set("trust proxy", true);
+app.use(require("cors")({ origin: true, credentials: true }));
+app.listen(3000);
+"""
+corrigido = """
+const app = require("express")();
+
+app.use(require("cors")({ origin: ["https://app.exemplo.local"], credentials: true }));
+app.use(require("helmet")());
+app.listen(3000, "127.0.0.1");
+"""
+
+[[entradas]]
+id = "divulgacao_por_erro"
+classe = "divulgacao_por_erro"
+cwe = "CWE-209"
+titulo = "Detalhes internos devolvidos na mensagem de erro"
+descricao = "Devolver a exceção completa ao cliente entrega nomes de tabelas, caminhos de arquivos e detalhes de infraestrutura que ajudam a planejar o ataque seguinte. O mesmo vale para logs operacionais que guardam dado sensível sem necessidade."
+padrao_seguro = "Responder com mensagem genérica acompanhada de um identificador de correlação, registrando o detalhe apenas no log interno, sem segredo nem dado pessoal. Restringir o acesso aos logs a quem precisa deles."
+referencias = ["CWE-209", "OWASP Error Handling Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.errorhandler(Exception)
+def trata_erro(erro):
+    return {"erro": str(erro), "traceback": traceback.format_exc()}, 500
+"""
+corrigido = """
+@app.errorhandler(Exception)
+def trata_erro(erro):
+    referencia = uuid.uuid4().hex
+    app.logger.exception("falha interna na requisicao %s", referencia)
+    return {"erro": "erro interno", "referencia": referencia}, 500
+"""
+
+[[entradas.exemplos]]
+linguagem = "java"
+vulneravel = """
+try {
+    servico.processa(requisicao);
+} catch (Exception erro) {
+    resposta.setStatus(500);
+    resposta.getWriter().write(erro.toString());
+}
+"""
+corrigido = """
+try {
+    servico.processa(requisicao);
+} catch (Exception erro) {
+    String referencia = UUID.randomUUID().toString();
+    logger.log(Level.SEVERE, "falha interna " + referencia, erro);
+    resposta.setStatus(500);
+    resposta.getWriter().write("erro interno; referencia " + referencia);
+}
+"""
+
+[[entradas]]
+id = "ssti"
+classe = "ssti"
+cwe = "CWE-1336"
+titulo = "Entrada do usuário interpretada como template"
+descricao = "Se a entrada é concatenada ao texto do template, o motor a analisa como parte da linguagem e avalia expressões arbitrárias. Isso expõe variáveis internas e, em muitos casos, permite executar comandos no servidor."
+padrao_seguro = "Manter os templates fixos, escritos pelo time, recebendo a entrada somente como dado de contexto. Executar os templates em ambiente de sandbox com autoescape e nunca montar o texto do template em tempo de execução."
+referencias = ["CWE-1336", "OWASP Server Side Template Injection"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+from flask import render_template_string
+
+@app.get("/ola")
+def ola():
+    nome = request.args.get("nome", "")
+    return render_template_string("<h1>Ola " + nome + "</h1>")
+"""
+corrigido = """
+from jinja2.sandbox import SandboxedEnvironment
+
+ambiente = SandboxedEnvironment(autoescape=True)
+
+@app.get("/ola")
+def ola():
+    nome = request.args.get("nome", "")
+    return ambiente.from_string("<h1>Ola {{ nome }}</h1>").render(nome=nome)
+"""
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+const handlebars = require("handlebars");
+
+app.get("/saudacao", (req, res) => {
+  const modelo = handlebars.compile("Ola " + req.query.nome);
+  res.send(modelo({}));
+});
+"""
+corrigido = """
+const handlebars = require("handlebars");
+
+app.get("/saudacao", (req, res) => {
+  const modelo = handlebars.compile("Ola {{nome}}");
+  res.send(modelo({ nome: req.query.nome }));
+});
+"""
+
+[[entradas]]
+id = "injecao_ldap"
+classe = "injecao_ldap"
+cwe = "CWE-90"
+titulo = "Filtro LDAP montado por concatenação"
+descricao = "Filtros LDAP montados por concatenação deixam caracteres especiais, como asterisco e parênteses, alterar a condição de busca. O atacante amplia resultados, inverte a lógica do filtro e, em alguns fluxos, autentica sem conhecer a senha."
+padrao_seguro = "Escapar os caracteres especiais do filtro com a função própria da biblioteca e limitar a entrada aos caracteres esperados no campo. Filtro, base de busca e nome distinto nunca devem vir prontos do cliente."
+referencias = ["CWE-90", "OWASP LDAP Injection Prevention Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+def busca(conexao, usuario):
+    filtro = "(&(objectClass=person)(uid=" + usuario + "))"
+    conexao.search("ou=people,dc=exemplo", filtro)
+    return conexao.entries
+"""
+corrigido = """
+from ldap3.utils.conv import escape_filter_chars
+
+def busca(conexao, usuario):
+    filtro = "(&(objectClass=person)(uid=" + escape_filter_chars(usuario) + "))"
+    conexao.search("ou=people,dc=exemplo", filtro)
+    return conexao.entries
+"""
+
+[[entradas.exemplos]]
+linguagem = "java"
+vulneravel = """
+String filtro = "(&(objectClass=person)(uid=" + usuario + "))";
+NamingEnumeration<SearchResult> resultado =
+        contexto.search("ou=people,dc=exemplo", filtro, controles);
+return resultado.hasMore() ? resultado.next().getNameInNamespace() : null;
+"""
+corrigido = """
+if (!usuario.matches("[A-Za-z0-9._-]{1,32}")) {
+    throw new IllegalArgumentException("usuario invalido");
+}
+String filtro = "(&(objectClass=person)(uid=" + usuario + "))";
+NamingEnumeration<SearchResult> resultado =
+        contexto.search("ou=people,dc=exemplo", filtro, controles);
+return resultado.hasMore() ? resultado.next().getNameInNamespace() : null;
+"""
+
+[[entradas]]
+id = "limite_de_taxa_ausente"
+classe = "limite_de_taxa_ausente"
+cwe = "CWE-770"
+titulo = "Ausência de limite de requisições em rota sensível"
+descricao = "Sem limite no número de chamadas, rotas como login, envio de mensagem e recuperação de senha podem ser repetidas milhares de vezes. Isso viabiliza força bruta de credenciais, consumo excessivo de recurso e indisponibilidade por esgotamento do serviço."
+padrao_seguro = "Aplicar limite por conta e por origem nas rotas sensíveis, com janela deslizante, atraso progressivo e bloqueio temporário depois do excesso. Registrar as tentativas e devolver resposta clara quando o limite for atingido."
+referencias = ["CWE-770", "OWASP Denial of Service Cheat Sheet"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+@app.post("/login")
+def login():
+    return autentica(request.form["usuario"], request.form["senha"])
+"""
+corrigido = """
+limite = Limiter(key_func=get_remote_address)
+
+@app.post("/login")
+@limite.limit("5/minute")
+def login():
+    return autentica(request.form["usuario"], request.form["senha"])
+"""
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+app.post("/recuperar-senha", async (req, res) => {
+  await enviaEmail(req.body.email);
+  res.json({ ok: true });
+});
+"""
+corrigido = """
+const rateLimit = require("express-rate-limit");
+const limite = rateLimit({ windowMs: 60_000, max: 5 });
+
+app.post("/recuperar-senha", limite, async (req, res) => {
+  await enviaEmail(req.body.email);
+  res.json({ ok: true });
+});
+"""
+
+[[entradas]]
+id = "dependencia_vulneravel"
+classe = "dependencia_vulneravel"
+cwe = "CWE-1104"
+titulo = "Dependência de biblioteca sem manutenção"
+descricao = "Bibliotecas antigas carregam falhas já públicas, e a aplicação passa a expor vulnerabilidades que não aparecem em nenhuma linha escrita no projeto. Versões fixadas sem acompanhamento raramente recebem correção e por vezes ficam anos sem atualização."
+padrao_seguro = "Manter as dependências em versões sustentadas, revisar avisos de vulnerabilidade continuamente e automatizar a verificação no pipeline de build. Remover bibliotecas sem uso reduz a superfície que precisa ser atualizada."
+referencias = ["CWE-1104", "OWASP Vulnerable and Outdated Components", "OWASP Dependency-Check"]
+
+[[entradas.exemplos]]
+linguagem = "java"
+vulneravel = """
+<dependency>
+  <groupId>org.apache.logging.log4j</groupId>
+  <artifactId>log4j-core</artifactId>
+  <version>2.14.1</version>
+</dependency>
+"""
+corrigido = """
+<dependency>
+  <groupId>org.apache.logging.log4j</groupId>
+  <artifactId>log4j-core</artifactId>
+  <version>2.20.0</version>
+</dependency>
+"""
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+# requirements.txt sem revisao de alertas
+flask==1.0.2
+pyyaml==3.13
+"""
+corrigido = """
+# requirements.txt verificado por auditoria no pipeline
+flask==3.0.3
+pyyaml==6.0.1
+"""

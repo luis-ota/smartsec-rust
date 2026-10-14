@@ -1,0 +1,753 @@
+# ontologia.toml — ontologia do corpus CyberRAG do SmartSec
+# Reimplementação independente inspirada em:
+# "Ontology-Aware RAG for Improved Question-Answering in Cybersecurity Education",
+# Zhao, Agrawal, Zhang, Kumarage, Tan, Deng, Chen, Liu (ASU) — IEEE BigData 2025,
+# pp. 3161–3170, DOI 10.1109/BigData66926.2025.11401740; arXiv:2412.14191.
+# Artigo original sob CC BY 4.0. Nenhum conteúdo foi copiado do repositório de
+# referência (sem licença) nem de páginas do CWE; ids e textos são autorais.
+
+[meta]
+versao = "0.1.0"
+autor = "SmartSec (autoral)"
+data = "2026-10-14"
+escopo = "classes de fraqueza, ativos e mitigações do corpus do agente de explicação"
+
+[[entidades]]
+id = "credencial_hardcoded"
+tipo = "fraqueza"
+rotulos = ["credencial embutida no código", "hardcoded credentials", "segredo no código-fonte"]
+
+[[entidades]]
+id = "injecao_sql"
+tipo = "fraqueza"
+rotulos = ["injeção de SQL", "SQL injection", "injeção de consulta SQL"]
+
+[[entidades]]
+id = "xss"
+tipo = "fraqueza"
+rotulos = ["script entre sites", "cross-site scripting", "XSS"]
+
+[[entidades]]
+id = "path_traversal"
+tipo = "fraqueza"
+rotulos = ["travessia de caminho", "path traversal", "directory traversal"]
+
+[[entidades]]
+id = "injecao_comando"
+tipo = "fraqueza"
+rotulos = ["injeção de comando", "command injection", "injeção de comando de sistema operacional"]
+
+[[entidades]]
+id = "ssrf"
+tipo = "fraqueza"
+rotulos = ["falsificação de requisição pelo servidor", "server-side request forgery", "SSRF"]
+
+[[entidades]]
+id = "deserializacao_insegura"
+tipo = "fraqueza"
+rotulos = ["desserialização insegura", "insecure deserialization", "desserialização de dados não confiáveis"]
+
+[[entidades]]
+id = "xxe"
+tipo = "fraqueza"
+rotulos = ["entidade externa em XML", "XML external entity", "XXE"]
+
+[[entidades]]
+id = "csrf"
+tipo = "fraqueza"
+rotulos = ["falsificação de requisição entre sites", "cross-site request forgery", "CSRF"]
+
+[[entidades]]
+id = "open_redirect"
+tipo = "fraqueza"
+rotulos = ["redirecionamento aberto", "open redirect", "redirecionamento não validado"]
+
+[[entidades]]
+id = "upload_inseguro"
+tipo = "fraqueza"
+rotulos = ["upload de arquivo inseguro", "unrestricted file upload", "upload sem validação"]
+
+[[entidades]]
+id = "criptografia_fraca"
+tipo = "fraqueza"
+rotulos = ["criptografia fraca", "weak cryptography", "uso de algoritmo criptográfico quebrado"]
+
+[[entidades]]
+id = "autenticacao_fraca"
+tipo = "fraqueza"
+rotulos = ["autenticação fraca", "weak authentication", "falha de autenticação"]
+
+[[entidades]]
+id = "sessao_insegura"
+tipo = "fraqueza"
+rotulos = ["sessão insegura", "insecure session management", "fixação de sessão"]
+
+[[entidades]]
+id = "configuracao_insegura"
+tipo = "fraqueza"
+rotulos = ["configuração insegura", "security misconfiguration", "configuração sem endurecimento"]
+
+[[entidades]]
+id = "divulgacao_por_erro"
+tipo = "fraqueza"
+rotulos = ["divulgação por mensagem de erro", "error information disclosure", "vazamento por rastro de pilha"]
+
+[[entidades]]
+id = "ssti"
+tipo = "fraqueza"
+rotulos = ["injeção de template no servidor", "server-side template injection", "SSTI"]
+
+[[entidades]]
+id = "injecao_ldap"
+tipo = "fraqueza"
+rotulos = ["injeção de LDAP", "LDAP injection", "injeção de filtro LDAP"]
+
+[[entidades]]
+id = "limite_de_taxa_ausente"
+tipo = "fraqueza"
+rotulos = ["ausência de limite de taxa", "missing rate limiting", "sem limitação de requisições"]
+
+[[entidades]]
+id = "dependencia_vulneravel"
+tipo = "fraqueza"
+rotulos = ["dependência vulnerável", "vulnerable dependency", "componente de terceiro desatualizado"]
+
+[[entidades]]
+id = "codigo_fonte"
+tipo = "ativo"
+rotulos = ["código-fonte", "source code"]
+
+[[entidades]]
+id = "credenciais"
+tipo = "ativo"
+rotulos = ["credenciais", "credentials", "segredos de autenticação"]
+
+[[entidades]]
+id = "banco_de_dados"
+tipo = "ativo"
+rotulos = ["banco de dados", "database"]
+
+[[entidades]]
+id = "sessao_usuario"
+tipo = "ativo"
+rotulos = ["sessão do usuário", "user session"]
+
+[[entidades]]
+id = "sistema_arquivos"
+tipo = "ativo"
+rotulos = ["sistema de arquivos", "file system"]
+
+[[entidades]]
+id = "rede_interna"
+tipo = "ativo"
+rotulos = ["rede interna", "internal network"]
+
+[[entidades]]
+id = "navegador_usuario"
+tipo = "ativo"
+rotulos = ["navegador do usuário", "user browser"]
+
+[[entidades]]
+id = "servidor_aplicacao"
+tipo = "ativo"
+rotulos = ["servidor de aplicação", "application server"]
+
+[[entidades]]
+id = "api"
+tipo = "ativo"
+rotulos = ["API", "interface de programação de aplicações"]
+
+[[entidades]]
+id = "logs"
+tipo = "ativo"
+rotulos = ["logs", "registros de log"]
+
+[[entidades]]
+id = "dados_de_usuarios"
+tipo = "ativo"
+rotulos = ["dados de usuários", "user data", "dados pessoais"]
+
+[[entidades]]
+id = "consulta_parametrizada"
+tipo = "mitigacao"
+rotulos = ["consulta parametrizada", "parameterized query", "prepared statement"]
+
+[[entidades]]
+id = "escape_de_saida"
+tipo = "mitigacao"
+rotulos = ["escape de saída", "output encoding", "codificação de saída"]
+
+[[entidades]]
+id = "validacao_de_entrada"
+tipo = "mitigacao"
+rotulos = ["validação de entrada", "input validation"]
+
+[[entidades]]
+id = "allowlist_de_caminhos"
+tipo = "mitigacao"
+rotulos = ["allowlist de caminhos", "path allowlist", "lista de caminhos permitidos"]
+
+[[entidades]]
+id = "execucao_sem_shell"
+tipo = "mitigacao"
+rotulos = ["execução sem shell", "shell-free execution", "chamada direta de processo"]
+
+[[entidades]]
+id = "allowlist_de_urls"
+tipo = "mitigacao"
+rotulos = ["allowlist de URLs", "URL allowlist", "lista de URLs permitidas"]
+
+[[entidades]]
+id = "desserializacao_restrita"
+tipo = "mitigacao"
+rotulos = ["desserialização restrita", "safe deserialization", "desserialização com tipos permitidos"]
+
+[[entidades]]
+id = "parser_xml_seguro"
+tipo = "mitigacao"
+rotulos = ["parser XML seguro", "secure XML parser", "desativação de entidades externas"]
+
+[[entidades]]
+id = "token_csrf"
+tipo = "mitigacao"
+rotulos = ["token anti-CSRF", "CSRF token", "token de sincronização"]
+
+[[entidades]]
+id = "reenvio_controlado"
+tipo = "mitigacao"
+rotulos = ["reenvio controlado", "controlled redirect", "redirecionamento validado contra lista"]
+
+[[entidades]]
+id = "validacao_de_upload"
+tipo = "mitigacao"
+rotulos = ["validação de upload", "upload validation", "validação de tipo e conteúdo de arquivo"]
+
+[[entidades]]
+id = "algoritmo_moderno"
+tipo = "mitigacao"
+rotulos = ["algoritmo criptográfico moderno", "modern cryptography", "algoritmo seguro atual"]
+
+[[entidades]]
+id = "gestao_de_segredos"
+tipo = "mitigacao"
+rotulos = ["gestão de segredos", "secrets management", "cofre de segredos"]
+
+[[entidades]]
+id = "autenticacao_forte"
+tipo = "mitigacao"
+rotulos = ["autenticação forte", "strong authentication", "MFA"]
+
+[[entidades]]
+id = "cookie_seguro"
+tipo = "mitigacao"
+rotulos = ["cookie seguro", "secure cookie", "atributos HttpOnly e Secure"]
+
+[[entidades]]
+id = "hardening_de_configuracao"
+tipo = "mitigacao"
+rotulos = ["endurecimento de configuração", "security hardening", "hardening de configuração"]
+
+[[entidades]]
+id = "mensagens_genericas"
+tipo = "mitigacao"
+rotulos = ["mensagens de erro genéricas", "generic error messages"]
+
+[[entidades]]
+id = "sandbox_de_template"
+tipo = "mitigacao"
+rotulos = ["sandbox de template", "template sandbox", "execução de template isolada"]
+
+[[entidades]]
+id = "escape_ldap"
+tipo = "mitigacao"
+rotulos = ["escape de LDAP", "LDAP escaping", "sanitização de filtros LDAP"]
+
+[[entidades]]
+id = "limite_de_taxa"
+tipo = "mitigacao"
+rotulos = ["limite de taxa", "rate limiting", "throttling"]
+
+[[entidades]]
+id = "atualizacao_de_dependencias"
+tipo = "mitigacao"
+rotulos = ["atualização de dependências", "dependency patching", "gestão de dependências"]
+
+[[entidades]]
+id = "politica_cors_estrita"
+tipo = "mitigacao"
+rotulos = ["política CORS estrita", "strict CORS policy", "CORS restritivo"]
+
+[[entidades]]
+id = "dados_sensiveis_fora_de_logs"
+tipo = "mitigacao"
+rotulos = ["dados sensíveis fora de logs", "no sensitive data in logs", "sanitização de logs"]
+
+[[entidades]]
+id = "forca_bruta"
+tipo = "tecnica"
+rotulos = ["força bruta", "brute force", "credential stuffing"]
+
+[[entidades]]
+id = "exploracao_manual"
+tipo = "tecnica"
+rotulos = ["exploração manual", "manual exploitation", "teste manual"]
+
+[[entidades]]
+id = "payload_refletido"
+tipo = "tecnica"
+rotulos = ["payload refletido", "reflected payload", "injeção refletida"]
+
+[[entidades]]
+id = "forgery_de_request"
+tipo = "tecnica"
+rotulos = ["falsificação de requisição", "request forgery", "requisição forjada"]
+
+[[entidades]]
+id = "manipulacao_de_entrada"
+tipo = "tecnica"
+rotulos = ["manipulação de entrada", "input manipulation", "entrada maliciosa"]
+
+[[relacoes]]
+id = "expoe"
+rotulo = "expõe"
+descricao = "a fraqueza expõe o ativo a leitura, alteração ou uso indevido por um atacante"
+
+[[relacoes]]
+id = "mitigada_por"
+rotulo = "mitigada_por"
+descricao = "a fraqueza é neutralizada ou reduzida pela mitigação indicada"
+
+[[relacoes]]
+id = "explorada_por"
+rotulo = "explorada_por"
+descricao = "a fraqueza pode ser explorada por meio da técnica indicada"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "expoe"
+objeto = "credenciais"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "expoe"
+objeto = "codigo_fonte"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "mitigada_por"
+objeto = "gestao_de_segredos"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "mitigada_por"
+objeto = "hardening_de_configuracao"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "explorada_por"
+objeto = "forca_bruta"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "expoe"
+objeto = "banco_de_dados"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "expoe"
+objeto = "dados_de_usuarios"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "mitigada_por"
+objeto = "consulta_parametrizada"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "explorada_por"
+objeto = "manipulacao_de_entrada"
+
+[[triplas]]
+sujeito = "xss"
+relacao = "expoe"
+objeto = "navegador_usuario"
+
+[[triplas]]
+sujeito = "xss"
+relacao = "expoe"
+objeto = "sessao_usuario"
+
+[[triplas]]
+sujeito = "xss"
+relacao = "mitigada_por"
+objeto = "escape_de_saida"
+
+[[triplas]]
+sujeito = "xss"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "xss"
+relacao = "explorada_por"
+objeto = "payload_refletido"
+
+[[triplas]]
+sujeito = "path_traversal"
+relacao = "expoe"
+objeto = "sistema_arquivos"
+
+[[triplas]]
+sujeito = "path_traversal"
+relacao = "mitigada_por"
+objeto = "allowlist_de_caminhos"
+
+[[triplas]]
+sujeito = "path_traversal"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "path_traversal"
+relacao = "explorada_por"
+objeto = "manipulacao_de_entrada"
+
+[[triplas]]
+sujeito = "injecao_comando"
+relacao = "expoe"
+objeto = "servidor_aplicacao"
+
+[[triplas]]
+sujeito = "injecao_comando"
+relacao = "expoe"
+objeto = "sistema_arquivos"
+
+[[triplas]]
+sujeito = "injecao_comando"
+relacao = "mitigada_por"
+objeto = "execucao_sem_shell"
+
+[[triplas]]
+sujeito = "injecao_comando"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "injecao_comando"
+relacao = "explorada_por"
+objeto = "manipulacao_de_entrada"
+
+[[triplas]]
+sujeito = "ssrf"
+relacao = "expoe"
+objeto = "rede_interna"
+
+[[triplas]]
+sujeito = "ssrf"
+relacao = "mitigada_por"
+objeto = "allowlist_de_urls"
+
+[[triplas]]
+sujeito = "ssrf"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "ssrf"
+relacao = "explorada_por"
+objeto = "manipulacao_de_entrada"
+
+[[triplas]]
+sujeito = "deserializacao_insegura"
+relacao = "expoe"
+objeto = "servidor_aplicacao"
+
+[[triplas]]
+sujeito = "deserializacao_insegura"
+relacao = "mitigada_por"
+objeto = "desserializacao_restrita"
+
+[[triplas]]
+sujeito = "deserializacao_insegura"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "deserializacao_insegura"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "xxe"
+relacao = "expoe"
+objeto = "sistema_arquivos"
+
+[[triplas]]
+sujeito = "xxe"
+relacao = "mitigada_por"
+objeto = "parser_xml_seguro"
+
+[[triplas]]
+sujeito = "xxe"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "xxe"
+relacao = "explorada_por"
+objeto = "manipulacao_de_entrada"
+
+[[triplas]]
+sujeito = "csrf"
+relacao = "expoe"
+objeto = "sessao_usuario"
+
+[[triplas]]
+sujeito = "csrf"
+relacao = "mitigada_por"
+objeto = "token_csrf"
+
+[[triplas]]
+sujeito = "csrf"
+relacao = "mitigada_por"
+objeto = "cookie_seguro"
+
+[[triplas]]
+sujeito = "csrf"
+relacao = "explorada_por"
+objeto = "forgery_de_request"
+
+[[triplas]]
+sujeito = "open_redirect"
+relacao = "expoe"
+objeto = "navegador_usuario"
+
+[[triplas]]
+sujeito = "open_redirect"
+relacao = "mitigada_por"
+objeto = "allowlist_de_urls"
+
+[[triplas]]
+sujeito = "open_redirect"
+relacao = "mitigada_por"
+objeto = "reenvio_controlado"
+
+[[triplas]]
+sujeito = "open_redirect"
+relacao = "explorada_por"
+objeto = "manipulacao_de_entrada"
+
+[[triplas]]
+sujeito = "upload_inseguro"
+relacao = "expoe"
+objeto = "servidor_aplicacao"
+
+[[triplas]]
+sujeito = "upload_inseguro"
+relacao = "mitigada_por"
+objeto = "validacao_de_upload"
+
+[[triplas]]
+sujeito = "upload_inseguro"
+relacao = "mitigada_por"
+objeto = "hardening_de_configuracao"
+
+[[triplas]]
+sujeito = "upload_inseguro"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "criptografia_fraca"
+relacao = "expoe"
+objeto = "credenciais"
+
+[[triplas]]
+sujeito = "criptografia_fraca"
+relacao = "mitigada_por"
+objeto = "algoritmo_moderno"
+
+[[triplas]]
+sujeito = "criptografia_fraca"
+relacao = "mitigada_por"
+objeto = "gestao_de_segredos"
+
+[[triplas]]
+sujeito = "criptografia_fraca"
+relacao = "explorada_por"
+objeto = "forca_bruta"
+
+[[triplas]]
+sujeito = "autenticacao_fraca"
+relacao = "expoe"
+objeto = "sessao_usuario"
+
+[[triplas]]
+sujeito = "autenticacao_fraca"
+relacao = "mitigada_por"
+objeto = "autenticacao_forte"
+
+[[triplas]]
+sujeito = "autenticacao_fraca"
+relacao = "mitigada_por"
+objeto = "limite_de_taxa"
+
+[[triplas]]
+sujeito = "autenticacao_fraca"
+relacao = "explorada_por"
+objeto = "forca_bruta"
+
+[[triplas]]
+sujeito = "autenticacao_fraca"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "sessao_insegura"
+relacao = "expoe"
+objeto = "sessao_usuario"
+
+[[triplas]]
+sujeito = "sessao_insegura"
+relacao = "mitigada_por"
+objeto = "cookie_seguro"
+
+[[triplas]]
+sujeito = "sessao_insegura"
+relacao = "mitigada_por"
+objeto = "autenticacao_forte"
+
+[[triplas]]
+sujeito = "sessao_insegura"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "configuracao_insegura"
+relacao = "expoe"
+objeto = "servidor_aplicacao"
+
+[[triplas]]
+sujeito = "configuracao_insegura"
+relacao = "mitigada_por"
+objeto = "hardening_de_configuracao"
+
+[[triplas]]
+sujeito = "configuracao_insegura"
+relacao = "mitigada_por"
+objeto = "politica_cors_estrita"
+
+[[triplas]]
+sujeito = "configuracao_insegura"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "divulgacao_por_erro"
+relacao = "expoe"
+objeto = "logs"
+
+[[triplas]]
+sujeito = "divulgacao_por_erro"
+relacao = "mitigada_por"
+objeto = "mensagens_genericas"
+
+[[triplas]]
+sujeito = "divulgacao_por_erro"
+relacao = "mitigada_por"
+objeto = "dados_sensiveis_fora_de_logs"
+
+[[triplas]]
+sujeito = "divulgacao_por_erro"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "ssti"
+relacao = "expoe"
+objeto = "servidor_aplicacao"
+
+[[triplas]]
+sujeito = "ssti"
+relacao = "mitigada_por"
+objeto = "sandbox_de_template"
+
+[[triplas]]
+sujeito = "ssti"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "ssti"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "injecao_ldap"
+relacao = "expoe"
+objeto = "credenciais"
+
+[[triplas]]
+sujeito = "injecao_ldap"
+relacao = "mitigada_por"
+objeto = "escape_ldap"
+
+[[triplas]]
+sujeito = "injecao_ldap"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "injecao_ldap"
+relacao = "explorada_por"
+objeto = "manipulacao_de_entrada"
+
+[[triplas]]
+sujeito = "limite_de_taxa_ausente"
+relacao = "expoe"
+objeto = "api"
+
+[[triplas]]
+sujeito = "limite_de_taxa_ausente"
+relacao = "mitigada_por"
+objeto = "limite_de_taxa"
+
+[[triplas]]
+sujeito = "limite_de_taxa_ausente"
+relacao = "mitigada_por"
+objeto = "hardening_de_configuracao"
+
+[[triplas]]
+sujeito = "limite_de_taxa_ausente"
+relacao = "explorada_por"
+objeto = "forca_bruta"
+
+[[triplas]]
+sujeito = "limite_de_taxa_ausente"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "dependencia_vulneravel"
+relacao = "expoe"
+objeto = "servidor_aplicacao"
+
+[[triplas]]
+sujeito = "dependencia_vulneravel"
+relacao = "mitigada_por"
+objeto = "atualizacao_de_dependencias"
+
+[[triplas]]
+sujeito = "dependencia_vulneravel"
+relacao = "mitigada_por"
+objeto = "hardening_de_configuracao"
+
+[[triplas]]
+sujeito = "dependencia_vulneravel"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
