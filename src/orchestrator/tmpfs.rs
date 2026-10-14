@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn an_unresolvable_path_fails_instead_of_being_assumed() {
         let error = require_tmpfs(Path::new("/tmp/saida"), &EmptyMounts)
-            .expect_err("sem ponto de montage conhecido a regra não está verificada")
+            .expect_err("sem ponto de montagem conhecido a regra não está verificada")
             .to_string();
         assert!(error.contains("/tmp/saida"), "{error}");
         assert!(error.contains(MOUNTINFO_PATH), "{error}");

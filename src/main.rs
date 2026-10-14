@@ -659,7 +659,6 @@ impl CommandLineInterface {
         }
         println!("  Ctrl+C ou SIGTERM cancelam a varredura com relatório preservado");
 
-        println!("[1/3] Executando ferramentas de segurança...");
         println!("[1/4] Executando ferramentas de segurança...");
         let (trace_tx, mut trace_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         orchestrator.trace_sink = Some(trace_tx);
