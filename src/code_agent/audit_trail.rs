@@ -178,6 +178,69 @@ impl AgentAuditTrail {
             },
         }));
     }
+
+    pub fn record_rag_started(&self, finding_index: usize, provider: &str, model: &str) {
+        self.write(json!({
+            "fase": "explicacao rag",
+            "evento": "inicio",
+            "detalhe": {
+                "achado": finding_index + 1,
+                "provedor": crate::utils::redaction::sanitize_text(provider),
+                "modelo": crate::utils::redaction::sanitize_text(model),
+            },
+        }));
+    }
+
+    pub fn record_rag_retrieval(
+        &self,
+        finding_index: usize,
+        mode: &str,
+        documents: &[crate::cyberrag::retriever::Retrieved],
+        fallback_reason: Option<&str>,
+    ) {
+        self.write(json!({
+            "fase": "explicacao rag",
+            "evento": "contexto recuperado",
+            "detalhe": {
+                "achado": finding_index + 1,
+                "modo": crate::utils::redaction::sanitize_text(mode),
+                "documentos": documents
+                    .iter()
+                    .map(|document| json!({
+                        "id": crate::utils::redaction::sanitize_text(&document.id),
+                        "score": document.score,
+                    }))
+                    .collect::<Vec<_>>(),
+                "motivo_do_fallback": fallback_reason
+                    .map(crate::utils::redaction::sanitize_diagnostic),
+            },
+        }));
+    }
+
+    pub fn record_rag_finished(
+        &self,
+        finding_index: usize,
+        result: &crate::cyberrag::service::ExplanationResult,
+    ) {
+        self.write(json!({
+            "fase": "explicacao rag",
+            "evento": "fim",
+            "detalhe": {
+                "achado": finding_index + 1,
+                "aprovado": result.approved(),
+                "veredito": crate::utils::redaction::sanitize_diagnostic(
+                    &result.verdict.summary(),
+                ),
+                "motivo_da_recusa": result
+                    .failure_reason
+                    .as_deref()
+                    .map(crate::utils::redaction::sanitize_diagnostic),
+                "provedor_efetivo": crate::utils::redaction::sanitize_text(&result.provider),
+                "modelo": crate::utils::redaction::sanitize_text(&result.model),
+                "contexto": crate::utils::redaction::sanitize_text(&result.retrieval_mode),
+            },
+        }));
+    }
 }
 
 /// Linha truncada pela queda do processo não pode impedir a leitura do resto.
@@ -309,5 +372,59 @@ mod tests {
         assert!(AgentAuditTrail::open_default("scan_teste").is_some());
 
         std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn a_explicacao_rag_deixa_inicio_contexto_e_fim_na_trilha() {
+        let dir = std::env::temp_dir().join(format!("ss-trilha-rag-{}", std::process::id()));
+        let trail = trilha_em_temp(&dir);
+
+        trail.record_rag_started(2, "NVIDIA NIM", "modelo");
+        trail.record_rag_retrieval(
+            2,
+            "lexical",
+            &[crate::cyberrag::retriever::Retrieved {
+                id: "injecao_sql".to_string(),
+                score: 2.5,
+            }],
+            Some("embeddings indisponíveis: sem vetores"),
+        );
+        trail.record_rag_finished(
+            2,
+            &crate::cyberrag::service::ExplanationResult {
+                finding_index: 2,
+                text: "Explicação".to_string(),
+                example: None,
+                claims: Vec::new(),
+                verdict: crate::cyberrag::ontology::OntologyVerdict {
+                    aprovado: true,
+                    verificadas: 1,
+                    rejeitadas: Vec::new(),
+                },
+                provider: "NVIDIA NIM".to_string(),
+                model: "modelo".to_string(),
+                failure_reason: None,
+                generated_at: "2026-10-14T00:00:00Z".to_string(),
+                retrieval_mode: "lexical".to_string(),
+            },
+        );
+
+        let registros = read_records(trail.path()).expect("leitura da trilha");
+        assert_eq!(registros.len(), 3);
+        assert_eq!(registros[0]["fase"], "explicacao rag");
+        assert_eq!(registros[0]["evento"], "inicio");
+        assert_eq!(registros[0]["detalhe"]["achado"], 3);
+        assert_eq!(registros[1]["evento"], "contexto recuperado");
+        assert_eq!(
+            registros[1]["detalhe"]["documentos"][0]["id"],
+            "injecao_sql"
+        );
+        assert_eq!(registros[2]["evento"], "fim");
+        assert_eq!(registros[2]["detalhe"]["aprovado"], true);
+        assert!(registros[2]["detalhe"]["veredito"]
+            .as_str()
+            .is_some_and(|veredito| veredito.contains("aprovada")));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -53,6 +53,22 @@ struct RawToolCallFunction {
     arguments: String,
 }
 
+#[derive(Serialize)]
+struct EmbeddingsRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
+}
+
+#[derive(Deserialize)]
+struct EmbeddingsResponse {
+    data: Vec<EmbeddingDatum>,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingDatum {
+    embedding: Vec<f32>,
+}
+
 pub struct OpenAIProvider {
     pub base_url: String,
     pub api_key: String,
@@ -273,6 +289,49 @@ impl LLMProvider for OpenAIProvider {
                 .collect(),
         })
     }
+
+    /// Embeddings do endpoint `/embeddings`; uma tentativa só — a falha vira
+    /// recuperação lexical, com o motivo registrado pelo serviço.
+    async fn embed(&self, inputs: &[String], model: &str) -> Result<Vec<Vec<f32>>, anyhow::Error> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(self.timeout_secs))
+            .build()?;
+        let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
+        let mut request = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&EmbeddingsRequest {
+                model,
+                input: inputs,
+            });
+        if self.send_auth {
+            request = request.bearer_auth(&self.api_key);
+        }
+        let answer = request.send().await?;
+        if !answer.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "a API de embeddings retornou o status {}",
+                answer.status()
+            ));
+        }
+        let parsed: EmbeddingsResponse = answer.json().await?;
+        let vectors: Vec<Vec<f32>> = parsed
+            .data
+            .into_iter()
+            .map(|datum| datum.embedding)
+            .collect();
+        if vectors.len() != inputs.len() {
+            return Err(anyhow::anyhow!(
+                "a API de embeddings devolveu {} vetor(es) para {} entrada(s)",
+                vectors.len(),
+                inputs.len()
+            ));
+        }
+        Ok(vectors)
+    }
 }
 
 /// Converte os argumentos serializados pelo modelo em JSON estruturado.
@@ -437,6 +496,59 @@ pub(crate) mod tests {
 
         assert!(!requests[0].contains("tool_choice"), "{}", requests[0]);
         assert!(turn.tool_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn embeddings_are_parsed_and_the_request_carries_the_model() {
+        let body = "{\"data\":[{\"embedding\":[0.5,0.25]},{\"embedding\":[0.1,0.9]}]}";
+        let (base_url, server) = mock_server(vec![("200 OK", body)]).await;
+        let inputs = vec!["primeiro".to_string(), "segundo".to_string()];
+
+        let vectors = provider(base_url)
+            .embed(&inputs, "text-embedding-3-small")
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+
+        assert!(
+            requests[0].contains("POST /v1/embeddings"),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            requests[0].contains("\"model\":\"text-embedding-3-small\""),
+            "{}",
+            requests[0]
+        );
+        assert_eq!(vectors, vec![vec![0.5, 0.25], vec![0.1, 0.9]]);
+    }
+
+    #[tokio::test]
+    async fn an_embeddings_failure_or_a_count_mismatch_is_an_error() {
+        let (base_url, server) = mock_server(vec![("500 Internal Server Error", "{}")]).await;
+        let error = provider(base_url)
+            .embed(&["x".to_string()], "m")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("500"), "{error}");
+        server.await.unwrap();
+
+        let body = "{\"data\":[{\"embedding\":[1.0]}]}";
+        let (base_url, server) = mock_server(vec![("200 OK", body)]).await;
+        let error = provider(base_url)
+            .embed(&["x".to_string(), "y".to_string()], "m")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("1 vetor(es) para 2 entrada(s)"), "{error}");
+        server.await.unwrap();
+
+        assert!(provider("http://unused".to_string())
+            .embed(&[], "m")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

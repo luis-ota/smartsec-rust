@@ -1,15 +1,12 @@
 //! Corpus de conhecimento de vulnerabilidade do agente de explicação.
 //!
-//! Cada entrada descreve uma classe de fraqueza (CWE), o padrão seguro de
-//! correção e exemplos de código vulnerável/seguro por linguagem. O corpus é
-//! autoral e embutido no binário; nada é carregado da rede.
+//! Autoral e embutido no binário; nada é carregado da rede.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Exemplo de código de uma linguagem para uma classe de fraqueza.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct CodeExample {
     pub linguagem: String,
@@ -17,14 +14,10 @@ pub struct CodeExample {
     pub corrigido: String,
 }
 
-/// Uma entrada do corpus, ancorável pela classe de fraqueza.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct CorpusEntry {
-    /// Identificador da entrada (igual à classe por enquanto).
     pub id: String,
-    /// Classe de fraqueza na ontologia (`injecao_sql`, `xss`, ...).
     pub classe: String,
-    /// Referência CWE da classe, quando houver.
     #[serde(default)]
     pub cwe: String,
     pub titulo: String,
@@ -41,7 +34,6 @@ struct CorpusFile {
     entradas: Vec<CorpusEntry>,
 }
 
-/// Corpus carregado e indexado por id.
 #[derive(Debug, Clone)]
 pub struct Corpus {
     entries: Vec<CorpusEntry>,
@@ -49,23 +41,17 @@ pub struct Corpus {
 }
 
 impl Corpus {
-    /// Carrega o corpus do TOML embutido no binário.
-    ///
-    /// O `expect` é deliberado: o arquivo é parte do binário e os testes de
-    /// consistência (idioma, schema e ontologia) o validam na suíte.
     pub fn embedded() -> Self {
         Self::from_toml(include_str!("../../assets/cyberrag/corpus.toml"))
             .expect("o corpus embutido precisa ser um TOML válido")
     }
 
-    /// Carrega o corpus de um arquivo do disco; usado para override local.
     pub fn from_path(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("Falha ao ler o corpus em {path:?}"))?;
         Self::from_toml(&text)
     }
 
-    /// Interpreta o TOML e valida os invariantes de forma.
     pub fn from_toml(text: &str) -> Result<Self> {
         let file: CorpusFile = toml::from_str(text).context("TOML de corpus inválido")?;
         if file.entradas.is_empty() {
@@ -125,11 +111,8 @@ impl Corpus {
     }
 }
 
-/// Texto indexado para busca: título, descrição, correção, CWE e exemplos.
-///
-/// O código dos exemplos entra de propósito: um trecho real do usuário que
-/// contenha `cursor.execute` ou `subprocess` precisa aproximar a busca da
-/// classe certa, e é o próprio exemplo que será exibido ao lado da explicação.
+/// Indexa também o código dos exemplos: o trecho real do usuário precisa
+/// aproximar a busca do exemplo que será exibido ao lado da explicação.
 pub fn searchable_text(entry: &CorpusEntry) -> String {
     let mut text = format!(
         "{} {} {} {} {}",

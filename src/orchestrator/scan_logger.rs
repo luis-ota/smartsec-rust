@@ -137,6 +137,13 @@ pub struct ScanMetadata {
     /// Caminho da trilha com as ações da IA, gravada durante a execução.
     #[serde(default)]
     pub agent_trail_path: String,
+    /// Veredito da última explicação RAG (issue #109).
+    #[serde(default)]
+    pub rag_ontology_verdict: String,
+    #[serde(default)]
+    pub rag_failure_reason: Option<String>,
+    #[serde(default)]
+    pub rag_explanations_count: usize,
 }
 
 /// Contagem de achados por severidade usada na listagem do histórico.
@@ -306,6 +313,9 @@ impl ScanMetadata {
             code_tool_calls: Vec::new(),
             code_unavailable_reason: None,
             agent_trail_path: String::new(),
+            rag_ontology_verdict: String::new(),
+            rag_failure_reason: None,
+            rag_explanations_count: 0,
         }
     }
 
@@ -334,6 +344,22 @@ impl ScanMetadata {
     /// Aponta o log estruturado para a trilha de ações da IA.
     pub fn with_agent_trail(mut self, path: &std::path::Path) -> Self {
         self.agent_trail_path = crate::utils::redaction::sanitize_text(&path.display().to_string());
+        self
+    }
+
+    /// A contagem acumula; o veredito no log é o da explicação mais recente.
+    #[allow(dead_code)] // consumido pela TUI do detalhe do achado no PR seguinte
+    pub fn with_rag_explanation(
+        mut self,
+        result: &crate::cyberrag::service::ExplanationResult,
+    ) -> Self {
+        self.rag_explanations_count += 1;
+        self.rag_ontology_verdict =
+            crate::utils::redaction::sanitize_diagnostic(&result.verdict.summary());
+        self.rag_failure_reason = result
+            .failure_reason
+            .as_deref()
+            .map(crate::utils::redaction::sanitize_diagnostic);
         self
     }
 
@@ -438,6 +464,14 @@ impl ScanMetadata {
                 .as_deref()
                 .map(crate::utils::redaction::sanitize_diagnostic),
             agent_trail_path: sanitize(&self.agent_trail_path),
+            rag_ontology_verdict: crate::utils::redaction::sanitize_diagnostic(
+                &self.rag_ontology_verdict,
+            ),
+            rag_failure_reason: self
+                .rag_failure_reason
+                .as_deref()
+                .map(crate::utils::redaction::sanitize_diagnostic),
+            rag_explanations_count: self.rag_explanations_count,
         }
     }
 }
@@ -960,6 +994,10 @@ mod tests {
         assert_eq!(restored.code_tool_calls_count, 0);
         assert!(restored.code_tool_calls.is_empty());
         assert!(restored.code_unavailable_reason.is_none());
+        // O log anterior à explicação RAG também precisa continuar carregando.
+        assert_eq!(restored.rag_ontology_verdict, "");
+        assert!(restored.rag_failure_reason.is_none());
+        assert_eq!(restored.rag_explanations_count, 0);
 
         // O achado antigo não tem origem no código, e isso precisa sobreviver
         // como `None` — nunca como um caminho inventado pela desserialização.
@@ -1021,6 +1059,78 @@ mod tests {
         assert_eq!(metadata.code_tool_calls[0].tool, "read_file");
         assert_eq!(metadata.code_tool_calls[0].outcome, "ok");
         assert!(metadata.code_unavailable_reason.is_none());
+    }
+
+    /// O veredito da ontologia precisa entrar no log ao lado da análise de IA.
+    #[test]
+    fn the_rag_ontology_verdict_is_attached_and_counted() {
+        use crate::cyberrag::ontology::{OntologyClaim, OntologyVerdict};
+        use crate::cyberrag::service::ExplanationResult;
+
+        let approved = ExplanationResult {
+            finding_index: 0,
+            text: "Explicação".to_string(),
+            example: None,
+            claims: vec![OntologyClaim {
+                sujeito: "injecao_sql".to_string(),
+                relacao: "expoe".to_string(),
+                objeto: "banco_de_dados".to_string(),
+            }],
+            verdict: OntologyVerdict {
+                aprovado: true,
+                verificadas: 1,
+                rejeitadas: Vec::new(),
+            },
+            provider: "NVIDIA NIM".to_string(),
+            model: "modelo".to_string(),
+            failure_reason: None,
+            generated_at: "2026-10-14T00:00:00Z".to_string(),
+            retrieval_mode: "lexical".to_string(),
+        };
+        let refused = ExplanationResult {
+            text: String::new(),
+            verdict: OntologyVerdict {
+                aprovado: false,
+                verificadas: 0,
+                rejeitadas: Vec::new(),
+            },
+            failure_reason: Some("o provedor falhou na explicação".to_string()),
+            ..approved.clone()
+        };
+
+        let metadata = ScanMetadata::new(
+            "scan-rag".to_string(),
+            "http://alvo.local".to_string(),
+            "2026-10-14T12:00:00Z".to_string(),
+            "2026-10-14T12:05:00Z".to_string(),
+            "Auto".to_string(),
+            "NVIDIA NIM".to_string(),
+            vec![],
+            vec![],
+            String::new(),
+        );
+
+        // Cada explicação é registrada; o veredito do log é o da mais recente.
+        let metadata = metadata.with_rag_explanation(&refused);
+        assert_eq!(metadata.rag_explanations_count, 1);
+        assert!(
+            metadata.rag_ontology_verdict.contains("reprovada"),
+            "{}",
+            metadata.rag_ontology_verdict
+        );
+        assert_eq!(
+            metadata.rag_failure_reason.as_deref(),
+            Some("o provedor falhou na explicação")
+        );
+
+        let metadata = metadata.with_rag_explanation(&approved);
+        assert_eq!(metadata.rag_explanations_count, 2);
+        assert!(
+            metadata.rag_ontology_verdict.contains("aprovada"),
+            "{}",
+            metadata.rag_ontology_verdict
+        );
+        assert!(metadata.rag_failure_reason.is_none());
     }
 
     /// O `snippet` lido do código do alvo e os argumentos de um comando podem

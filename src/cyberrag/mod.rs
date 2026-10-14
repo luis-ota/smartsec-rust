@@ -1,28 +1,21 @@
-//! Explicação de achado com recuperação aumentada e validação por ontologia.
-//!
-//! Desenho derivado do artigo "Ontology-Aware RAG for Improved Question-Answering
-//! in Cybersecurity Education" (Zhao et al., IEEE BigData 2025, DOI
-//! 10.1109/BigData66926.2025.11401740, arXiv:2412.14191): recuperar contexto,
-//! gerar com o contexto e validar a resposta contra uma ontologia de segurança.
-//! A implementação é própria (o artigo é CC BY 4.0; o repositório de referência
-//! não tem licença e nada dele é usado) e troca o juiz-LLM do artigo por
-//! validação simbólica determinística — adaptação registrada em docs/cyberrag.md.
+//! Explicação de achado com recuperação aumentada e validação por ontologia
+//! (reimplementação própria inspirada no CyberRAG; créditos e adaptações em
+//! docs/cyberrag.md).
 
 #![allow(dead_code)] // consumido pela fase de explicação, no PR seguinte
 
 pub mod corpus;
 pub mod ontology;
 pub mod retriever;
+pub mod service;
 
 use corpus::Corpus;
 use ontology::Ontology;
 
-/// Top-k padrão da recuperação. O artigo usa k=1; aqui os documentos são
-/// unidades de conhecimento independentes e 3 dão contexto sem virar ruído.
+/// O artigo usa k=1; aqui 3 documentos dão contexto sem virar ruído.
 pub const DEFAULT_TOP_K: usize = 3;
 
-/// Remove acentos para que consulta, rótulos e corpus casem independente de
-/// grafia.
+/// Casa consulta, rótulos e corpus independente de grafia.
 pub(crate) fn fold_accents(value: &str) -> String {
     value
         .chars()
@@ -39,11 +32,8 @@ pub(crate) fn fold_accents(value: &str) -> String {
         .collect()
 }
 
-/// Verifica a consistência entre o corpus e a ontologia.
-///
-/// Lista vazia significa consistente. As exigências abaixo são o contrato dos
-/// dados: uma fraqueza sem mitigação ou sem técnica declarada não sustenta a
-/// validação das explicações que vão citá-las.
+/// Lista vazia significa consistente. Contrato dos dados: toda fraqueza precisa
+/// de 2 mitigações, 1 ativo exposto e 1 técnica declarada.
 pub fn inconsistencies(corpus: &Corpus, ontology: &Ontology) -> Vec<String> {
     let mut problems = Vec::new();
     let weaknesses = ontology.weakness_ids();
@@ -114,8 +104,6 @@ mod tests {
             Ontology::from_toml(include_str!("../../tests/fixtures/cyberrag/ontology.toml"))
                 .expect("fixture válida");
 
-        // A fixture de corpus cobre as mesmas classes; uma entrada sintética com
-        // classe desconhecida precisa ser apontada.
         let with_unknown = Corpus::from_toml(
             r#"
 [[entradas]]
@@ -131,8 +119,6 @@ padrao_seguro = "p"
         let problems = inconsistencies(&with_unknown, &ontology);
         assert_eq!(problems.len(), 1, "{problems:#?}");
         assert!(problems[0].contains("classe_nova"), "{problems:#?}");
-
-        // E o par de fixtures precisa ser consistente de verdade.
         assert!(inconsistencies(&corpus, &ontology).is_empty());
     }
 }

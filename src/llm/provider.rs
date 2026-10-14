@@ -24,4 +24,14 @@ pub trait LLMProvider: Send + Sync {
     ) -> Result<ToolTurn, anyhow::Error> {
         Err(anyhow::anyhow!("o provedor não implementa tool calling",))
     }
+
+    /// Embeddings para a recuperação do agente de explicação; o padrão recusa,
+    /// e quem chama cai na busca lexical.
+    async fn embed(
+        &self,
+        _inputs: &[String],
+        _model: &str,
+    ) -> Result<Vec<Vec<f32>>, anyhow::Error> {
+        Err(anyhow::anyhow!("o provedor não implementa embeddings",))
+    }
 }

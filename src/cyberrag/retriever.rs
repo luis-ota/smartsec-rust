@@ -1,31 +1,23 @@
-//! Recuperação no corpus do agente de explicação.
-//!
-//! O padrão é a busca lexical BM25, que roda offline e é determinística — a
-//! divergência do Contriever do artigo é registrada em `docs/cyberrag.md`. O
-//! trait `Retriever` é a costura para o caminho de embeddings via provedor.
+//! Recuperação no corpus do agente de explicação: BM25 lexical offline por
+//! padrão; embeddings via provedor são a outra via (docs/cyberrag.md).
 
 use crate::cyberrag::corpus::{searchable_text, Corpus};
 use crate::domain::vulnerability::Vulnerability;
 use std::collections::HashMap;
 
-/// Um documento recuperado, com a pontuação que o ordenou.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Retrieved {
     pub id: String,
     pub score: f64,
 }
 
-/// Recupera os `k` documentos mais relevantes para uma consulta.
 pub trait Retriever {
     fn retrieve(&self, query: &str, k: usize) -> Vec<Retrieved>;
 }
 
-/// Constantes clássicas do BM25 (`k1` saturação de frequência, `b` norma de
-/// comprimento).
 const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
 
-/// Teto de caracteres da consulta montada a partir de um achado.
 pub const DEFAULT_QUERY_MAX_CHARS: usize = 2_000;
 
 struct DocIndex {
@@ -34,7 +26,6 @@ struct DocIndex {
     length: usize,
 }
 
-/// Índice BM25 em memória, montado uma vez a partir do corpus.
 pub struct LexicalRetriever {
     docs: Vec<DocIndex>,
     document_frequency: HashMap<String, usize>,
@@ -108,8 +99,8 @@ impl Retriever for LexicalRetriever {
             })
             .collect();
 
-        // Pontuação não tem ordem total; o desempate por id mantém a busca
-        // determinística entre execuções com o mesmo corpus.
+        // Desempate por id: pontuação não tem ordem total e a busca precisa
+        // ser estável entre execuções.
         scored.sort_by(|left, right| {
             right
                 .score
@@ -138,8 +129,8 @@ fn term_score(index: &LexicalRetriever, doc: &DocIndex, term: &str) -> f64 {
     idf * frequency * (BM25_K1 + 1.0) / (frequency + length_norm)
 }
 
-/// Monta a consulta a partir de um achado e, quando houver, do trecho real do
-/// usuário: é o trecho que aproxima a busca do exemplo que casa com o código.
+/// O trecho real do usuário entra na consulta: é o que aproxima a busca do
+/// exemplo que casa com o código dele.
 pub fn query_for_finding(
     finding: &Vulnerability,
     snippet: Option<&str>,
@@ -268,8 +259,6 @@ mod tests {
     #[test]
     fn k_limits_the_result_set_and_the_order_is_deterministic() {
         let retriever = fixture_retriever();
-        // "python" aparece nos dois exemplos; a segunda chamada precisa
-        // devolver exatamente a mesma ordem (desempate estável).
         let first = retriever.retrieve("python", 10);
         let second = retriever.retrieve("python", 10);
 
