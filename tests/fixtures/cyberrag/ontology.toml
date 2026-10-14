@@ -1,0 +1,111 @@
+# Fixture de teste da ontologia do agente de explicação (conteúdo mínimo).
+[meta]
+versao = "0.0.0-teste"
+autor = "SmartSec (teste)"
+data = "2026-10-14"
+escopo = "fixture de testes; não é a ontologia embutida"
+
+[[entidades]]
+id = "injecao_sql"
+tipo = "fraqueza"
+rotulos = ["injeção de SQL", "SQL injection"]
+
+[[entidades]]
+id = "credencial_hardcoded"
+tipo = "fraqueza"
+rotulos = ["credencial hardcoded", "credencial no código"]
+
+[[entidades]]
+id = "banco_de_dados"
+tipo = "ativo"
+rotulos = ["banco de dados"]
+
+[[entidades]]
+id = "codigo_fonte"
+tipo = "ativo"
+rotulos = ["código-fonte"]
+
+[[entidades]]
+id = "consulta_parametrizada"
+tipo = "mitigacao"
+rotulos = ["consulta parametrizada"]
+
+[[entidades]]
+id = "gestao_de_segredos"
+tipo = "mitigacao"
+rotulos = ["gestão de segredos"]
+
+[[entidades]]
+id = "validacao_de_entrada"
+tipo = "mitigacao"
+rotulos = ["validação de entrada"]
+
+[[entidades]]
+id = "hardening_de_configuracao"
+tipo = "mitigacao"
+rotulos = ["endurecimento de configuração"]
+
+[[entidades]]
+id = "manipulacao_de_entrada"
+tipo = "tecnica"
+rotulos = ["manipulação de entrada"]
+
+[[entidades]]
+id = "forca_bruta"
+tipo = "tecnica"
+rotulos = ["força bruta"]
+
+[[relacoes]]
+id = "expoe"
+rotulo = "expõe"
+descricao = "a fraqueza expõe o ativo"
+
+[[relacoes]]
+id = "mitigada_por"
+rotulo = "mitigada por"
+descricao = "a fraqueza é neutralizada pela mitigação"
+
+[[relacoes]]
+id = "explorada_por"
+rotulo = "explorada por"
+descricao = "a fraqueza é explorada pela técnica"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "expoe"
+objeto = "banco_de_dados"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "mitigada_por"
+objeto = "consulta_parametrizada"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "mitigada_por"
+objeto = "validacao_de_entrada"
+
+[[triplas]]
+sujeito = "injecao_sql"
+relacao = "explorada_por"
+objeto = "manipulacao_de_entrada"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "expoe"
+objeto = "codigo_fonte"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "mitigada_por"
+objeto = "gestao_de_segredos"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "mitigada_por"
+objeto = "hardening_de_configuracao"
+
+[[triplas]]
+sujeito = "credencial_hardcoded"
+relacao = "explorada_por"
+objeto = "forca_bruta"

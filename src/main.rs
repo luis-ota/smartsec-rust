@@ -8,6 +8,7 @@ mod ai;
 mod code_agent;
 mod code_audit;
 mod config;
+mod cyberrag;
 mod domain;
 mod llm;
 mod orchestrator;
