@@ -114,6 +114,18 @@ fn render_activity(app: &AppState, frame: &mut Frame, area: Rect) {
             ),
         ]),
     ];
+    if let Some(current) = &app.code_agent_current {
+        lines.push(Line::from(vec![
+            Span::styled(app.spinner_char(), Style::default().fg(ACCENT)),
+            Span::styled(" lendo ", Style::default().fg(MUTED)),
+            Span::styled(
+                chrome::truncate_width(current, inner.width as usize),
+                Style::default().fg(ACCENT),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
+
     for issue in app
         .run_issues
         .iter()
@@ -123,6 +135,11 @@ fn render_activity(app: &AppState, frame: &mut Frame, area: Rect) {
             chrome::truncate_width(&format!("IA: {}", issue.detail), inner.width as usize),
             Style::default().fg(MUTED),
         ));
+    }
+
+    let altura = inner.height as usize;
+    for row in app.code_agent_rows(inner.width as usize, altura.max(1)) {
+        lines.push(row);
     }
     frame.render_widget(
         Paragraph::new(Text::from(lines))
@@ -143,4 +160,142 @@ fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         SemanticAction::Back,
         chrome::ButtonState::secondary(focused),
     );
+}
+
+#[cfg(test)]
+mod code_trail_tests {
+    use crate::code_agent::agent::ToolCallRecord;
+    use crate::code_agent::progress::CodeAgentEvent;
+    use crate::config::Configuration;
+    use crate::tui::state::{AppState, AppStep};
+
+    fn app() -> AppState {
+        AppState::new(Configuration::default()).expect("configuração de teste válida")
+    }
+
+    fn snapshot(app: &AppState) -> String {
+        app.code_agent_rows(70, 40)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_trilha_mostra_ferramenta_argumentos_e_desfecho() {
+        let mut app = app();
+        app.step = AppStep::Analysis;
+        app.push_code_agent(CodeAgentEvent::Started {
+            total_findings: 1,
+            project_dir: "/tmp/app".to_string(),
+        });
+        app.push_code_agent(CodeAgentEvent::ToolInvoked {
+            finding_index: 0,
+            iteration: 0,
+            tool: "read_file".to_string(),
+            arguments: r#"{"path":"app.py"}"#.to_string(),
+        });
+        app.push_code_agent(CodeAgentEvent::ToolCompleted(ToolCallRecord {
+            finding_index: 0,
+            iteration: 0,
+            tool: "read_file".to_string(),
+            arguments: r#"{"path":"app.py"}"#.to_string(),
+            outcome: "ok".to_string(),
+            summary: "312 linhas".to_string(),
+        }));
+        app.push_code_agent(CodeAgentEvent::FindingFinished {
+            finding_index: 0,
+            located: true,
+            tool_calls: 1,
+        });
+        app.push_code_agent(CodeAgentEvent::Finished {
+            located: 1,
+            total: 1,
+            unavailable_reason: None,
+        });
+
+        let saida = snapshot(&app);
+
+        assert!(saida.contains("explorando código"), "{saida}");
+        assert!(saida.contains("read_file"), "{saida}");
+        assert!(saida.contains("app.py"), "{saida}");
+        assert!(saida.contains("312 linhas"), "{saida}");
+        assert!(saida.contains("localizado"), "{saida}");
+        assert!(saida.contains("1/1"), "{saida}");
+    }
+
+    #[test]
+    fn uma_falha_de_ferramenta_nao_parece_como_sucesso() {
+        let mut app = app();
+        app.push_code_agent(CodeAgentEvent::ToolCompleted(ToolCallRecord {
+            finding_index: 0,
+            iteration: 1,
+            tool: "read_file".to_string(),
+            arguments: "{}".to_string(),
+            outcome: "failed".to_string(),
+            summary: "arquivo não encontrado".to_string(),
+        }));
+
+        let saida = snapshot(&app);
+
+        assert!(saida.contains("failed"), "{saida}");
+        assert!(saida.contains("arquivo não encontrado"), "{saida}");
+    }
+
+    #[test]
+    fn a_fase_indisponivel_mostra_o_motivo() {
+        let mut app = app();
+        app.push_code_agent(CodeAgentEvent::Finished {
+            located: 0,
+            total: 0,
+            unavailable_reason: Some("diretório não encontrado".to_string()),
+        });
+
+        assert!(snapshot(&app).contains("diretório não encontrado"));
+    }
+}
+
+#[cfg(test)]
+mod altura_tests {
+    use crate::code_agent::agent::ToolCallRecord;
+    use crate::code_agent::progress::CodeAgentEvent;
+    use crate::config::Configuration;
+    use crate::tui::state::AppState;
+
+    #[test]
+    fn com_pouca_altura_aparece_o_que_aconteceu_agora() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        for indice in 0..30 {
+            app.push_code_agent(CodeAgentEvent::ToolInvoked {
+                finding_index: indice,
+                iteration: 0,
+                tool: format!("ferramenta_{indice}"),
+                arguments: "{}".to_string(),
+            });
+            app.push_code_agent(CodeAgentEvent::ToolCompleted(ToolCallRecord {
+                finding_index: indice,
+                iteration: 0,
+                tool: format!("ferramenta_{indice}"),
+                arguments: "{}".to_string(),
+                outcome: "ok".to_string(),
+                summary: format!("passo {indice}"),
+            }));
+        }
+
+        let linhas = app.code_agent_rows(70, 6);
+
+        assert_eq!(linhas.len(), 6);
+        let texto: String = linhas
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(texto.contains("passo 29"), "{texto}");
+        assert!(!texto.contains("passo 0"), "{texto}");
+    }
 }

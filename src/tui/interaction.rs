@@ -30,6 +30,8 @@ pub enum FocusTarget {
     SettingsField(SettingsField),
     SettingsSave,
     SettingsCancel,
+    /// Lista de escolhas do passo atual do assistente de primeira execução.
+    OnboardingList,
     HelpClose,
     CommandList,
     ReportClose,
@@ -67,6 +69,11 @@ pub enum SemanticAction {
     SelectSettingsField(SettingsField),
     SaveSettings,
     CloseSettings,
+    OpenOnboarding,
+    /// Ativa o item escolhido do passo atual do assistente.
+    OnboardingActivate(usize),
+    OnboardingBack,
+    OnboardingQuit,
     InsertText(String),
     DeleteBackward,
     ClearText,

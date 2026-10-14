@@ -67,6 +67,10 @@ pub struct LocalToolRegistry {
 }
 
 impl LocalToolRegistry {
+    pub fn root(&self) -> &std::path::Path {
+        self.workspace.root()
+    }
+
     pub fn new(
         workspace: Workspace,
         limits: CodeAgentLimits,
@@ -184,15 +188,29 @@ impl LocalToolRegistry {
             .workspace
             .list_dir(path)
             .map_err(|error| workspace_failure(LIST_DIR, error))?;
-        let output = if entries.is_empty() {
-            format!("o diretório \"{path}\" está vazio")
+        let (output, truncated) = if entries.is_empty() {
+            (format!("o diretório \"{path}\" está vazio"), false)
         } else {
-            entries.join("\n")
+            let shown = entries.len().min(self.limits.max_list_entries);
+            if shown < entries.len() {
+                (
+                    format!(
+                        "{}\n[... listagem truncada: exibidas {shown} de {} entradas; abra um subdiretório para ver o resto]",
+                        entries[..shown].join("\n"),
+                        entries.len()
+                    ),
+                    true,
+                )
+            } else {
+                (entries.join("\n"), false)
+            }
         };
+        let (output, capped) =
+            limit_bytes(&sanitize_text(&output), self.limits.max_tool_output_bytes);
         Ok(ToolCallResult {
             tool: LIST_DIR.to_owned(),
-            output: sanitize_text(&output),
-            truncated: false,
+            output,
+            truncated: truncated || capped,
         })
     }
 
@@ -200,13 +218,13 @@ impl LocalToolRegistry {
         let path = required_string(READ_FILE, arguments, "path")?;
         let text = self
             .workspace
-            .read_text(path, self.limits.max_file_bytes)
+            .read_text(path, Some(self.limits.max_file_bytes))
             .map_err(|error| workspace_failure(READ_FILE, error))?;
-        let truncated = text.contains(TRUNCATION_MARKER);
+        let (output, capped) = limit_bytes(&number_lines(&text), self.limits.max_tool_output_bytes);
         Ok(ToolCallResult {
             tool: READ_FILE.to_owned(),
-            output: number_lines(&text),
-            truncated,
+            output,
+            truncated: text.contains(TRUNCATION_MARKER) || capped,
         })
     }
 
@@ -230,10 +248,12 @@ impl LocalToolRegistry {
         } else {
             hits.iter().map(format_hit).collect::<Vec<_>>().join("\n")
         };
+        let (output, capped) =
+            limit_bytes(&sanitize_text(&output), self.limits.max_tool_output_bytes);
         Ok(ToolCallResult {
             tool: SEARCH_CODE.to_owned(),
-            output: sanitize_text(&output),
-            truncated: hits.len() >= max_results,
+            output,
+            truncated: hits.len() >= max_results || capped,
         })
     }
 
@@ -388,6 +408,7 @@ fn limit_bytes(text: &str, max_bytes: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code_agent::DEFAULT_MAX_LIST_ENTRIES;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -622,6 +643,71 @@ mod tests {
 
         assert!(result.output.contains("[REDACTED]"));
         assert!(!result.output.contains("valor-de-exemplo"));
+    }
+
+    /// Regressão do payload de 19.788 bytes: `list_dir` na raiz de um projeto com
+    /// `target/` não tinha teto, e o provedor remoto respondeu 413.
+    #[tokio::test]
+    async fn list_dir_caps_the_entries_and_declares_the_truncation() {
+        let root = temp_workspace("lista-cheia");
+        for index in 0..300 {
+            fs::write(root.join(format!("arquivo-{index:03}.txt")), "x").unwrap();
+        }
+        let registry = LocalToolRegistry::new(
+            Workspace::open(&root).unwrap(),
+            CodeAgentLimits::default(),
+            Vec::new(),
+        );
+
+        let result = registry
+            .call(LIST_DIR, &json!({"path": "."}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.output.lines().count(),
+            DEFAULT_MAX_LIST_ENTRIES + 1,
+            "o teto de entradas e uma linha de aviso"
+        );
+        assert!(result.truncated);
+        assert!(
+            result.output.contains("de 300 entradas"),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("listagem truncada"),
+            "{}",
+            result.output
+        );
+        assert!(result.output.contains("arquivo-000.txt"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Toda saída de ferramenta passa por um teto de bytes, para que nem a leitura
+    /// de um arquivo grande dentro do limite por arquivo estoure o orçamento do
+    /// provedor.
+    #[tokio::test]
+    async fn tool_output_is_capped_by_the_byte_ceiling() {
+        let root = temp_workspace("sauda-grande");
+        fs::write(root.join("grande.txt"), "linha com conteúdo\n".repeat(400)).unwrap();
+        let limits = CodeAgentLimits {
+            max_tool_output_bytes: 128,
+            ..CodeAgentLimits::default()
+        };
+        let registry = LocalToolRegistry::new(Workspace::open(&root).unwrap(), limits, Vec::new());
+
+        let read = registry
+            .call(READ_FILE, &json!({"path": "grande.txt"}))
+            .await
+            .unwrap();
+
+        assert!(read.truncated);
+        assert!(read.output.contains("saída truncada"), "{}", read.output);
+        assert!(read.output.len() < 256, "{}", read.output.len());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

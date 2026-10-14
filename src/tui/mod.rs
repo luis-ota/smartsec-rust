@@ -4,6 +4,7 @@ pub mod event;
 pub mod interaction;
 pub mod screens;
 pub mod state;
+mod state_onboarding;
 
 #[cfg(test)]
 mod snapshot_tests;
@@ -17,6 +18,8 @@ pub fn render(app: &mut AppState, frame: &mut Frame) {
 
     if app.show_settings {
         screens::settings::render(app, frame, area);
+    } else if app.onboarding_open() {
+        screens::onboarding::render(app, frame, area);
     } else {
         match app.step {
             AppStep::Splash => screens::splash::render(app, frame, area),

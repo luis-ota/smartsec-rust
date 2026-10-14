@@ -61,7 +61,7 @@ impl Sandbox {
             self.root.join("bin").display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        Command::new(env!("CARGO_BIN_EXE_smartsec-rust"))
+        Command::new(env!("CARGO_BIN_EXE_smartsec"))
             .args([
                 "scan", "--target", TARGET, "--tools", "Nmap", "--llm", "ollama",
             ])
@@ -222,7 +222,7 @@ fn o_ajuda_documenta_a_saida_do_relatorio() {
     let root =
         std::env::temp_dir().join(format!("smartsec-relatorio-ajuda-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_smartsec-rust"))
+    let output = Command::new(env!("CARGO_BIN_EXE_smartsec"))
         .arg("--help")
         .env("XDG_CONFIG_HOME", &root)
         .env("HOME", &root)

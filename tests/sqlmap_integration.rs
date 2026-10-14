@@ -79,7 +79,7 @@ impl Sandbox {
             extra_path.display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        Command::new(env!("CARGO_BIN_EXE_smartsec-rust"))
+        Command::new(env!("CARGO_BIN_EXE_smartsec"))
             .args(args)
             .env("PATH", path)
             .env("XDG_CONFIG_HOME", &self.root)

@@ -135,13 +135,9 @@ impl Configuration {
                 }
                 "-p" | "--provider" => {
                     let provider = next_argument(args, &mut index, "--provider")?;
-                    self.llm.provider = match provider.to_ascii_lowercase().as_str() {
-                        "ollama" => crate::config::llm_config::LlmProviderKind::Ollama,
-                        "openai" => crate::config::llm_config::LlmProviderKind::OpenAI,
-                        "nvidia-nim" => crate::config::llm_config::LlmProviderKind::NvidiaNim,
-                        "custom" => crate::config::llm_config::LlmProviderKind::Custom,
-                        _ => anyhow::bail!("provedor de IA desconhecido: {provider}"),
-                    };
+                    self.llm.provider =
+                        crate::config::llm_config::LlmProviderKind::parse(&provider)
+                            .map_err(anyhow::Error::msg)?;
                     self.provider_mode = format!("{:?}", self.llm.provider);
                 }
                 other => anyhow::bail!("argumento desconhecido: {other}"),
@@ -234,7 +230,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             llm.base_url = llm.provider.default_base_url().to_string();
         }
         if llm.model.is_empty()
-            || (llm.provider == crate::config::llm_config::LlmProviderKind::Ollama
+            || (llm.provider == crate::config::llm_config::LlmProviderKind::LlamaCpp
                 && llm.model == "local")
         {
             llm.model = llm.provider.default_model().to_string();
@@ -301,10 +297,15 @@ mod tests {
     fn a_valid_configuration_produces_no_problem() {
         let config = Configuration {
             target_url: "http://alvo.local".to_string(),
+            llm: crate::config::llm_config::remote_de_teste(),
             ..Configuration::default()
         };
 
-        assert!(config.validation_problems().is_empty());
+        assert!(
+            config.validation_problems().is_empty(),
+            "{:?}",
+            config.validation_problems()
+        );
     }
 
     /// A lista junta a IA e as ferramentas, porque abortar em qualquer uma
@@ -393,13 +394,23 @@ mod tests {
 
     #[test]
     fn parse_cli_provider() {
-        let args = vec!["-p".to_string(), "ollama".to_string()];
-        let mut config = Configuration::default();
-        config.parse_args(&args).unwrap();
-        assert_eq!(
-            config.llm.provider,
-            crate::config::llm_config::LlmProviderKind::Ollama
-        );
+        use crate::config::llm_config::LlmProviderKind;
+        let cases = [
+            ("llama.cpp", LlmProviderKind::LlamaCpp),
+            ("llama_cpp", LlmProviderKind::LlamaCpp),
+            ("ollama", LlmProviderKind::LlamaCpp),
+            ("NVIDIA NIM", LlmProviderKind::NvidiaNim),
+            ("OpenAI", LlmProviderKind::OpenAI),
+            ("Personalizado", LlmProviderKind::Custom),
+        ];
+        for (spelling, expected) in cases {
+            let args = vec!["-p".to_string(), spelling.to_string()];
+            let mut config = Configuration::default();
+            config
+                .parse_args(&args)
+                .unwrap_or_else(|error| panic!("grafia \"{spelling}\" rejeitada: {error}"));
+            assert_eq!(config.llm.provider, expected, "grafia {spelling}");
+        }
     }
 
     #[test]
@@ -412,10 +423,13 @@ mod tests {
         assert_eq!(config.target_url, "http://test.local");
         assert_eq!(
             config.llm.provider,
-            crate::config::llm_config::LlmProviderKind::Ollama
+            crate::config::llm_config::LlmProviderKind::LlamaCpp
         );
-        assert_eq!(config.llm.base_url, "http://localhost:11434/v1");
-        assert_eq!(config.llm.model, "llama3.2:1b");
+        assert_eq!(config.llm.base_url, "http://localhost:8080/v1");
+        assert_eq!(
+            config.llm.model,
+            crate::config::llm_config::LlmProviderKind::LlamaCpp.default_model()
+        );
         assert!(config.llm.validate().is_ok());
     }
 

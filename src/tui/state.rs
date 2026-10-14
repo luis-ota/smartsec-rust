@@ -171,6 +171,12 @@ enum RunEvent {
     AnalysisProgress {
         elapsed_secs: u64,
     },
+    CodeAgent(crate::code_agent::progress::CodeAgentEvent),
+    AuditFinished {
+        files_scanned: usize,
+        findings: usize,
+        limitation: Option<String>,
+    },
     /// Linha de resumo da correlação e do enriquecimento CVE/NVD.
     EnrichmentSummary(String),
     Completed {
@@ -179,8 +185,12 @@ enum RunEvent {
     },
 }
 
+const CODE_TRAIL_LIMIT: usize = 200;
+
 pub struct AppState {
     pub config: Configuration,
+    pub code_agent_trail: Vec<crate::code_agent::progress::CodeAgentEvent>,
+    pub code_agent_current: Option<String>,
     pub orchestrator: Orchestrator,
     pub agent: AIAgent,
     pub step: AppStep,
@@ -241,6 +251,21 @@ pub struct AppState {
     pub settings_input_project_dir: String,
     pub settings_api_key_touched: bool,
     pub settings_error: Option<String>,
+    /// Assistente de primeira execução: Some quando o operador sai ou conclui.
+    pub onboarding: Option<crate::config::onboarding::OnboardingState>,
+    pub onboarding_cursor: usize,
+    /// Falha de gravação do assistente, exibida na própria tela.
+    pub onboarding_error: Option<String>,
+    pub(crate) onboarding_probe: Option<Arc<dyn crate::config::environment::OnboardingProbe>>,
+    pub(crate) onboarding_sender:
+        Option<mpsc::Sender<crate::tui::state_onboarding::OnboardingEvent>>,
+    pub(crate) onboarding_events:
+        Option<mpsc::Receiver<crate::tui::state_onboarding::OnboardingEvent>>,
+    pub(crate) onboarding_task: Option<tokio::task::JoinHandle<()>>,
+    /// A sondagem do ambiente só dispara uma vez, no laço assíncrono.
+    pub(crate) onboarding_probe_pending: bool,
+    /// Gravador da configuração concluída; trocável para não tocar a máquina.
+    pub(crate) onboarding_persister: Box<dyn crate::config::onboarding::OnboardingPersister>,
     /// Problema de configuracao detectado na abertura da TUI, antes de qualquer
     /// execucao. Vive separado de `settings_error` porque nasce do
     /// carregamento e nao de uma tentativa de salvar, e porque um continua
@@ -303,12 +328,7 @@ impl AppState {
 
         let (provider_idx, base_url, api_key, model) = {
             let llm = &config.llm;
-            let idx = match llm.provider {
-                LlmProviderKind::Ollama => 0,
-                LlmProviderKind::NvidiaNim => 1,
-                LlmProviderKind::OpenAI => 2,
-                LlmProviderKind::Custom => 3,
-            };
+            let idx = llm.provider.index();
             (
                 idx,
                 llm.base_url.clone(),
@@ -329,6 +349,8 @@ impl AppState {
 
         Ok(Self {
             config_warning: None,
+            code_agent_trail: Vec::new(),
+            code_agent_current: None,
             config,
             orchestrator,
             agent,
@@ -385,6 +407,15 @@ impl AppState {
             settings_input_project_dir: project_dir,
             settings_api_key_touched: false,
             settings_error: None,
+            onboarding: None,
+            onboarding_cursor: 0,
+            onboarding_error: None,
+            onboarding_probe: None,
+            onboarding_sender: None,
+            onboarding_events: None,
+            onboarding_task: None,
+            onboarding_probe_pending: false,
+            onboarding_persister: Box::new(crate::config::onboarding::SystemOnboardingPersister),
             llm_warning: None,
             audit_log_path: None,
             history: crate::orchestrator::scan_logger::ScanHistory::default(),
@@ -544,6 +575,8 @@ impl AppState {
     /// que o canal limitado não acumule eventos enquanto o usuário está na
     /// ajuda ou nas configurações.
     pub async fn step_tick(&mut self) {
+        self.spawn_onboarding_probe();
+        self.poll_onboarding_events().await;
         self.process_run_events().await;
     }
 
@@ -553,6 +586,7 @@ impl AppState {
     /// para que `p` e `c` não virem ação dentro de um overlay.
     pub fn has_blocking_layer(&self) -> bool {
         self.show_settings
+            || self.onboarding.is_some()
             || self.show_help_overlay
             || self.show_command_palette
             || self.show_report_viewer
@@ -657,6 +691,21 @@ impl AppState {
                     if elapsed_secs % 10 == 0 {
                         self.exec_logs
                             .push(format!("[ia] análise em andamento… ({elapsed_secs}s)"));
+                    }
+                }
+                RunEvent::CodeAgent(event) => self.push_code_agent(event),
+                RunEvent::AuditFinished {
+                    files_scanned,
+                    findings,
+                    limitation,
+                } => {
+                    self.exec_logs.push(format!(
+                        "[codigo] auditoria leu {files_scanned} arquivo(s) e produziu \
+                         {findings} achado(s)"
+                    ));
+                    if let Some(limit) = limitation {
+                        self.exec_logs
+                            .push(format!("[codigo] cobertura parcial: {limit}"));
                     }
                 }
                 RunEvent::EnrichmentSummary(line) => {
@@ -987,6 +1036,19 @@ impl AppState {
                 }
             }
             orchestrator.build_findings();
+
+            // A auditoria de código entra antes da correlação, como no headless,
+            // senão os achados do fonte não participariam da deduplicação.
+            let audit = orchestrator.audit_code();
+            if audit.files_scanned > 0 {
+                let _ = sender
+                    .send(RunEvent::AuditFinished {
+                        files_scanned: audit.files_scanned,
+                        findings: audit.findings.len(),
+                        limitation: audit.limitation.clone(),
+                    })
+                    .await;
+            }
             orchestrator.correlate_and_enrich_findings().await;
             for line in orchestrator.enrichment.lines_pt_br() {
                 let _ = sender.send(RunEvent::EnrichmentSummary(line)).await;
@@ -1037,11 +1099,22 @@ impl AppState {
                 }
             });
             orchestrator.analyze_findings().await;
+
+            let (code_tx, mut code_rx) = tokio::sync::mpsc::unbounded_channel();
+            let forwarder = sender.clone();
+            tokio::spawn(async move {
+                while let Some(event) = code_rx.recv().await {
+                    if forwarder.send(RunEvent::CodeAgent(event)).await.is_err() {
+                        break;
+                    }
+                }
+            });
             // A fase do agente de código roda depois da análise de logs, pela
             // mesma razão do headless: os achados precisam existir e já estar
             // classificados. O heartbeat continua vivo para que a TUI não fique
             // parada durante a exploração do projeto.
-            orchestrator.analyze_code().await;
+            orchestrator.analyze_code(Some(&code_tx)).await;
+            drop(code_tx);
             heartbeat.abort();
             let audit_log = orchestrator
                 .persist_scan_log()
@@ -1053,6 +1126,180 @@ impl AppState {
                 })
                 .await;
         }));
+    }
+
+    pub fn push_code_agent(&mut self, event: crate::code_agent::progress::CodeAgentEvent) {
+        use crate::code_agent::progress::CodeAgentEvent as Event;
+        match &event {
+            Event::Started {
+                total_findings,
+                project_dir,
+            } => {
+                self.code_agent_current = None;
+                self.exec_logs.push(format!(
+                    "[ia/codigo] explorando {project_dir} · {total_findings} achado(s)"
+                ));
+            }
+            Event::ToolInvoked {
+                finding_index,
+                tool,
+                arguments,
+                ..
+            } => {
+                self.code_agent_current = Some(format!("{tool}({arguments})"));
+                self.exec_logs.push(format!(
+                    "[ia/codigo] achado #{} → {tool}({arguments})",
+                    finding_index + 1
+                ));
+            }
+            Event::ToolCompleted(record) => {
+                self.code_agent_current = None;
+                self.exec_logs.push(format!(
+                    "[ia/codigo] {} {} · {}",
+                    record.tool, record.outcome, record.summary
+                ));
+            }
+            Event::FindingFinished {
+                finding_index,
+                located,
+                tool_calls,
+            } => {
+                let desfecho = if *located {
+                    "localizado"
+                } else {
+                    "localização não determinada"
+                };
+                self.exec_logs.push(format!(
+                    "[ia/codigo] achado #{} {desfecho} em {tool_calls} chamada(s)",
+                    finding_index + 1
+                ));
+            }
+            Event::Finished {
+                located,
+                total,
+                unavailable_reason,
+            } => {
+                self.code_agent_current = None;
+                match unavailable_reason {
+                    Some(reason) => self
+                        .exec_logs
+                        .push(format!("[ia/codigo] fase indisponível: {reason}")),
+                    None => self.exec_logs.push(format!(
+                        "[ia/codigo] {located}/{total} achado(s) localizado(s)"
+                    )),
+                }
+            }
+        }
+
+        if self.code_agent_trail.len() >= CODE_TRAIL_LIMIT {
+            let excess = self.code_agent_trail.len() + 1 - CODE_TRAIL_LIMIT;
+            self.code_agent_trail.drain(..excess);
+        }
+        self.code_agent_trail.push(event);
+    }
+
+    pub fn code_agent_rows(
+        &self,
+        width: usize,
+        height: usize,
+    ) -> Vec<ratatui::text::Line<'static>> {
+        use crate::code_agent::progress::CodeAgentEvent as Event;
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span};
+
+        let label = |text: String| Span::styled(text, Style::default().fg(Color::DarkGray));
+        let tool = |text: String| Span::styled(text, Style::default().fg(Color::Cyan));
+        let ok = |text: String| Span::styled(text, Style::default().fg(Color::Green));
+        let bad = |text: String| Span::styled(text, Style::default().fg(Color::Red));
+
+        let mut rows = Vec::new();
+        let trail = &self.code_agent_trail;
+        let inicio = trail.len().saturating_sub(height);
+        for event in &trail[inicio..] {
+            match event {
+                Event::Started { total_findings, .. } => rows.push(Line::from(vec![
+                    label("  fase  ".into()),
+                    Span::styled(
+                        format!("explorando código · {total_findings} achado(s)"),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])),
+                Event::ToolInvoked {
+                    finding_index,
+                    tool: name,
+                    arguments,
+                    ..
+                } => rows.push(Line::from(vec![
+                    label(format!("  #{}    ", finding_index + 1)),
+                    tool(name.clone()),
+                    Span::styled(
+                        crate::tui::chrome::truncate_width(arguments, width.saturating_sub(14)),
+                        Style::default().fg(Color::Gray),
+                    ),
+                ])),
+                Event::ToolCompleted(record) => {
+                    let color = match record.outcome.as_str() {
+                        "ok" => ok,
+                        _ => bad,
+                    };
+                    rows.push(Line::from(vec![
+                        label("        ↳ ".into()),
+                        color(record.outcome.clone()),
+                        Span::styled(
+                            crate::tui::chrome::truncate_width(
+                                &record.summary,
+                                width.saturating_sub(18),
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]));
+                }
+                Event::FindingFinished {
+                    finding_index,
+                    located,
+                    tool_calls,
+                } => {
+                    let (text, style) = if *located {
+                        ("localizado".to_string(), Style::default().fg(Color::Green))
+                    } else {
+                        (
+                            "sem localização".to_string(),
+                            Style::default().fg(Color::DarkGray),
+                        )
+                    };
+                    rows.push(Line::from(vec![
+                        label(format!("  #{}    ", finding_index + 1)),
+                        Span::styled(text, style),
+                        label(format!(" · {tool_calls} chamada(s)")),
+                    ]));
+                }
+                Event::Finished {
+                    located,
+                    total,
+                    unavailable_reason,
+                } => match unavailable_reason {
+                    Some(reason) => rows.push(Line::from(vec![
+                        label("  fase  ".into()),
+                        bad(crate::tui::chrome::truncate_width(
+                            reason,
+                            width.saturating_sub(10),
+                        )),
+                    ])),
+                    None => rows.push(Line::from(vec![
+                        label("  fase  ".into()),
+                        Span::styled(
+                            format!("{located}/{total} localizado(s)"),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ])),
+                },
+            }
+        }
+        rows
     }
 
     pub fn advance_execution(&mut self) {
@@ -1131,6 +1378,18 @@ impl AppState {
     }
 
     pub fn apply_settings(&mut self) -> Result<(), String> {
+        let candidate = self.settings_candidate()?;
+        candidate.save()?;
+        self.commit_settings(candidate);
+        Ok(())
+    }
+
+    /// Monta a configuração a partir do rascunho **sem** gravar nada.
+    ///
+    /// Separação necessária porque `save` toca o arquivo do usuário e o keyring
+    /// do sistema: o assistente de primeira execução precisa montar e validar o
+    /// candidato antes de decidir se ele vale a pena ser persistido.
+    pub fn settings_candidate(&self) -> Result<Configuration, String> {
         let provider =
             LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
         let timeout = self
@@ -1175,9 +1434,7 @@ impl AppState {
         crate::code_agent::workspace::Workspace::open(&project_path)
             .map_err(|error| format!("Diretório do projeto inválido: {error}"))?;
         candidate.project_dir = Some(project);
-        candidate.save()?;
-        self.commit_settings(candidate);
-        Ok(())
+        Ok(candidate)
     }
 
     /// Aplica uma configuração já validada e persistida.
@@ -1197,12 +1454,7 @@ impl AppState {
     }
 
     pub fn reset_settings_draft(&mut self) {
-        self.settings_provider_idx = match self.config.llm.provider {
-            LlmProviderKind::Ollama => 0,
-            LlmProviderKind::NvidiaNim => 1,
-            LlmProviderKind::OpenAI => 2,
-            LlmProviderKind::Custom => 3,
-        };
+        self.settings_provider_idx = self.config.llm.provider.index();
         self.settings_input_base_url = self.config.llm.base_url.clone();
         self.settings_input_api_key = self.config.llm.api_key.clone();
         self.settings_input_model = self.config.llm.model.clone();
@@ -1754,7 +2006,7 @@ mod tests {
                     vec![finding(Severity::Critical, "Shell remota aberta")],
                     vec![
                         "A LLM principal falhou: conexão recusada",
-                        "Usando o Ollama local configurado como alternativa",
+                        "Usando o llama.cpp local configurado como alternativa",
                     ],
                 )),
                 audit_log: Err("sem permissão de escrita".to_string()),

@@ -135,6 +135,9 @@ pub struct ScanMetadata {
     /// Motivo pelo qual a fase do agente de código não pôde começar.
     #[serde(default)]
     pub code_unavailable_reason: Option<String>,
+    /// Caminho da trilha com as ações da IA, gravada durante a execução.
+    #[serde(default)]
+    pub agent_trail_path: String,
 }
 
 /// Contagem de achados por severidade usada na listagem do histórico.
@@ -303,6 +306,7 @@ impl ScanMetadata {
             code_tool_calls_count: 0,
             code_tool_calls: Vec::new(),
             code_unavailable_reason: None,
+            agent_trail_path: String::new(),
         }
     }
 
@@ -325,6 +329,12 @@ impl ScanMetadata {
             .as_deref()
             .map(crate::utils::redaction::sanitize_diagnostic);
         self.code_tool_calls = report.tool_calls.clone();
+        self
+    }
+
+    /// Aponta o log estruturado para a trilha de ações da IA.
+    pub fn with_agent_trail(mut self, path: &std::path::Path) -> Self {
+        self.agent_trail_path = crate::utils::redaction::sanitize_text(&path.display().to_string());
         self
     }
 
@@ -429,6 +439,7 @@ impl ScanMetadata {
                 .code_unavailable_reason
                 .as_deref()
                 .map(crate::utils::redaction::sanitize_diagnostic),
+            agent_trail_path: sanitize(&self.agent_trail_path),
         }
     }
 }

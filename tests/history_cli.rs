@@ -22,7 +22,7 @@ fn isolated_root(label: &str) -> PathBuf {
 }
 
 fn command_in(root: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_smartsec-rust"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_smartsec"));
     command
         .env("XDG_CONFIG_HOME", root)
         .env("HOME", root)

@@ -82,7 +82,7 @@ impl Sandbox {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_smartsec-rust"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_smartsec"));
         command
             .env("XDG_CONFIG_HOME", self.root.join(".config"))
             .env("HOME", &self.root)
@@ -263,7 +263,7 @@ fn sigterm_cancels_the_scan_keeps_the_artifacts_and_leaves_no_container() {
 
 #[test]
 fn the_help_text_documents_the_cancellation_exit_codes() {
-    let output = Command::new(env!("CARGO_BIN_EXE_smartsec-rust"))
+    let output = Command::new(env!("CARGO_BIN_EXE_smartsec"))
         .arg("--help")
         .output()
         .expect("o binário deve responder a --help");

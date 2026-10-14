@@ -2,6 +2,15 @@
 
 Plataforma de analise de seguranca — prototipo escrito em Rust com interface de terminal.
 
+## Instalacao
+
+```bash
+./scripts/install.sh
+```
+
+Pre-requisitos, como verificar e como desinstalar:
+[docs/INSTALACAO.md](docs/INSTALACAO.md).
+
 ## Documentacao do TCC
 
 - [Especificacao completa, requisitos, sprints e metas](TCC_SPEC.md)
@@ -35,7 +44,7 @@ parte do catalogo executavel.
 - **TUI** com [ratatui](https://crates.io/crates/ratatui) + [crossterm](https://crates.io/crates/crossterm), navegavel por teclado e mouse
 - **Modo headless** via `scan --target <alvo>`, com exit codes proprios para CI
 - **Seis scanners reais**, cada um com imagem fixada por digest, rodando em container rootless
-- **Analise IA** com Ollama local por padrao e suporte a OpenAI / NVIDIA NIM / endpoint customizado
+- **Analise IA** com llama.cpp local por padrao e suporte a OpenAI / NVIDIA NIM / endpoint customizado
 - **Agente de codigo** que aponta `arquivo:linha` de cada achado depois dos scanners, em modo somente leitura
 - **Relatorio Markdown e PDF** com a mesma base sanitizada, entao os dois nao divergem
 - **Historico consultavel** por CLI e pela TUI, com log estruturado por execucao
@@ -43,7 +52,7 @@ parte do catalogo executavel.
 
 ## Requisitos
 
-- Rust 1.80+
+- Rust 1.80+ (so para compilar; o binario instalado nao precisa)
 - [Podman](https://podman.io/) em modo rootless, com o backend de rede `pasta`
 - Templates do Nuclei em `~/nuclei-templates`, no commit esperado configurado
 
@@ -56,6 +65,8 @@ local.
 Detalhamento em [docs/CONFIGURACAO.md](docs/CONFIGURACAO.md).
 
 ## Uso rapido
+
+Instalado, o comando e `smartsec`. A partir do repositorio:
 
 ```bash
 # TUI interativa
@@ -130,7 +141,7 @@ src/
   tools/           Runners reais das ferramentas
   ai/              Agente IA e servico unico de analise (TUI e headless)
   code_agent/      Agente de codigo: sandbox read-only e tool calling
-  llm/             Provedores LLM (openai, ollama, nvidia-nim)
+  llm/             Provedores LLM (openai, llama.cpp, nvidia-nim)
   domain/          Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/          Persistencia de configuracao (~/.config/smartsec/)
   report/          Gerador de relatorio Markdown e PDF

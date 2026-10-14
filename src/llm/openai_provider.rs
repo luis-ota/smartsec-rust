@@ -11,6 +11,10 @@ struct ChatRequest {
     messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Value>>,
+    /// `required` enquanto o agente exige exploração; omitido nos demais
+    /// turnos para preservar o payload que os provedores já aceitam.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'static str>,
     temperature: f32,
 }
 
@@ -55,17 +59,32 @@ pub struct OpenAIProvider {
     pub timeout_secs: u64,
     pub max_retries: u8,
     pub send_auth: bool,
+    /// Intervalo inicial do backoff exponencial entre retentativas.
+    pub retry_base_delay: Duration,
 }
+
+/// Base do backoff exponencial.
+pub const DEFAULT_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+
+/// Teto da espera entre retentativas, para que a espera não consuma o prazo da
+/// análise inteira antes da segunda tentativa.
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(8);
 
 impl OpenAIProvider {
     /// Monta o corpo da requisição. Sem ferramentas declaradas, o campo
     /// `tools` é omitido para que o caminho de análise de logs continue
     /// idêntico ao anterior (e aceito por provedores sem tool calling).
-    fn chat_body(model: &str, messages: Vec<Value>, tools: Option<Vec<Value>>) -> ChatRequest {
+    fn chat_body(
+        model: &str,
+        messages: Vec<Value>,
+        tools: Option<Vec<Value>>,
+        tool_choice: Option<&'static str>,
+    ) -> ChatRequest {
         ChatRequest {
             model: model.to_string(),
             messages,
             tools,
+            tool_choice,
             temperature: 0.7,
         }
     }
@@ -73,10 +92,24 @@ impl OpenAIProvider {
     /// Envia o corpo ao endpoint de chat, com retentativa limitada, e devolve
     /// o texto da primeira escolha.
     async fn post_chat(&self, body: &ChatRequest) -> Result<String, anyhow::Error> {
+        let chat_response = self.post_with_retry(body).await?;
+        chat_response
+            .choices
+            .first()
+            .map(|choice| choice.message.content.clone().unwrap_or_default())
+            .ok_or_else(|| anyhow::anyhow!("A LLM não retornou uma resposta"))
+    }
+
+    /// Executa a requisição, repetindo apenas o que faz sentido repetir. Nenhuma
+    /// retentativa sai sem esperar: reenviar o mesmo payload no mesmo instante
+    /// consome o orçamento de tokens por minuto que acabou de estourar.
+    async fn post_with_retry(&self, body: &ChatRequest) -> Result<ChatResponse, anyhow::Error> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(self.timeout_secs))
             .build()?;
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let mut backoff = self.retry_base_delay;
+        let mut last_rate_limit: Option<Option<Duration>> = None;
 
         for attempt in 0..=self.max_retries {
             let mut request = client
@@ -87,30 +120,101 @@ impl OpenAIProvider {
                 request = request.bearer_auth(&self.api_key);
             }
 
-            match request.send().await {
-                Ok(answer) if answer.status().is_success() => {
-                    let chat_response: ChatResponse = answer.json().await?;
-                    return chat_response
-                        .choices
-                        .first()
-                        .map(|choice| choice.message.content.clone().unwrap_or_default())
-                        .ok_or_else(|| anyhow::anyhow!("A LLM não retornou uma resposta"));
-                }
-                Ok(answer) => {
-                    let status = answer.status();
-                    let retryable = status.is_server_error()
-                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
-                    if !retryable || attempt == self.max_retries {
-                        return Err(anyhow::anyhow!("A API da LLM retornou o status {status}"));
-                    }
-                }
+            let answer = match request.send().await {
+                Ok(answer) => answer,
                 Err(error) if attempt == self.max_retries => return Err(error.into()),
-                Err(_) => {}
+                Err(_) => {
+                    tokio::time::sleep(jittered(backoff)).await;
+                    backoff = next_backoff(backoff);
+                    continue;
+                }
+            };
+
+            if answer.status().is_success() {
+                return Ok(answer.json().await?);
             }
+
+            let status = answer.status();
+            let retry_after = retry_after_of(&answer);
+            let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+            if rate_limited {
+                last_rate_limit = Some(retry_after);
+            } else if !status.is_server_error() {
+                return Err(anyhow::anyhow!("A API da LLM retornou o status {status}"));
+            }
+            if attempt == self.max_retries {
+                return Err(match last_rate_limit {
+                    Some(asked) => {
+                        anyhow::anyhow!(rate_limit_message(attempt + 1, asked))
+                    }
+                    None => anyhow::anyhow!(
+                        "A API da LLM retornou o status {status} após {} tentativa(s)",
+                        attempt + 1
+                    ),
+                });
+            }
+            if let Some(asked) = retry_after.filter(|delay| *delay > RETRY_MAX_DELAY) {
+                return Err(anyhow::anyhow!(rate_limit_message(
+                    attempt + 1,
+                    Some(asked)
+                )));
+            }
+
+            let delay = retry_after.unwrap_or_else(|| jittered(backoff));
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            backoff = next_backoff(backoff);
         }
 
         unreachable!("o laço de tentativas sempre retorna na última tentativa")
     }
+}
+
+fn next_backoff(current: Duration) -> Duration {
+    (current * 2).min(RETRY_MAX_DELAY)
+}
+
+/// Espera entre 50% e 100% do backoff. Evita que dois clientes que receberam 429
+/// no mesmo segundo voltem a bater no provedor juntos; um LCG semeado pelo
+/// relógio basta e dispensa uma dependência nova.
+fn jittered(base: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |elapsed| u64::from(elapsed.subsec_nanos()).max(1));
+    let mut state = nanos | 1;
+    state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    let half = u64::try_from(base.as_nanos() / 2).unwrap_or(u64::MAX);
+    Duration::from_nanos(half + state % half.saturating_add(1))
+}
+
+/// Lê `Retry-After` em segundos, ignorando formatos que não são numéricos.
+fn retry_after_of(answer: &reqwest::Response) -> Option<Duration> {
+    answer
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
+/// Mensagem de limite de uso no formato que resolve o problema: o que agotou,
+/// o que o provedor pediu e o que fazer agora.
+fn rate_limit_message(attempts: u8, retry_after: Option<Duration>) -> String {
+    let requested = retry_after.map_or_else(
+        || "o provedor não informou por quanto tempo esperar".to_string(),
+        |delay| format!("o provedor pediu {}s de espera", delay.as_secs()),
+    );
+    format!(
+        "o provedor recusou a requisição por limite de uso (status 429) em {attempts} \
+         tentativa(s): {requested}; aguarde o período indicado, reduza o tamanho do \
+         payload ou use o provedor local (llama.cpp)"
+    )
 }
 
 #[async_trait]
@@ -123,11 +227,12 @@ impl LLMProvider for OpenAIProvider {
                 "content": prompt,
             })],
             None,
+            None,
         );
         self.post_chat(&body).await
     }
 
-    /// O endpoint Chat Completions do padrão OpenAI é aceito por Ollama,
+    /// O endpoint Chat Completions do padrão OpenAI é aceito por llama.cpp,
     /// NVIDIA NIM e provedores `custom`, então a mesma implementação do
     /// caminho de análise também conduz o turno com ferramentas.
     fn supports_tool_calling(&self) -> bool {
@@ -142,62 +247,33 @@ impl LLMProvider for OpenAIProvider {
             &request.model,
             request.to_wire(),
             Some(request.tools_to_wire()),
+            request.force_tool_call.then_some("required"),
         );
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(self.timeout_secs))
-            .build()?;
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let mut turn = ToolTurn::default();
-
-        for attempt in 0..=self.max_retries {
-            let mut http = client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .json(&body);
-            if self.send_auth {
-                http = http.bearer_auth(&self.api_key);
-            }
-            match http.send().await {
-                Ok(answer) if answer.status().is_success() => {
-                    let chat_response: ChatResponse = answer.json().await?;
-                    let message = chat_response
-                        .choices
-                        .first()
-                        .ok_or_else(|| anyhow::anyhow!("A LLM não retornou uma resposta"))?
-                        .message
-                        .clone();
-                    turn.content = message.content.unwrap_or_default();
-                    turn.tool_calls = message
-                        .tool_calls
-                        .unwrap_or_default()
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, call)| ToolCall {
-                            id: if call.id.trim().is_empty() {
-                                format!("call-{index}")
-                            } else {
-                                call.id
-                            },
-                            name: call.function.name,
-                            arguments: parse_arguments(&call.function.arguments),
-                        })
-                        .collect();
-                    return Ok(turn);
-                }
-                Ok(answer) => {
-                    let status = answer.status();
-                    let retryable = status.is_server_error()
-                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
-                    if !retryable || attempt == self.max_retries {
-                        return Err(anyhow::anyhow!("A API da LLM retornou o status {status}"));
-                    }
-                }
-                Err(error) if attempt == self.max_retries => return Err(error.into()),
-                Err(_) => {}
-            }
-        }
-
-        unreachable!("o laço de tentativas sempre retorna na última tentativa")
+        let chat_response = self.post_with_retry(&body).await?;
+        let message = chat_response
+            .choices
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("A LLM não retornou uma resposta"))?
+            .message
+            .clone();
+        Ok(ToolTurn {
+            content: message.content.unwrap_or_default(),
+            tool_calls: message
+                .tool_calls
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+                .map(|(index, call)| ToolCall {
+                    id: if call.id.trim().is_empty() {
+                        format!("call-{index}")
+                    } else {
+                        call.id
+                    },
+                    name: call.function.name,
+                    arguments: parse_arguments(&call.function.arguments),
+                })
+                .collect(),
+        })
     }
 }
 
@@ -217,6 +293,9 @@ fn parse_arguments(raw: &str) -> Value {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::code_agent::tools::ToolSpec;
+    use crate::llm::tool_calling::{ToolMessage, ToolTurnRequest};
+    use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -253,7 +332,39 @@ pub(crate) mod tests {
             timeout_secs: 2,
             max_retries: 0,
             send_auth: true,
+            retry_base_delay: DEFAULT_RETRY_BASE_DELAY,
         }
+    }
+
+    /// Servidor que responde `status` com `extra_headers` em toda requisição e
+    /// devolve o instante de cada uma, para que o teste prove que houve espera
+    /// entre as tentativas.
+    async fn throttle_server(
+        status: &'static str,
+        extra_headers: &'static str,
+        responses: usize,
+    ) -> (String, tokio::task::JoinHandle<Vec<std::time::Instant>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let body = r#"{"error":"corpo-remoto-que-nao-pode-vazar"}"#;
+            let mut arrivals = Vec::with_capacity(responses);
+            for _ in 0..responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                arrivals.push(std::time::Instant::now());
+                let mut buffer = vec![0; 8192];
+                let _ = stream.read(&mut buffer).await;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra_headers}\
+                     Connection: close\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+            arrivals
+        });
+        (format!("http://{address}/v1"), handle)
     }
 
     #[tokio::test]
@@ -271,6 +382,63 @@ pub(crate) mod tests {
         assert!(requests[0].contains("POST /v1/chat/completions"));
         assert!(requests[0].contains("authorization: Bearer test-token"));
         assert!(requests[0].contains("\"model\":\"gpt-4o\""));
+        assert!(
+            !requests[0].contains("tool_choice"),
+            "o caminho de análise não declara ferramentas nem escolha: {}",
+            requests[0]
+        );
+    }
+
+    fn tool_turn_request(force_tool_call: bool) -> ToolTurnRequest {
+        ToolTurnRequest {
+            model: "gpt-4o".to_string(),
+            messages: vec![ToolMessage::User("localize a origem".to_string())],
+            tools: vec![ToolSpec {
+                name: "list_dir".to_string(),
+                description: "Lista um diretório".to_string(),
+                parameters: json!({"type": "object", "properties": {}}),
+            }],
+            force_tool_call,
+        }
+    }
+
+    /// Sem `tool_choice: required`, o modelo responde a recusa sem explorar —
+    /// foi assim que a fase devolveu zero chamadas contra a NIM.
+    #[tokio::test]
+    async fn a_forced_turn_demands_a_tool_call_and_the_wire_says_so() {
+        let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]}}]}";
+        let (base_url, server) = mock_server(vec![("200 OK", body)]).await;
+
+        let turn = provider(base_url)
+            .execute_tool_turn(&tool_turn_request(true))
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+
+        assert!(
+            requests[0].contains("\"tool_choice\":\"required\""),
+            "{}",
+            requests[0]
+        );
+        assert_eq!(turn.tool_calls.len(), 1);
+        assert_eq!(turn.tool_calls[0].name, "list_dir");
+    }
+
+    /// Depois da primeira ferramenta o turno volta a aceitar resposta final:
+    /// forçar para sempre impediria o modelo de concluir.
+    #[tokio::test]
+    async fn an_unforced_turn_omits_tool_choice() {
+        let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"localizacao\\\": null}\"}}]}";
+        let (base_url, server) = mock_server(vec![("200 OK", body)]).await;
+
+        let turn = provider(base_url)
+            .execute_tool_turn(&tool_turn_request(false))
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+
+        assert!(!requests[0].contains("tool_choice"), "{}", requests[0]);
+        assert!(turn.tool_calls.is_empty());
     }
 
     #[tokio::test]
@@ -308,6 +476,113 @@ pub(crate) mod tests {
             .downcast_ref::<reqwest::Error>()
             .is_some_and(reqwest::Error::is_timeout));
         server.abort();
+    }
+
+    /// Regressão do 429: a retentativa saía no mesmo instante, com o payload
+    /// idêntico, e queimava o orçamento de tokens por minuto que acabara de estourar
+    /// (Groq free: 7.000 tokens/min de entrada). O teste exige três coisas — o número
+    /// de tentativas, uma espera real entre elas e um erro que diz o que fazer.
+    #[tokio::test]
+    async fn rate_limit_retries_after_waiting_and_explains_itself() {
+        let (base_url, server) = throttle_server("429 Too Many Requests", "", 3).await;
+        let mut client = provider(base_url);
+        client.max_retries = 2;
+        client.retry_base_delay = Duration::from_millis(100);
+
+        let error = client
+            .execute_prompt("logs", "gpt-4o")
+            .await
+            .unwrap_err()
+            .to_string();
+        let arrivals = server.await.unwrap();
+
+        assert_eq!(
+            arrivals.len(),
+            3,
+            "duas retentativas depois da primeira falha"
+        );
+        assert!(
+            arrivals[1].duration_since(arrivals[0]) >= Duration::from_millis(50),
+            "a segunda tentativa saiu sem esperar: {:?}",
+            arrivals
+        );
+        assert!(
+            arrivals[2].duration_since(arrivals[1]) >= Duration::from_millis(100),
+            "o backoff não cresceu entre as tentativas: {:?}",
+            arrivals
+        );
+        assert!(error.contains("429"), "{error}");
+        assert!(error.contains("limite de uso"), "{error}");
+        assert!(error.contains("3 tentativa(s)"), "{error}");
+        assert!(error.contains("llama.cpp"), "{error}");
+        assert!(
+            !error.contains("corpo-remoto"),
+            "o corpo remoto não entra no erro"
+        );
+    }
+
+    /// O provedor diz por quanto tempo esperar e isso tem precedência sobre o
+    /// backoff próprio: insistir antes da hora recusa de novo.
+    #[tokio::test]
+    async fn rate_limit_respects_the_retry_after_header() {
+        let (base_url, server) =
+            throttle_server("429 Too Many Requests", "Retry-After: 1\r\n", 2).await;
+        let mut client = provider(base_url);
+        client.max_retries = 1;
+        client.retry_base_delay = Duration::from_millis(10);
+
+        let error = client
+            .execute_prompt("logs", "gpt-4o")
+            .await
+            .unwrap_err()
+            .to_string();
+        let arrivals = server.await.unwrap();
+
+        assert_eq!(arrivals.len(), 2);
+        assert!(arrivals[1].duration_since(arrivals[0]) >= Duration::from_secs(1));
+        assert!(error.contains("1s de espera"), "{error}");
+    }
+
+    /// Um `Retry-After` maior do que o prazo da análise não pode virar espera: a
+    /// resposta precisa dizer isso, não dormir até o deadline do agente de código.
+    #[tokio::test]
+    async fn a_retry_after_beyond_the_wait_ceiling_stops_immediately() {
+        let (base_url, server) =
+            throttle_server("429 Too Many Requests", "Retry-After: 3600\r\n", 1).await;
+        let mut client = provider(base_url);
+        client.max_retries = 3;
+        client.retry_base_delay = Duration::from_millis(10);
+
+        let error = client
+            .execute_prompt("logs", "gpt-4o")
+            .await
+            .unwrap_err()
+            .to_string();
+        let arrivals = server.await.unwrap();
+
+        assert_eq!(arrivals.len(), 1, "não pode repetir antes da hora");
+        assert!(error.contains("3600s de espera"), "{error}");
+    }
+
+    /// O jitter precisa manter a espera dentro de [50%, 100%] do backoff: menor
+    /// que isso deixa de ser espera, maior que isso alonga a análise sem motivo.
+    #[test]
+    fn jittered_delay_stays_inside_half_the_backoff() {
+        for base in [
+            Duration::from_millis(1),
+            Duration::from_millis(80),
+            Duration::from_secs(2),
+        ] {
+            let half = base / 2;
+            for _ in 0..64 {
+                let delay = jittered(base);
+                assert!(delay >= half, "{delay:?} abaixo de {half:?}");
+                assert!(delay <= base, "{delay:?} acima de {base:?}");
+            }
+        }
+        assert!(jittered(Duration::ZERO).is_zero());
+        assert!(next_backoff(Duration::from_millis(40)) == Duration::from_millis(80));
+        assert_eq!(next_backoff(RETRY_MAX_DELAY), RETRY_MAX_DELAY);
     }
 
     #[tokio::test]

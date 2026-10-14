@@ -2,6 +2,9 @@
 name = "smartsec-rust"
 version = "0.2.0"
 edition = "2021"
+[[bin]]
+name = "smartsec"
+path = "src/main.rs"
 
 [dependencies]
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }

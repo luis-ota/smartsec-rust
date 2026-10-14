@@ -351,7 +351,7 @@ Exemplo mínimo:
 target_url = "http://169.254.1.2:3000"
 
 [llm]
-provider = "Ollama"
+provider = "llama.cpp"
 
 [[tools]]
 name = "ScannerWeb"

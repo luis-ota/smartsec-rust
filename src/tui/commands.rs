@@ -49,6 +49,11 @@ pub fn command_items(app: &AppState) -> Vec<CommandItem> {
         "",
         SemanticAction::OpenSettings,
     ));
+    items.push(CommandItem::new(
+        "Executar assistente de configuração",
+        "",
+        SemanticAction::OpenOnboarding,
+    ));
     items.push(
         CommandItem::new(
             "Consultar histórico de execuções",

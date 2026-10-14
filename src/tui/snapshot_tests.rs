@@ -1,6 +1,11 @@
 use super::chrome::{ACCENT, DANGER, SURFACE};
 use super::interaction::{FocusTarget, SemanticAction};
 use super::state::{AnalysisPhase, AppState, AppStep, RunIssueScope, ToolStatus};
+use crate::config::environment::{
+    EnvironmentReport, KeyringAvailability, LocalEndpoint, PodmanMode,
+};
+use crate::config::llm_config::LlmProviderKind;
+use crate::config::onboarding::{OnboardingState, OnboardingStep};
 use crate::config::Configuration;
 use crate::domain::vulnerability::{FindingSource, Vulnerability};
 use crate::domain::Severity;
@@ -265,7 +270,7 @@ fn execution_screen_shows_every_registered_occurrence() {
     app.record_run_issue(RunIssueScope::Tool, "Nmap falhou: imagem ausente no Podman");
     app.record_run_issue(
         RunIssueScope::Ai,
-        "A LLM principal falhou: conexão recusada; usando o Ollama local",
+        "A LLM principal falhou: conexão recusada; usando o llama.cpp local",
     );
     app.record_run_issue(
         RunIssueScope::Audit,
@@ -725,6 +730,170 @@ fn history_reports_unreadable_records_in_80x24() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Monta o assistente numa etapa, com a sondagem já entregue. Não usa a
+/// sondagem de verdade: rede, keyring e Podman ficam fora do snapshot.
+fn onboarding_at(step: OnboardingStep) -> AppState {
+    let mut app = app();
+    let mut onboarding = OnboardingState::start();
+    onboarding.step = step;
+    if step == OnboardingStep::Environment {
+        onboarding.deliver_environment(EnvironmentReport {
+            local_llm: Some(LocalEndpoint {
+                name: "llama.cpp".to_string(),
+                base_url: "http://localhost:8080/v1".to_string(),
+            }),
+            keyring: KeyringAvailability::Available,
+            podman: PodmanMode::Rootless,
+        });
+    }
+    app.onboarding = Some(onboarding);
+    app.focus = FocusTarget::OnboardingList;
+    app
+}
+
+#[test]
+fn the_first_run_screen_lists_what_the_machine_has_at_80x24() {
+    let mut app = onboarding_at(OnboardingStep::Environment);
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Primeira configuração",
+            "O que encontramos nesta máquina",
+            "IA local disponível",
+            "llama.cpp responde em http://localhost:8080/v1",
+            "Cofre de segredos disponível",
+            "Podman rootless disponível",
+        ],
+    );
+
+    assert!(
+        !snapshot.contains("localhost:11434"),
+        "a tela não pode afirmar que não existe IA local quando encontrou uma: {snapshot}"
+    );
+}
+
+#[test]
+fn a_machine_without_a_secret_vault_is_told_the_remote_key_cannot_be_saved() {
+    let mut app = onboarding_at(OnboardingStep::Environment);
+    if let Some(onboarding) = app.onboarding.as_mut() {
+        onboarding.deliver_environment(EnvironmentReport {
+            local_llm: None,
+            keyring: KeyringAvailability::Unavailable(
+                "nenhum serviço de segredos ativo".to_string(),
+            ),
+            podman: PodmanMode::Absent,
+        });
+    }
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Nenhuma IA local encontrada",
+            "não poderão ser salvas",
+            "serviço de segredos ativo",
+            "Podman não encontrado",
+        ],
+    );
+
+    assert!(snapshot.contains("localhost:8080"), "{snapshot}");
+    assert!(snapshot.contains("localhost:11434"), "{snapshot}");
+}
+
+#[test]
+fn the_provider_step_offers_local_remote_and_custom_at_80x24() {
+    let mut app = onboarding_at(OnboardingStep::Provider);
+
+    let snapshot = assert_snapshot(&mut app, &["Provedor de IA", "Continuar com esta escolha"]);
+
+    for label in LlmProviderKind::all_labels() {
+        assert!(snapshot.contains(label), "faltou {label}: {snapshot}");
+    }
+}
+
+#[test]
+fn the_consent_step_says_what_leaves_the_machine() {
+    let mut app = onboarding_at(OnboardingStep::Consent);
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Consentimento para IA remota",
+            "saem desta máquina",
+            "Aceitar e usar o provedor remoto",
+            "Recusar e usar o modelo local",
+        ],
+    );
+
+    assert!(snapshot.contains("código do projeto"), "{snapshot}");
+}
+
+#[test]
+fn the_credential_step_never_shows_the_typed_secret() {
+    let mut app = onboarding_at(OnboardingStep::Credential);
+    app.settings_input_api_key = "sk-segredo-digitado".to_string();
+    app.settings_api_key_touched = true;
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Credencial do provedor remoto",
+            "nunca é gravada no arquivo de configuração",
+        ],
+    );
+
+    assert!(!snapshot.contains("segredo"), "{snapshot}");
+    assert!(snapshot.contains("••••••••"), "{snapshot}");
+}
+
+#[test]
+fn the_connection_step_offers_an_optional_test() {
+    let mut app = onboarding_at(OnboardingStep::Connection);
+
+    assert_snapshot(
+        &mut app,
+        &[
+            "Teste de conexão",
+            "Teste ainda não executado",
+            "Testar a conexão agora",
+            "Concluir e salvar a configuração",
+        ],
+    );
+}
+
+/// Cada escolha precisa de região clicável na linha em que aparece: um
+/// registro deslocado faria o clique acionar a opção vizinha.
+#[test]
+fn every_onboarding_option_is_clickable_on_its_own_line() {
+    for step in [
+        OnboardingStep::Environment,
+        OnboardingStep::Provider,
+        OnboardingStep::Credential,
+        OnboardingStep::Consent,
+        OnboardingStep::Connection,
+    ] {
+        let mut app = onboarding_at(step);
+
+        for index in 0..super::screens::onboarding::option_count(&app) {
+            app.onboarding_cursor = index;
+            let (_, buffer) = render_80x24(&mut app);
+            let region = app
+                .hit_regions
+                .iter()
+                .find(|region| region.action == SemanticAction::OnboardingActivate(index))
+                .unwrap_or_else(|| panic!("{step:?} precisa de região para a opção {index}"));
+            let row = region.area.y as usize;
+            let text: String = (0..80)
+                .map(|column| buffer[(column, row as u16)].symbol())
+                .collect();
+            assert!(
+                text.contains('›'),
+                "{step:?} opção {index} foi registrada na linha {row}, que não é a do cursor: {text:?}"
+            );
+        }
+    }
 }
 
 #[test]

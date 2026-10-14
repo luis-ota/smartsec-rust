@@ -27,8 +27,11 @@ schema mínimo: `target_url`, `active_tools`, `execution_type` e a tabela
 - `--target` é sempre obrigatório na CLI; o `target_url` do arquivo é usado
   pela TUI e substituído pela CLI no headless.
 - `--tools`, `--llm` e `--model` sobrescrevem os valores do arquivo.
-- `provider` aceita as grafias da CLI (`ollama`, `openai`, `nvidia-nim`,
-  `custom`) além das canônicas (`Ollama`, `NvidiaNim`, `OpenAI`, `Custom`).
+- `provider` aceita o rótulo exibido na TUI (`llama.cpp`, `NVIDIA NIM`,
+  `OpenAI`, `Personalizado`), os nomes canônicos (`LlamaCpp`, `NvidiaNim`,
+  `OpenAI`, `Custom`) e as grafias da CLI, sem diferenciar caixa nem separador
+  (`llama_cpp`, `nvidia nim`, `personalizado`). `ollama` e `Mock` continuam
+  válidos como alias, para as configurações já gravadas.
 - `base_url` e `model` ausentes assumem o padrão do provedor;
   `execution_type` ausente assume `Assisted`.
 - `scan` headless sempre opera como Automático, independente de
@@ -37,16 +40,65 @@ schema mínimo: `target_url`, `active_tools`, `execution_type` e a tabela
   (o PDF sai ao lado, com a extensão trocada); as flags
   `--output`/`--output-dir` têm precedência sobre o arquivo.
 
+## Assistente de primeira execução
+
+Na primeira execução — quando `~/.config/smartsec/config.toml` ainda não existe
+— a TUI abre no assistente de configuração em vez de cair direto na tela de
+análise. A partir da segunda execução o assistente só aparece por pedido
+explícito: `Ctrl+P` → *Executar assistente de configuração*, ou o subcomando
+`smartsec onboarding`.
+
+São cinco passos, e a ordem responde ao que a máquina offers e ao que o provedor
+exige:
+
+1. **Ambiente.** Antes de perguntar qualquer coisa, o SmartSec verifica se há
+   servidor de IA local respondendo (`localhost:8080` para llama.cpp,
+   `localhost:11434` para Ollama), se o cofre de segredos do sistema está
+   disponível e se o Podman está presente e rootless. Cada item diz o que foi
+   achado e o que aquilo significa. A verificação acontece uma vez, em task
+   assíncrona com timeout curto; nada é consultado durante a renderização de um
+   quadro. Sem cofre de segredos, o caminho remoto é fechado na hora com aviso
+   explícito, porque uma chave que não pode ser salva não sobrevive à próxima
+   sessão.
+2. **Provedor.** A escolha usa os mesmos campos, o mesmo rascunho e a mesma
+   validação da tela `Configurar IA` — inclusive o botão para abri-la e ajustar
+   o que falta.
+3. **Credencial.** Só para provedor remoto, e mascarada na tela. A chave vai
+   para o keyring; ela nunca passa pelo arquivo de configuração.
+4. **Consentimento.** Só para provedor remoto. O texto diz o que sai da máquina:
+   alvo, logs das ferramentas, achados com suas evidências e o código do projeto
+   escolhido. Recusar não deixa o fluxo inválido: o assistente volta para o
+   modelo local, apaga a credencial digitada e explica por quê (RNF10).
+5. **Teste de conexão.** Opcional: uma chamada mínima a `{base_url}/models`, com
+   o resultado em português e a causa acionável de uma falha (chave recusada,
+   endpoint errado, limite de requisições, prazo esgotado).
+
+Sair a qualquer momento — `Esc`, *Sair* ou *Voltar* até o início — não grava
+nada: o rascunho volta ao que está em vigor. Uma gravação só acontece na última
+etapa, depois de `LlmConfig::validate` aceitar a configuração inteira, então não
+existe estado intermediário inválido no disco.
+
 ## Configuracao da IA na TUI
 
 A tela `Configurar IA` separa conexao principal de confiabilidade e mostra
 somente os campos aplicaveis. Provedores remotos exibem chave e consentimento;
-o Ollama local os oculta. `Tab` percorre os campos e acoes, `←`/`→` alteram
+o llama.cpp local os oculta. `Tab` percorre os campos e acoes, `←`/`→` alteram
 selecoes, `Espaco` alterna opcoes e `Ctrl+U` limpa o campo atual. Valores
 invalidos mantem a tela aberta com uma mensagem acionavel. Chaves ficam no
 keyring do sistema e nunca sao gravadas no TOML. No Linux o keyring usa o
 Secret Service (por exemplo, gnome-keyring ou KWallet), que precisa estar
 ativo para salvar e ler chaves de provedores remotos.
+
+## Retentativas e limite de uso
+
+`max_retries` é o número de tentativas **adicionais**. Nenhuma retentativa sai sem
+esperar: um `Retry-After` do provedor tem precedência e, na ausência dele, o
+SmartSec aplica backoff exponencial (500 ms, 1 s, 2 s, com jitter) porque reenviar
+o mesmo payload no mesmo instante consome o orçamento de tokens por minuto que
+acabou de estourar. Um `429` vira uma mensagem que diz o que fazer — aguardar o
+período pedido, reduzir o payload ou usar o llama.cpp local — em vez de um `status
+429` cru. Um `Retry-After` maior que o teto de espera não vira espera: a resposta
+é imediata, para não passar do prazo da análise.
 
 ## Progresso, achados e ocorrencias na TUI
 
@@ -109,9 +161,9 @@ containers:
 ```
 
 Ele exige `bash`, `cargo`, `curl`, `jq`, `podman`, `python3`, `rg`, `tmux`,
-Ollama local com `llama3.2:1b` e o checkout versionado em
-`~/nuclei-templates`. Os artefatos temporarios ficam no caminho informado ao
-fim da execucao. A evidencia homologada desta mudanca esta em
+llama.cpp local (`llama-server` na porta 8080) com o GGUF Llama 3.1 8B e o
+checkout versionado em `~/nuclei-templates`. Os artefatos temporarios ficam no
+caminho informado ao fim da execucao. A evidencia homologada desta mudanca esta em
 [`docs/evidence/issue-53-tui-e2e.md`](evidence/issue-53-tui-e2e.md).
 
 Para uma execucao real, a configuracao TOML pode definir `nuclei_templates_path` e

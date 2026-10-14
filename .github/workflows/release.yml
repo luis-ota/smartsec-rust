@@ -1,0 +1,202 @@
+# Empacotamento de release do SmartSec.
+#
+# Dispara em tag `v*`. Cada artefato vai junto de um `SHA256SUMS`, porque o
+# binario sai de um repositorio publico e o usuario precisa de uma forma de
+# conferir a integridade sem depender do navegador.
+#
+# `-j 1` em todo comando do cargo pelo mesmo motivo do CI (issue #26): o build
+# paralelo estoura a memoria das maquinas do projeto. A linha de comando
+# homologada localmente precisa ser a mesma do CI para a evidencia do TCC
+# continuar comparavel.
+name: SmartSec Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag a buildar (ex.: v0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: smartsec-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  SMARTSEC_PACOTE_LIBDBUS: 'libdbus-1-dev'
+  SMARTSEC_TOOLCHAIN: '1.98.1'
+
+jobs:
+  binarios:
+    name: Binario ${{ matrix.alvo }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux e o alvo do TCC: e onde o Podman rootless e o `pasta` foram
+          # validados. O `.deb` sai do mesmo binario, sem rebuild.
+          - alvo: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            deb: true
+          - alvo: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            deb: false
+    steps:
+      - name: Obter o codigo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Instalar libdbus-1-dev
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "$SMARTSEC_PACOTE_LIBDBUS"
+
+      - name: Fixar a toolchain Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (2026-09-03)
+        with:
+          toolchain: ${{ env.SMARTSEC_TOOLCHAIN }}
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: smartsec-release-${{ matrix.alvo }}
+
+      - name: Instalar o toolchain de compilacao cruzada (aarch64)
+        if: matrix.alvo == 'aarch64-unknown-linux-gnu'
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            gcc-aarch64-linux-gnu libdbus-1-dev:arm64
+
+      - name: Compilar o binario release
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.alvo }}" = 'aarch64-unknown-linux-gnu' ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            export PKG_CONFIG_ALLOW_CROSS=1
+          fi
+          cargo build -j 1 --release --locked --bin smartsec
+          ls -lh target/release/smartsec
+
+      - name: Verificar o binario gerado
+        run: |
+          set -euo pipefail
+          ./target/release/smartsec --version
+          ./target/release/smartsec --help
+
+      - name: Empacotar tar.gz
+        run: |
+          set -euo pipefail
+          versao="${{ inputs.tag || github.ref_name }}"
+          versao="${versao#v}"
+          pacote="smartsec-${versao}-${{ matrix.alvo }}"
+          staging="$RUNNER_TEMP/pacote"
+          mkdir -p "$staging"
+          install -m 0755 target/release/smartsec "$staging/smartsec"
+          install -m 0644 README.md "$staging/README.md"
+          install -m 0644 docs/INSTALACAO.md "$staging/INSTALACAO.md"
+          install -m 0644 assets/fonts/LICENSE "$staging/LICENSE-NOTO-SANS.txt"
+          install -m 0755 scripts/install.sh "$staging/install.sh"
+          tar -czf "$RUNNER_TEMP/${pacote}.tar.gz" -C "$staging" .
+          ls -lh "$RUNNER_TEMP/${pacote}.tar.gz"
+
+      # O `.deb` nao roda codigo de manutencao: sem postinst, sem prerm, sem
+      #privileged. Ele empacota o binario em `/usr/bin` e o README em
+      # `/usr/share/doc`; o Podman, o `pasta` e os templates continuam sendo
+      # responsabilidade do usuario, como no caminho sem `sudo`. Um pacote que
+      # mexesse em `/etc/containers` esconderia a configuracao de rootless que o
+      # TCC exige ser explicita.
+      - name: Empacotar .deb
+        if: matrix.deb
+        run: |
+          set -euo pipefail
+          versao="${{ inputs.tag || github.ref_name }}"
+          versao="${versao#v}"
+          raiz="$RUNNER_TEMP/deb"
+          mkdir -p "$raiz/DEBIAN" "$raiz/usr/bin" "$raiz/usr/share/doc/smartsec"
+          install -m 0755 target/release/smartsec "$raiz/usr/bin/smartsec"
+          install -m 0644 README.md "$raiz/usr/share/doc/smartsec/README.md"
+          install -m 0644 docs/INSTALACAO.md "$raiz/usr/share/doc/smartsec/INSTALACAO.md"
+          printf 'smartsec (SmartSec - plataforma de analise de seguranca) %s\n' "$versao" >"$raiz/usr/share/doc/smartsec/changelog.Debian"
+          cat >"$raiz/DEBIAN/control" <<CONTROL
+          Package: smartsec
+          Version: $versao
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libc6
+          Maintainer: SmartSec TCC <smartsec@example.invalid>
+          Homepage: https://github.com/luis-ota/smartsec-rust
+          Description: Plataforma de analise de seguranca
+           Executa scanners em containers Podman rootless e gera relatorio
+           Markdown e PDF. Requer Podman rootless, o backend de rede pasta e os
+           templates do Nuclei, que este pacote nao instala.
+          CONTROL
+          dpkg-deb --build --root-owner-group "$raiz" \
+            "$RUNNER_TEMP/smartsec_${versao}_amd64.deb"
+          dpkg-deb --info "$RUNNER_TEMP/smartsec_${versao}_amd64.deb"
+          dpkg-deb --contents "$RUNNER_TEMP/smartsec_${versao}_amd64.deb"
+
+      # O SHA256SUMS e montado no job de publicacao, sobre os arquivos que
+      # serao anexados: um checksum calculado em outra maquina nao valida o
+      # artefato que o usuario baixa.
+
+      - name: Publicar os artefatos
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: smartsec-${{ matrix.alvo }}
+          path: |
+            ${{ runner.temp }}/*.tar.gz
+            ${{ runner.temp }}/*.deb
+          if-no-files-found: error
+
+  publicar:
+    name: Publicar a release
+    needs: binarios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Baixar os artefatos
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: artefatos
+          merge-multiple: true
+
+      - name: Calcular os checksums dos artefatos publicados
+        run: |
+          set -euo pipefail
+          cd artefatos
+          sha256sum ./*.tar.gz ./*.deb >SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Criar a release no GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          titulo="$TAG"
+          {
+            printf 'SmartSec %s\n\n' "$TAG"
+            printf 'Binario Linux unico, sem dependencia de biblioteca do host alem do Podman rootless.\n\n'
+            printf 'Instalacao sem sudo: ./install.sh (docs/INSTALACAO.md).\n\n'
+            printf '| Arquivo | SHA256 |\n|---|---|\n'
+            while read -r soma arquivo; do
+              printf '| `%s` | `%s` |\n' "$arquivo" "$soma"
+            done <SHA256SUMS
+          } >NOTAS.md
+          cat NOTAS.md
+          gh release create "$TAG" \
+            --title "$titulo" \
+            --notes-file NOTAS.md \
+            --verify-tag \
+            ./*.tar.gz ./*.deb ./SHA256SUMS

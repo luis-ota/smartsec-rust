@@ -14,12 +14,16 @@ active_tools = ["nmap", "nuclei"]
 execution_type = "Assisted"
 
 [llm]
-# Valores: "Ollama" | "NvidiaNim" | "OpenAI" | "Custom".
-# Também aceita as grafias da CLI: "ollama", "openai", "nvidia-nim", "custom".
-provider = "Ollama"
+# Valores: "LlamaCpp" | "NvidiaNim" | "OpenAI" | "Custom".
+# Aceita o rótulo da TUI e as grafias da CLI, sem diferenciar caixa nem
+# separadores: "llama.cpp", "openai", "nvidia-nim", "personalizado".
+# "ollama" e "Mock" seguem válidos como alias, para configurações já gravadas.
+provider = "LlamaCpp"
 # Opcionais: quando ausentes, assumem o padrão do provedor.
-base_url = "http://localhost:11434/v1"
-model = "llama3.2:1b"
+# O llama-server serve a API compatível com OpenAI na porta 8080 e identifica o
+# modelo pelo arquivo GGUF carregado com -m.
+base_url = "http://localhost:8080/v1"
+model = "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
 # timeout_secs = 45
 # max_retries = 2
 # remote_consent = false

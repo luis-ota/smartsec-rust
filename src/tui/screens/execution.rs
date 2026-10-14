@@ -109,7 +109,7 @@ fn render_ai_activity(app: &AppState, frame: &mut Frame, area: Rect) {
             ACCENT,
             "IA definindo o plano do Nuclei",
             format!(
-                "{} · perfis e limites serão validados pela política segura",
+                "perfis e limites serão validados pela política segura · {}",
                 app.config.llm.model
             ),
         ),

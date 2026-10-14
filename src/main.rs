@@ -6,6 +6,7 @@
 
 mod ai;
 mod code_agent;
+mod code_audit;
 mod config;
 mod domain;
 mod llm;
@@ -55,6 +56,8 @@ enum CliCommand {
     Tool(ToolArgs),
     History(HistoryArgs),
     Show(ShowArgs),
+    Trace(ShowArgs),
+    Onboarding,
 }
 
 #[derive(Debug)]
@@ -76,7 +79,7 @@ struct HistoryArgs {
     limit: usize,
 }
 
-/// Argumentos de `show`: abertura de uma execução pelo `scan_id`.
+/// Argumentos de `show` e `trace`.
 #[derive(Debug)]
 struct ShowArgs {
     scan_id: String,
@@ -100,7 +103,7 @@ impl Cli {
             .iter()
             .any(|argument| argument == "--version" || argument == "-V")
         {
-            println!("smartsec-rust 0.2.0");
+            println!("smartsec {}", env!("CARGO_PKG_VERSION"));
             return Ok(Self { command: None });
         }
         if arguments.is_empty() {
@@ -115,13 +118,24 @@ impl Cli {
         }
         let command = arguments[0].as_str();
         match command {
+            "onboarding" | "configurar" => {
+                if arguments.len() > 1 {
+                    anyhow::bail!(
+                        "opção desconhecida: {}; o assistente inicial não recebe opções",
+                        arguments[1]
+                    );
+                }
+                return Ok(Self {
+                    command: Some(CliCommand::Onboarding),
+                });
+            }
             "history" => {
                 let limit = parse_history_limit(&arguments[1..])?;
                 return Ok(Self {
                     command: Some(CliCommand::History(HistoryArgs { limit })),
                 });
             }
-            "show" => {
+            "show" | "trace" => {
                 let scan_id = arguments
                     .get(1)
                     .ok_or_else(|| anyhow::anyhow!("o scan_id da execução é obrigatório"))?;
@@ -134,10 +148,15 @@ impl Cli {
                         arguments[2]
                     );
                 }
+                let args = ShowArgs {
+                    scan_id: scan_id.clone(),
+                };
                 return Ok(Self {
-                    command: Some(CliCommand::Show(ShowArgs {
-                        scan_id: scan_id.clone(),
-                    })),
+                    command: Some(if command == "trace" {
+                        CliCommand::Trace(args)
+                    } else {
+                        CliCommand::Show(args)
+                    }),
                 });
             }
             _ => {}
@@ -232,50 +251,51 @@ fn parse_history_limit(arguments: &[String]) -> Result<usize> {
 
 fn print_help() {
     println!("SmartSec - Plataforma de análise de segurança");
-    println!("Uso: smartsec <scan|tool> --target <ALVO> [OPÇÕES]");
-    println!("     smartsec history [--limit <N>]");
-    println!("     smartsec show <SCAN_ID>");
-    println!(
-        "
-Comandos:
-  scan              Executa uma varredura não interativa.
-  tool <FERRAMENTA> Executa manualmente uma ferramenta.
-  history           Lista as execuções recentes do histórico.
-  show <SCAN_ID>    Mostra o detalhe de uma execução pelo identificador."
-    );
-    println!(
-        "
-Opções:
-  -t, --target <ALVO>  IP, domínio ou URL
-      --config <ARQUIVO>  Configuração TOML
-      --tools <LISTA>  Ferramentas reais separadas por vírgulas
-      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom
-      --model <MODELO>  Modelo da IA
-  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)
-      --output-dir <DIRETORIO>  Diretório de saída do relatório
-  -n, --limit <N>        Quantidade de execuções exibidas por 'history' (padrão: 20)
-      --max-critical-findings <N>  Interrompe a varredura ao atingir N achados críticos (0 desativa)
-  -h, --help
-  -V, --version"
-    );
-    println!(
-        "
-Códigos de saída:
-  0    nenhuma vulnerabilidade crítica
-  1    vulnerabilidade crítica encontrada
-  2    erro de configuração, de execução ou de consulta ao histórico
-  130  cancelado por SIGINT (Ctrl+C)
-  143  cancelado por SIGTERM
-
-  Relatório e log estruturado são gravados antes da mensagem final, inclusive
-  no cancelamento por sinal."
-    );
-    println!("\nComandos:\n  scan              Executa uma varredura não interativa.\n  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n      --project <DIRETORIO>  Projeto analisado pelo agente de código (padrão: diretório atual)\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório\n  -h, --help\n  -V, --version");
-    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração ou de execução");
-    println!("\nOpções:\n  -t, --target <ALVO>  IP, domínio ou URL\n      --config <ARQUIVO>  Configuração TOML\n      --tools <LISTA>  Ferramentas reais separadas por vírgulas\n      --llm <PROVEDOR>  ollama, openai, nvidia-nim ou custom\n      --model <MODELO>  Modelo da IA\n  -o, --output <ARQUIVO>  Relatório Markdown (padrão: smartsec-report.md)\n      --output-dir <DIRETORIO>  Diretório de saída do relatório e do PDF\n  -h, --help\n  -V, --version");
-    println!("\nRelatórios:\n  O Markdown e o PDF são gravados juntos, com o mesmo nome e a mesma\n  pasta. O PDF é derivado do Markdown já sanitizado, então não pode exibir um\n  segredo que o Markdown removeu.");
-    println!("\nCódigos de saída:\n  0  nenhuma vulnerabilidade crítica\n  1  vulnerabilidade crítica encontrada\n  2  erro de configuração, de execução ou de gravação do relatório");
+    println!();
+    println!("Uso:");
+    println!("  smartsec scan --target <ALVO> [OPÇÕES]");
+    println!("  smartsec tool <FERRAMENTA> --target <ALVO>");
+    println!("  smartsec onboarding");
+    println!("  smartsec history [--limit <N>]");
+    println!("  smartsec show <SCAN_ID>");
+    println!("  smartsec trace <SCAN_ID>");
+    println!();
+    println!("Comandos:");
+    println!("  scan              Executa uma varredura não interativa.");
+    println!("  tool <FERRAMENTA> Executa manualmente uma ferramenta.");
+    println!("  onboarding        Abre o assistente de configuração da IA.");
+    println!("  history           Lista as execuções recentes do histórico.");
+    println!("  show <SCAN_ID>    Mostra o detalhe de uma execução.");
+    println!("  trace <SCAN_ID>   Mostra as ações que a IA executou na execução.");
+    println!();
+    println!("Erros de uso:");
+    println!("  ferramenta desconhecida  Ferramenta fora do catálogo registrado");
+    println!("  comando desconhecido     Subcomando que não existe");
+    println!();
+    println!("Opções:");
+    println!("  -t, --target <ALVO>       IP, domínio ou URL");
+    println!("      --config <ARQUIVO>    Configuração TOML");
+    println!("      --tools <LISTA>       Ferramentas reais separadas por vírgulas");
+    println!("      --llm <PROVEDOR>      llama.cpp, openai, nvidia-nim ou custom");
+    println!("      --model <MODELO>      Modelo da IA");
+    println!("      --project <DIRETORIO> Projeto analisado (padrão: diretório atual)");
+    println!("  -o, --output <ARQUIVO>    Relatório Markdown");
+    println!("      --output-dir <DIR>    Diretório de saída do relatório e do PDF");
+    println!("      --max-critical-findings <N>  Interrompe ao atingir N achados críticos");
+    println!("  -h, --help");
+    println!("  -V, --version");
+    println!();
+    println!("Relatórios:");
+    println!("  O Markdown e o PDF são gravados juntos, com o mesmo nome e a mesma");
+    println!("  pasta. O PDF é derivado do Markdown já sanitizado, então não pode exibir");
+    println!("  um segredo que o Markdown removeu.");
+    println!();
+    println!("Códigos de saída:");
+    println!("  0    nenhuma vulnerabilidade crítica");
+    println!("  1    vulnerabilidade crítica encontrada");
+    println!("  2    erro de configuração, de execução ou de gravação do relatório");
+    println!("  130  cancelado por SIGINT (Ctrl+C)");
+    println!("  143  cancelado por SIGTERM");
 }
 
 impl CommandLineInterface {
@@ -292,6 +312,11 @@ impl CommandLineInterface {
         {
             return Ok(EXIT_SUCCESS);
         }
+        // Primeira execução é a ausência do arquivo global: sem ele, a tela
+        // cairia direto na análise com uma configuração que ninguém revisou.
+        let force_onboarding = config::onboarding::is_first_run(
+            config::persistence::config_file_exists_at(&config::persistence::config_path()),
+        );
         match cli.command {
             Some(CliCommand::Scan(args)) => {
                 let config = build_config(&args.options, args.target, None, true)?;
@@ -303,6 +328,13 @@ impl CommandLineInterface {
             }
             Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
             Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
+            Some(CliCommand::Trace(args)) => Ok(Self::print_agent_trace(&args.scan_id)),
+            Some(CliCommand::Onboarding) => {
+                let (config, problems) =
+                    config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
+                Self::display_tui(config, problems, true).await?;
+                Ok(EXIT_SUCCESS)
+            }
             None => {
                 // A TUI abre mesmo com configuracao invalida: e a propria tela de
                 // Configurar IA que permite consertar o que esta errado, entao
@@ -310,7 +342,7 @@ impl CommandLineInterface {
                 // encontrados viram aviso visivel. O headless segue validando.
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
-                Self::display_tui(config, problems).await?;
+                Self::display_tui(config, problems, force_onboarding).await?;
                 Ok(EXIT_SUCCESS)
             }
         }
@@ -319,11 +351,15 @@ impl CommandLineInterface {
     async fn display_tui(
         initial_config: config::Configuration,
         config_problems: Vec<String>,
+        force_onboarding: bool,
     ) -> Result<()> {
         let mut app = tui::state::AppState::new(initial_config)?;
         // O aviso de configuracao entra antes de qualquer execucao e so sai
         // quando o operador salva uma configuracao valida pela propria tela.
         app.set_config_warning(Some(config_problems.join(" · ")));
+        if force_onboarding {
+            app.start_onboarding();
+        }
 
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -432,6 +468,7 @@ impl CommandLineInterface {
 
         println!();
         println!("  Detalhe de uma execução: smartsec show <SCAN_ID>");
+        println!("  Ações da IA: smartsec trace <SCAN_ID>");
         println!("═══════════════════════════════════════════════════════════");
         EXIT_SUCCESS
     }
@@ -535,6 +572,59 @@ impl CommandLineInterface {
         EXIT_SUCCESS
     }
 
+    /// Lida do arquivo e não do log estruturado: a trilha existe para os casos em
+    /// que o scan não chegou a gravar o log.
+    fn print_agent_trace(scan_id: &str) -> i32 {
+        if !crate::orchestrator::scan_logger::is_valid_scan_id(scan_id) {
+            eprintln!("Erro: scan_id inválido: {scan_id}");
+            return EXIT_ERROR;
+        }
+        let path =
+            crate::code_agent::audit_trail::agent_trails_dir().join(format!("{scan_id}.jsonl"));
+        let registros = match crate::code_agent::audit_trail::read_records(&path) {
+            Ok(registros) => registros,
+            Err(error) => {
+                eprintln!("Erro: {error:#}");
+                return EXIT_ERROR;
+            }
+        };
+
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  SmartSec — Ações da IA em {scan_id}");
+        println!("═══════════════════════════════════════════════════════════");
+        if registros.is_empty() {
+            println!("  (a IA não registrou nenhuma ação nesta execução)");
+            println!();
+            println!(
+                "  A IA é opcional: sem provedor configurado, ou com consentimento\n\
+                 \x20 ausente, a fase não chega a chamar o modelo."
+            );
+            println!("═══════════════════════════════════════════════════════════");
+            return EXIT_SUCCESS;
+        }
+        for registro in &registros {
+            let sequencia = registro
+                .get("seq")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default();
+            let quando = registro.get("em").and_then(|v| v.as_str()).unwrap_or("-");
+            let fase = registro.get("fase").and_then(|v| v.as_str()).unwrap_or("-");
+            let evento = registro
+                .get("evento")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            println!("  {sequencia:>3}. [{fase}] {evento} · {quando}");
+            if let Some(detalhe) = registro.get("detalhe") {
+                println!("       {detalhe}");
+            }
+        }
+        println!();
+        println!("  Total de ações: {}", registros.len());
+        println!("  Trilha: {}", path.display());
+        println!("═══════════════════════════════════════════════════════════");
+        EXIT_SUCCESS
+    }
+
     pub async fn run_headless(config: config::Configuration) -> Result<i32> {
         config.validate_target().map_err(anyhow::Error::msg)?;
 
@@ -618,6 +708,27 @@ impl CommandLineInterface {
         // reação ao cancelamento. Assim a execução interrompida também persiste
         // `enrichment` no log estruturado, junto de `interruption`.
         orchestrator.build_findings();
+
+        let code_audit = orchestrator.audit_code();
+        if code_audit.files_scanned > 0 {
+            println!(
+                "[1b/4] Auditoria de código ({} arquivo(s), {} achado(s)):",
+                code_audit.files_scanned,
+                code_audit.findings.len()
+            );
+            for finding in &code_audit.findings {
+                println!(
+                    "  │ [{}] {} · {}:{}",
+                    finding.severity.label_pt_br(),
+                    finding.title,
+                    finding.file,
+                    finding.line
+                );
+            }
+            if let Some(limit) = &code_audit.limitation {
+                println!("  │ cobertura parcial: {limit}");
+            }
+        }
         orchestrator.correlate_and_enrich_findings().await;
         for line in orchestrator.enrichment.lines_pt_br() {
             println!("  │ {line}");
@@ -650,7 +761,7 @@ impl CommandLineInterface {
         // severidade já está classificada e o agente apenas aponta onde
         // corrigir. O diretório efetivo é impresso antes do resultado para
         // que a saída diga qual árvore foi lida.
-        let code_report = orchestrator.analyze_code().await;
+        let code_report = orchestrator.analyze_code(None).await;
         println!("[3/4] Localização no código (projeto: {})", project_dir);
         print_code_report(&orchestrator.findings, &code_report);
         println!();
@@ -944,13 +1055,7 @@ fn validate_tools(registry: &ToolRegistry, active_tools: &[String]) -> Result<()
 }
 
 fn parse_provider(provider: &str) -> Result<config::llm_config::LlmProviderKind> {
-    match provider.to_ascii_lowercase().as_str() {
-        "ollama" => Ok(config::llm_config::LlmProviderKind::Ollama),
-        "openai" => Ok(config::llm_config::LlmProviderKind::OpenAI),
-        "nvidia-nim" | "nvidia_nim" => Ok(config::llm_config::LlmProviderKind::NvidiaNim),
-        "custom" | "personalizado" => Ok(config::llm_config::LlmProviderKind::Custom),
-        _ => anyhow::bail!("provedor de IA desconhecido: {provider}"),
-    }
+    config::llm_config::LlmProviderKind::parse(provider).map_err(anyhow::Error::msg)
 }
 
 fn selected_tools<'a>(
@@ -968,8 +1073,12 @@ fn selected_tools<'a>(
         .collect()
 }
 
+/// Ponto de entrada do binario.
+///
+/// Publico porque `src/aliases/smartsec_rust.rs` o invoca para manter o nome
+/// antigo do comando como alias do novo.
 #[tokio::main]
-async fn main() {
+pub async fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let cli = CommandLineInterface::new(arguments);
     match cli.run().await {
@@ -1060,7 +1169,7 @@ mod tests {
             &path,
             "target_url = \"http://config.local\"\nactive_tools = [\"Nmap\"]\n\
              max_critical_findings = 5\n\
-             [llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+             [llm]\nprovider = \"llama.cpp\"\nbase_url = \"http://localhost:8080/v1\"\nmodel = \"Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {
@@ -1119,7 +1228,7 @@ mod tests {
         std::fs::write(
             &path,
             "target_url = \"http://config.local\"\nactive_tools = [\"Nmap\"]\n\
-             [llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+             [llm]\nprovider = \"llama.cpp\"\nbase_url = \"http://localhost:8080/v1\"\nmodel = \"Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {
@@ -1168,7 +1277,7 @@ mod tests {
             std::env::temp_dir().join(format!("smartsec-precedence-{}.toml", std::process::id()));
         std::fs::write(
             &path,
-            "target_url = \"http://config.local\"\nactive_tools = [\"Nuclei\"]\nexecution_type = \"Assisted\"\n\n[llm]\nprovider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\nmodel = \"llama3.2:1b\"\n",
+            "target_url = \"http://config.local\"\nactive_tools = [\"Nuclei\"]\nexecution_type = \"Assisted\"\n\n[llm]\nprovider = \"llama.cpp\"\nbase_url = \"http://localhost:8080/v1\"\nmodel = \"Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\"\n",
         )
         .unwrap();
         let options = ExecutionArgs {
@@ -1260,8 +1369,8 @@ mod tests {
         std::fs::write(
             &path,
             "target_url = \"http://alvo.local\"\n\n[llm]\n\
-             provider = \"Ollama\"\nbase_url = \"http://localhost:11434/v1\"\n\
-             model = \"llama3.2:1b\"\ntimeout_secs = 900\n\n",
+             provider = \"llama.cpp\"\nbase_url = \"http://localhost:8080/v1\"\n\
+             model = \"Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\"\ntimeout_secs = 900\n\n",
         )
         .expect("a configuração de teste deve ser escrita");
 
@@ -1287,9 +1396,9 @@ mod tests {
         let config = Configuration {
             target_url: "http://alvo.local".to_string(),
             llm: LlmConfig {
-                provider: LlmProviderKind::Ollama,
-                base_url: "http://localhost:11434/v1".to_string(),
-                model: "llama3.2:1b".to_string(),
+                provider: LlmProviderKind::LlamaCpp,
+                base_url: "http://localhost:8080/v1".to_string(),
+                model: "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf".to_string(),
                 timeout_secs: 900,
                 ..LlmConfig::default()
             },

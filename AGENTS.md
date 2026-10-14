@@ -47,6 +47,27 @@ Se a tarefa exigir alteracao fora do escopo, parar e registrar a necessidade na 
 - Nao enviar logs para LLM remoto sem consentimento e sem documentar o fluxo.
 - Nao aumentar concorrencia, agressividade ou permissao de scanner sem criterio de seguranca e aceite registrado.
 
+## Comentarios
+
+Esta regra existe porque ja foi violada varias vezes.
+
+- Nao comentar o que o codigo ja diz. `// incrementa o contador` acima de
+  `counter += 1` e ruido: some quando o codigo muda e nao ensina nada.
+- Comentario so quando o *por que* nao e dedutivel do codigo. "Por que o keyring
+  engolido aqui" e util. "Itera sobre os findings" nao e.
+- No maximo duas linhas por comentario. Excecao: um comentario que registra uma
+  armadilha medida em producao pode ser mais longo, desde que traga o sintoma e a
+  causa, nao a narracao do diff.
+- Nao repetir no comentario o que a mensagem de erro, o nome do metodo ou o tipo
+  ja dizem.
+- Tabela, constante ou `match` bem nomeado substitui o comentario. Explicar um
+  `is_key_word` em cinco linhas e melhor do que deixar a funcao sem nome claro.
+- Comentario nao e lugar de justificar a tarefa nem de narrar a conversa. "Fazendo
+  a parte 2 do passo 3" nao vai para o repositorio.
+
+O comentario e substituido por teste sempre que o comentario afirmar um
+comportamento verificavel.
+
 ## Qualidade obrigatoria
 
 Todo PR deve:
