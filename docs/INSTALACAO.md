@@ -6,7 +6,36 @@ O binario sozinho nao roda: o TCC exige **Podman rootless** como engine disolame
 Nuclei**. O instalador verifica os tres e diz o que falta, com o comando
 correto para a sua distro.
 
-## Caminho rapido
+## Caminho rapido (um comando, sem `sudo`)
+
+```bash
+curl -fsSL https://github.com/luis-ota/smartsec-rust/releases/latest/download/install.sh | sh
+```
+
+O script baixa o pacote da sua arquitetura (`x86_64` ou `aarch64`), confere o
+`SHA256SUMS` publicado, instala `smartsec` em `~/.local/bin` e verifica Podman
+rootless, o backend de rede `pasta` e os templates do Nuclei — dizendo o que
+falta com o comando correto para a sua distro.
+
+| Variavel de ambiente | Efeito |
+|---|---|
+| `SMARTSEC_VERSION` | Fixa a versao (ex. `v0.2.0`); padrao: a mais recente |
+| `SMARTSEC_INSTALL_DIR` | Destino do binario (padrao: `~/.local/bin`) |
+
+Na primeira vez, vale inspecionar antes de executar:
+
+```bash
+curl -fsSL https://github.com/luis-ota/smartsec-rust/releases/latest/download/install.sh -o install.sh
+less install.sh
+sh install.sh
+```
+
+O pacote pronto exige Linux com **glibc 2.35 ou superior** (Ubuntu 22.04+,
+Debian 12+, Fedora 36+, Arch) e a `libdbus-1` do sistema (presente em qualquer
+desktop com D-Bus, via keyring). Distros mais antigas: compile do codigo, no
+caminho abaixo.
+
+## Caminho de desenvolvimento (compilar do codigo)
 
 ```bash
 git clone https://github.com/luis-ota/smartsec-rust
@@ -125,16 +154,25 @@ network_cmd = "pasta"
 ## Instalar um artefato pronto
 
 Cada tag `v*` publica `.tar.gz` para Linux, um `.deb` para Ubuntu/Debian e os
-checksums SHA256 em `SHA256SUMS`:
+checksums SHA256 em `SHA256SUMS` (o `install.sh` do `curl | sh` tambem e um
+asset). Pelo bootstrap:
+
+```bash
+SMARTSEC_VERSION=v0.2.0 sh install.sh --prefix ~/.local/bin
+```
+
+Ou manualmente, para conferir antes:
 
 ```bash
 curl -LO https://github.com/luis-ota/smartsec-rust/releases/download/v0.2.0/smartsec-0.2.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/luis-ota/smartsec-rust/releases/download/v0.2.0/SHA256SUMS
 sha256sum -c SHA256SUMS
 tar xzf smartsec-0.2.0-x86_64-unknown-linux-gnu.tar.gz
-./scripts/install.sh --bin ./smartsec
+./install.sh --bin ./smartsec
 ```
 
-O `.deb` tambem instala sem passar pelo script, mas precisa de `sudo` porqu`dpkg` escreve em `/usr`:
+O `.deb` tambem instala sem passar pelo script, mas precisa de `sudo` porque
+`dpkg` escreve em `/usr`:
 
 ```bash
 sudo dpkg -i smartsec_0.2.0_amd64.deb

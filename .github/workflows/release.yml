@@ -42,11 +42,14 @@ jobs:
         include:
           # Linux e o alvo do TCC: e onde o Podman rootless e o `pasta` foram
           # validados. O `.deb` sai do mesmo binario, sem rebuild.
+          #
+          # O runner 22.04 fixa o baseline de glibc em 2.35 (Debian 12+, Fedora
+          # 36+, Arch): o pacote roda na maquina de terceiros, nao so na de dev.
           - alvo: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             deb: true
           - alvo: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             deb: false
     steps:
       - name: Obter o codigo
@@ -82,16 +85,24 @@ jobs:
           set -euo pipefail
           if [ "${{ matrix.alvo }}" = 'aarch64-unknown-linux-gnu' ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+            # O `ring` (rustls) compila C: sem CC/AR explicitos o build cruzado
+            # falha ou linka o gcc errado.
+            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+            export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
             export PKG_CONFIG_ALLOW_CROSS=1
           fi
-          cargo build -j 1 --release --locked --bin smartsec
-          ls -lh target/release/smartsec
+          cargo build -j 1 --release --locked --target "${{ matrix.alvo }}" --bin smartsec
+          ls -lh "target/${{ matrix.alvo }}/release/smartsec"
 
       - name: Verificar o binario gerado
         run: |
           set -euo pipefail
-          ./target/release/smartsec --version
-          ./target/release/smartsec --help
+          binario="target/${{ matrix.alvo }}/release/smartsec"
+          file "$binario"
+          if [ "${{ matrix.alvo }}" = 'x86_64-unknown-linux-gnu' ]; then
+            "$binario" --version
+            "$binario" --help
+          fi
 
       - name: Empacotar tar.gz
         run: |
@@ -101,7 +112,7 @@ jobs:
           pacote="smartsec-${versao}-${{ matrix.alvo }}"
           staging="$RUNNER_TEMP/pacote"
           mkdir -p "$staging"
-          install -m 0755 target/release/smartsec "$staging/smartsec"
+          install -m 0755 "target/${{ matrix.alvo }}/release/smartsec" "$staging/smartsec"
           install -m 0644 README.md "$staging/README.md"
           install -m 0644 docs/INSTALACAO.md "$staging/INSTALACAO.md"
           install -m 0644 assets/fonts/LICENSE "$staging/LICENSE-NOTO-SANS.txt"
@@ -123,7 +134,7 @@ jobs:
           versao="${versao#v}"
           raiz="$RUNNER_TEMP/deb"
           mkdir -p "$raiz/DEBIAN" "$raiz/usr/bin" "$raiz/usr/share/doc/smartsec"
-          install -m 0755 target/release/smartsec "$raiz/usr/bin/smartsec"
+          install -m 0755 "target/${{ matrix.alvo }}/release/smartsec" "$raiz/usr/bin/smartsec"
           install -m 0644 README.md "$raiz/usr/share/doc/smartsec/README.md"
           install -m 0644 docs/INSTALACAO.md "$raiz/usr/share/doc/smartsec/INSTALACAO.md"
           printf 'smartsec (SmartSec - plataforma de analise de seguranca) %s\n' "$versao" >"$raiz/usr/share/doc/smartsec/changelog.Debian"
@@ -162,7 +173,7 @@ jobs:
   publicar:
     name: Publicar a release
     needs: binarios
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - name: Baixar os artefatos
@@ -170,6 +181,15 @@ jobs:
         with:
           path: artefatos
           merge-multiple: true
+
+      - name: Obter o codigo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # O bootstrap do `curl | sh` e publicado como asset `install.sh`; ele baixa
+      # o pacote do alvo certo, confere o SHA256 e delega ao install.sh completo
+      # que vem dentro do próprio pacote.
+      - name: Preparar o install.sh do curl | sh
+        run: install -m 0755 scripts/install-remote.sh install.sh
 
       - name: Calcular os checksums dos artefatos publicados
         run: |
@@ -188,7 +208,11 @@ jobs:
           {
             printf 'SmartSec %s\n\n' "$TAG"
             printf 'Binario Linux unico, sem dependencia de biblioteca do host alem do Podman rootless.\n\n'
-            printf 'Instalacao sem sudo: ./install.sh (docs/INSTALACAO.md).\n\n'
+            printf 'Instalacao em um comando (sem sudo):\n\n'
+            printf '```sh\n'
+            printf 'curl -fsSL https://github.com/luis-ota/smartsec-rust/releases/latest/download/install.sh | sh\n'
+            printf '```\n\n'
+            printf 'Ou baixe o pacote do seu alvo e rode `./install.sh` (docs/INSTALACAO.md).\n\n'
             printf '| Arquivo | SHA256 |\n|---|---|\n'
             while read -r soma arquivo; do
               printf '| `%s` | `%s` |\n' "$arquivo" "$soma"
@@ -199,4 +223,5 @@ jobs:
             --title "$titulo" \
             --notes-file NOTAS.md \
             --verify-tag \
+            ./install.sh \
             ./*.tar.gz ./*.deb ./SHA256SUMS

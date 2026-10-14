@@ -13,7 +13,10 @@ tokio = { version = "1", features = ["full"] }
 unicode-width = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
+# TLS puro em Rust (rustls): o binario de release e instalado por curl|sh em
+# maquinas de terceiros e nao pode exigir a libssl do host. `charset` e `http2`
+# repõem o que os recursos padrao do reqwest davam.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
 toml = "0.8"
 dirs = "6"
 anyhow = "1"
