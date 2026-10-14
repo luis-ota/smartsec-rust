@@ -1,19 +1,31 @@
 # Handoff — smartsec-rust, PR #105
 
-> **Este arquivo descreve uma sessão numa máquina específica.** Na máquina nova
-> nada abaixo existe ainda — nem o keyring, nem os arquivos em `/tmp`, nem os
-> worktrees. A seção "Reconstituindo o ambiente" diz o que precisa ser refeito.
-> Qualquer caminho citado fora do repositório é da máquina antiga, não um fato
-> sobre o projeto.
-
 Branch `feat/auditoria-codigo-ia` → `main`. Tudo commitado e pushed. PR #105 aberto e MERGEABLE.
 
+## Onde o trabalho está
+
+Rodando na máquina **`luis-arch`** (Tailscale, `100.85.152.39`), acessível da
+máquina de origem por `ssh luis-arch` com chave — sem senha. O repositório
+local de lá é `~/dev/tcc/smartsec-rust` (sem o `bobera` no caminho), na branch
+`feat/auditoria-codigo-ia`, em `1b28f3d`.
+
+Para retomar de lá:
+
 ```bash
-git clone https://github.com/luis-ota/smartsec-rust.git
-cd smartsec-rust
-git fetch origin
-git checkout feat/auditoria-codigo-ia   # 41bcd62
+ssh luis-arch
+cd ~/dev/tcc/smartsec-rust
 ```
+
+A máquina de origem é `/home/luis/dev/bobera/tcc/smartsec-rust`; os dois
+cópios estão na mesma branch e no mesmo commit, então qualquer um serve.
+
+O que já está pronto lá: chaves no keyring (NIM gravada e lida com sucesso),
+`cargo 1.97.1`, `podman 6.1.3`, `secret-tool`, alvo de teste em
+`~/dev/app-vuln` rodando na porta 3001, TOML em `/tmp/ss-nim.toml` e
+`/tmp/ss-sem-ia.toml`, e os 640 testes unitários verdes.
+
+O caminho do repositório e o IP do alvo são **daquela máquina**. Numa terceira
+máquina, `git clone` e refaça o alvo.
 
 ## Regras do projeto (leia antes de editar)
 
@@ -24,12 +36,11 @@ git checkout feat/auditoria-codigo-ia   # 41bcd62
 
 ## Estado atual
 
-Branch limpa, `41bcd62` no topo. Validação local: **640 testes unitários
-verdes**, `cargo fmt --check` limpo, `cargo clippy --all-targets -D warnings`
-com 0 avisos.
+640 testes unitários verdes, `cargo fmt --check` limpo, `cargo clippy
+--all-targets -D warnings` com 0 avisos — **validado nas duas máquinas**.
 
-Commits desta sessão (do mais recente para o mais antigo):
-- `41bcd62` — este handoff
+Commits (do mais recente para o mais antigo):
+- `1b28f3d` — handoff apontando para `luis-arch` e o ambiente montado lá
 - `35db5d2` — trilha de auditoria da IA + IA local fora do padrão + lista de provedores reordenada + `scan_metadata`
 - `e127c89` — IA local desligada por padrão
 - `5083e65` — corrige o `--help` (faltavam `--max-critical-findings`, "ferramenta desconhecida", "comando desconhecido")
@@ -72,9 +83,10 @@ nvidia-nim-api-key
 llm-api-key           (a ativa; aponta para a chave da NIM)
 ```
 
-**Na máquina nova o keyring está vazio** e os valores precisam ser pedidos ao
-usuário de novo. Ele não tem como recuperá-los deste repositório, por
-propósito. Para gravar:
+**Na `luis-arch` a chave da NIM já está gravada** e foi lida com sucesso de lá.
+Groq e OpenRouter **não** — se forem necessárias, peça os valores ao usuário.
+Numa máquina nova os valores precisam ser pedidos de novo: não há como
+recuperá-los deste repositório, por propósito. Para gravar:
 
 ```bash
 printf '%s' "$CHAVE" | secret-tool store \
@@ -87,47 +99,29 @@ keyring do sistema (D-Bus de sessão) o `secret-tool` falha; nesse caso use a
 variável de ambiente que o projeto lê, ou rode num ambiente com sessão
 gráfica.
 
-## Reconstituindo o ambiente de teste
+## Ambiente de teste
 
-Nada disto foi commitado, e tudo precisa ser refeito:
+Está montado em `luis-arch`, não commitado:
 
-**Configs TOML de teste.** Ficavam em `/tmp`, que é volátil. O conteúdo de
-`/tmp/ss-nim.toml`:
+**Alvo.** `~/dev/app-vuln/` com `app.py` (HTTP na 3001, SQLi concatenada em
+`db.execute(...)`) e `db.py` (`DB_PASSWORD = "Sup3rS3nh4!"`). Para subir:
+`cd ~/dev/app-vuln && setsid --fork python3 app.py </dev/null`.
 
-```toml
-target_url = "http://169.254.1.2:3001"
-output_dir = "/tmp/ss-nim-e2e"
+O endereço na config é `http://192.168.1.58:3001` — o IP da máquina na LAN,
+**não** o gateway. Scanear exige que o container rootless alcance o host, e o
+caminho muda conforme a rede. Numa máquina nova descubra com `ip -4 addr`.
 
-[llm]
-provider = "NVIDIA NIM"
-base_url = "https://integrate.api.nvidia.com/v1"
-model = "nvidia/nemotron-3-super-120b-a12b"
-remote_consent = true
-timeout_secs = 45
-```
+Na máquina de origem o mesmo alvo usava `169.254.1.2`, que é um endereço de
+link-local. A diferença é a prova de que o número não pode ser assumido de uma
+máquina para outra.
 
-`provider` aceita minúsculo e variações de separador (`"personalizado"`).
+**TOML.** `/tmp/ss-nim.toml` (NIM com `remote_consent = true`) e
+`/tmp/ss-sem-ia.toml` (mesmo alvo, provedor vazio — para provar que o scan
+funciona sem IA). `provider` aceita minúsculo e variações de separador
+(`"personalizado"`).
 
-**Alvo de teste.** `/tmp/app-vuln/app.py`, um servidor HTTP na porta 3001 com
-SQLi concatenada em `db.execute(...)` e `DB_PASSWORD = "..."` em `db.py`. Não
-está no repositório. O endereço `169.254.1.2` é o gateway do host visto de
-dentro do container rootless — **o número muda conforme a rede da máquina**;
-descubra com `ip route` em vez de assumir.
-
-Para subir de novo: `python3 app.py &` no diretório, e o scan aponta para
-`http://<gateway-da-máquina>:3001`.
-
-## Ferramentas
-
-Presentes na máquina anterior, a confirmar na nova:
-
-```
-cargo 1.98.1 (Arch Linux, rust 1:1.98.1-1)
-podman 6.1.1
-```
-
-`podman` é obrigatório — os scanners rodam em container rootless. Sem ele a
-varredura não sai.
+**Ferramentas** em `luis-arch`: `cargo 1.97.1`, `podman 6.1.3`, `secret-tool`.
+`podman` é obrigatório — os scanners rodam em container rootless.
 
 ## Ambiente de execução
 
