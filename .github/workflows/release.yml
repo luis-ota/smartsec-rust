@@ -177,6 +177,9 @@ jobs:
       - name: Preparar o install.sh do curl | sh
         run: install -m 0755 scripts/install-remote.sh install.sh
 
+      # Os checksums e os artefatos vivem em `artefatos/` durante o job; o
+      # conteúdo do SHA256SUMS fica com `./nome` para o usuário conferir na
+      # pasta onde baixou.
       - name: Calcular os checksums dos artefatos publicados
         run: |
           set -euo pipefail
@@ -201,8 +204,8 @@ jobs:
             printf 'Ou baixe o pacote do seu alvo e rode `./install.sh` (docs/INSTALACAO.md).\n\n'
             printf '| Arquivo | SHA256 |\n|---|---|\n'
             while read -r soma arquivo; do
-              printf '| `%s` | `%s` |\n' "$arquivo" "$soma"
-            done <SHA256SUMS
+              printf '| `%s` | `%s` |\n' "${arquivo#./}" "$soma"
+            done <artefatos/SHA256SUMS
           } >NOTAS.md
           cat NOTAS.md
           gh release create "$TAG" \
@@ -210,4 +213,4 @@ jobs:
             --notes-file NOTAS.md \
             --verify-tag \
             ./install.sh \
-            ./*.tar.gz ./*.deb ./SHA256SUMS
+            artefatos/*.tar.gz artefatos/*.deb artefatos/SHA256SUMS
