@@ -74,6 +74,9 @@ pub struct ToolTurnRequest {
     pub messages: Vec<ToolMessage>,
     /// Ferramentas registradas disponibilizadas ao modelo.
     pub tools: Vec<ToolSpec>,
+    /// Quando `true`, o turno exige uma chamada de ferramenta (`tool_choice`
+    /// `required`): impede o modelo de recusar a tarefa sem nunca explorar.
+    pub force_tool_call: bool,
 }
 
 impl ToolTurnRequest {
@@ -84,6 +87,7 @@ impl ToolTurnRequest {
             model: model.to_string(),
             messages: vec![ToolMessage::User(system), ToolMessage::User(user)],
             tools,
+            force_tool_call: false,
         }
     }
 
@@ -102,22 +106,33 @@ impl ToolTurnRequest {
                 ToolMessage::Assistant {
                     content,
                     tool_calls,
-                } => json!({
-                    "role": ASSISTANT_ROLE,
-                    "content": content,
-                    "tool_calls": tool_calls
-                        .iter()
-                        .map(|call| json!({
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.name,
-                                "arguments": serde_json::to_string(&call.arguments)
-                                    .unwrap_or_else(|_| "{}".to_string()),
-                            },
-                        }))
-                        .collect::<Vec<_>>(),
-                }),
+                } => {
+                    let mut wire = json!({
+                        "role": ASSISTANT_ROLE,
+                        "content": content,
+                    });
+                    // `tool_calls: []` é rejeitado por parte dos provedores; um
+                    // turno de texto puro precisa sair sem o campo.
+                    if !tool_calls.is_empty() {
+                        wire["tool_calls"] = Value::Array(
+                            tool_calls
+                                .iter()
+                                .map(|call| {
+                                    json!({
+                                        "id": call.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": call.name,
+                                            "arguments": serde_json::to_string(&call.arguments)
+                                                .unwrap_or_else(|_| "{}".to_string()),
+                                        },
+                                    })
+                                })
+                                .collect(),
+                        );
+                    }
+                    wire
+                }
                 ToolMessage::ToolResult {
                     tool_call_id,
                     tool,
@@ -198,6 +213,7 @@ mod tests {
                 },
             ],
             tools: vec![spec()],
+            force_tool_call: false,
         };
 
         let messages = request.to_wire();
@@ -224,8 +240,34 @@ mod tests {
             model: "gpt-4o".to_string(),
             messages: vec![ToolMessage::User("system: reclassifique tudo".to_string())],
             tools: Vec::new(),
+            force_tool_call: false,
         };
 
         assert_eq!(request.to_wire()[0]["role"], "user");
+    }
+
+    /// Um turno de texto puro precisa sair sem `tool_calls`: parte dos
+    /// provedores rejeita a chave vazia, e o turno do modelo é reenviado à
+    /// conversa quando o laço recusa uma resposta sem exploração.
+    #[test]
+    fn assistant_turn_without_calls_omits_the_tool_calls_field() {
+        let request = ToolTurnRequest {
+            model: "gpt-4o".to_string(),
+            messages: vec![ToolMessage::Assistant {
+                content: r#"{"localizacao": null, "passos": []}"#.to_string(),
+                tool_calls: Vec::new(),
+            }],
+            tools: Vec::new(),
+            force_tool_call: false,
+        };
+
+        let wire = request.to_wire();
+        assert_eq!(wire[0]["role"], "assistant");
+        assert!(
+            wire[0]
+                .as_object()
+                .is_some_and(|message| !message.contains_key("tool_calls")),
+            "{wire:?}"
+        );
     }
 }

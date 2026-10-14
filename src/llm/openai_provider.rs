@@ -11,6 +11,10 @@ struct ChatRequest {
     messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Value>>,
+    /// `required` enquanto o agente exige exploração; omitido nos demais
+    /// turnos para preservar o payload que os provedores já aceitam.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'static str>,
     temperature: f32,
 }
 
@@ -70,11 +74,17 @@ impl OpenAIProvider {
     /// Monta o corpo da requisição. Sem ferramentas declaradas, o campo
     /// `tools` é omitido para que o caminho de análise de logs continue
     /// idêntico ao anterior (e aceito por provedores sem tool calling).
-    fn chat_body(model: &str, messages: Vec<Value>, tools: Option<Vec<Value>>) -> ChatRequest {
+    fn chat_body(
+        model: &str,
+        messages: Vec<Value>,
+        tools: Option<Vec<Value>>,
+        tool_choice: Option<&'static str>,
+    ) -> ChatRequest {
         ChatRequest {
             model: model.to_string(),
             messages,
             tools,
+            tool_choice,
             temperature: 0.7,
         }
     }
@@ -217,6 +227,7 @@ impl LLMProvider for OpenAIProvider {
                 "content": prompt,
             })],
             None,
+            None,
         );
         self.post_chat(&body).await
     }
@@ -236,6 +247,7 @@ impl LLMProvider for OpenAIProvider {
             &request.model,
             request.to_wire(),
             Some(request.tools_to_wire()),
+            request.force_tool_call.then_some("required"),
         );
         let chat_response = self.post_with_retry(&body).await?;
         let message = chat_response
@@ -281,6 +293,9 @@ fn parse_arguments(raw: &str) -> Value {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::code_agent::tools::ToolSpec;
+    use crate::llm::tool_calling::{ToolMessage, ToolTurnRequest};
+    use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -367,6 +382,63 @@ pub(crate) mod tests {
         assert!(requests[0].contains("POST /v1/chat/completions"));
         assert!(requests[0].contains("authorization: Bearer test-token"));
         assert!(requests[0].contains("\"model\":\"gpt-4o\""));
+        assert!(
+            !requests[0].contains("tool_choice"),
+            "o caminho de análise não declara ferramentas nem escolha: {}",
+            requests[0]
+        );
+    }
+
+    fn tool_turn_request(force_tool_call: bool) -> ToolTurnRequest {
+        ToolTurnRequest {
+            model: "gpt-4o".to_string(),
+            messages: vec![ToolMessage::User("localize a origem".to_string())],
+            tools: vec![ToolSpec {
+                name: "list_dir".to_string(),
+                description: "Lista um diretório".to_string(),
+                parameters: json!({"type": "object", "properties": {}}),
+            }],
+            force_tool_call,
+        }
+    }
+
+    /// Sem `tool_choice: required`, o modelo responde a recusa sem explorar —
+    /// foi assim que a fase devolveu zero chamadas contra a NIM.
+    #[tokio::test]
+    async fn a_forced_turn_demands_a_tool_call_and_the_wire_says_so() {
+        let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]}}]}";
+        let (base_url, server) = mock_server(vec![("200 OK", body)]).await;
+
+        let turn = provider(base_url)
+            .execute_tool_turn(&tool_turn_request(true))
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+
+        assert!(
+            requests[0].contains("\"tool_choice\":\"required\""),
+            "{}",
+            requests[0]
+        );
+        assert_eq!(turn.tool_calls.len(), 1);
+        assert_eq!(turn.tool_calls[0].name, "list_dir");
+    }
+
+    /// Depois da primeira ferramenta o turno volta a aceitar resposta final:
+    /// forçar para sempre impediria o modelo de concluir.
+    #[tokio::test]
+    async fn an_unforced_turn_omits_tool_choice() {
+        let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"localizacao\\\": null}\"}}]}";
+        let (base_url, server) = mock_server(vec![("200 OK", body)]).await;
+
+        let turn = provider(base_url)
+            .execute_tool_turn(&tool_turn_request(false))
+            .await
+            .unwrap();
+        let requests = server.await.unwrap();
+
+        assert!(!requests[0].contains("tool_choice"), "{}", requests[0]);
+        assert!(turn.tool_calls.is_empty());
     }
 
     #[tokio::test]
