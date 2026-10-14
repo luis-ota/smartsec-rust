@@ -98,20 +98,52 @@ Toda a documentação que você criar sobre isso tem de conter, no mínimo:
 
 Sugestão: um `docs/cyberrag.md` com uma seção "Referências" e uma nota de que a implementação é própria, inspirada no artigo. Marque também no código, no ponto onde a validação por ontologia é usada, um comentário curto dizendo que o desenho vem do artigo com o DOI. **Esse comentário é dos poucos casos em que o AGENTS.md permite mais que 2 linhas**, porque registra origem intelectual e não é dedutível do código.
 
-### 5.4 O que o artigo propõe
+### 5.4 Qual dos dois: CyberRAG ou CyberBOT?
 
-Pipeline de quatro passos, e é isso que você tem que implementar:
+Comece lendo esta seção, porque ela muda o plano.
+
+**CyberBOT** é a continuação do trabalho no ACM CIKM'25 (*CyberBOT: Ontology-Grounded Retrieval Augmented Generation for Reliable Cybersecurity Education*, DOI `10.1145/3746252.3761478`). Ele estende o CyberRAG adicionando um interpretador de intenção, um detector de pergunta de seguimento e um verificador de ontologia com escore contínuo em vez de validação seca.
+
+**Verifiquei os dois repositórios. O dataset é o mesmo nos dois.** Ambos trazem `dataset/kb/kb.csv` com 2823 linhas, e a interseção entre os dois conjuntos é de 2823 — ou seja, são idênticos como conjunto, apenas embaralhados em ordem diferente. A ontologia também é quase a mesma: 26 triplas nos dois, e o CyberBOT acrescenta uma seção de Cloud Computing à cybersecurity.
+
+**Consequência:** migrar para o CyberBOT **não compra um dado novo**. O que muda é o pipeline, não o corpus.
+
+Escolha o **CyberRAG como base**, pelos seguintes motivos:
+
+1. O pipeline é mais simples e cabe inteiro no que já existe. O ganho do CyberBOT está no turno de diálogo, e um TCC não precisa de multi-turno para responder "o que é isto e como corrijo".
+2. Ele é o publicado com DOI de conferência revisada por pares que você foi pedido para implementar.
+3. Adicionar o interpretador de intenção do CyberBOT depois é trivial, se sobrar tempo. Começar pelo mais simples e Validar é melhor do que começar pelo mais completo e não validar.
+
+**Cite os dois no trabalho.** O CyberRAG é a base implementada; o CyberBOT mostra a direção do grupo de autores e é o que justifica dizer que o trabalho tem continuidade. Citar só o BigData e omitir o sucessor é desatualizar o próprio tema.
+
+### 5.5 O que o artigo propõe
+
+Pipeline de quatro passos:
 
 1. **Recuperação** — embeddings da pergunta, busca os `top-k` mais similares numa base de conhecimento. O artigo usa Contriever, `k=1`.
 2. **Geração** — contexto recuperado + pergunta num prompt, o modelo gera a resposta. O artigo usa Meta-Llama-3-8B-Instruct.
 3. **Validação por ontologia** — a resposta gerada é verificada contra uma ontologia de segurança (o artigo instancia a partir do AISecKG). É esta etapa que reduz alucinação e uso indevido: se a resposta cai fora do escopo da ontologia, ela é rejeitada.
 4. **Avaliação** — BERTScore, METEOR e ROUGE.
 
-### 5.5 Onde isso encosta no smartsec — e onde NÃO encosta
+### 5.6 Onde isso encosta no smartsec — o caso de uso é educational, por achado
 
-Encaixe natural: o SmartSec já tem a fase de análise dos achados por IA. A ontologia é um validador a mais, applied ao texto que o modelo produziu, e o resultado da validação tem que aparecer:
+O caso de uso que interessa aqui é **explicar um achado ao usuário, com trecho do código dele**:
 
-- na **trilha de auditoria** (`src/code_agent/audit_trail.rs`) — porque a regra do projeto é que tudo que a IA faz fica registrado, e uma validação que reprova uma resposta é informação de auditoria
+> operador clica num achado → o SmartSec explica o que é, por que é um problema, e mostra um exemplo ancorado no **trecho de código real do usuário**, retrieved de um dataset, para reduzir alucinação e erro.
+
+Isso muda o encaixe em três pontos:
+
+**1. A base de conhecimento não é um curso, é conhecimento de vulnerabilidade.** O `kb.csv` dos autores responde perguntas de aluno ("quais critérios definem a severidade?"). Para o SmartSec o corpus útil é: descrição de CWE, padrões de correção seguros, e ejemplos de código vulnerável por linguagem. **Construa esse corpus.** O `kb.csv` dos autores serve de referência de formato, não de conteúdo.
+
+**2. O trecho do usuário entra como contexto de recuperação, não só na geração.** O pipeline do artigo recupera documentos do KB e gera. Aqui, além disso, o trecho real do achado — que o `code_audit` e o agente de código já localizam em arquivo e linha — deve ser recuperado junto, para que o exemplo exibido corresponda ao código que o usuário tem, e não a um exemplo genérico.
+
+**3. A ontologia valida a explicação, e precisa haver uma noção de "não sei".** O ganho contra alucinação aqui é duplo: recuperar contexto relevante e recusar resposta fora do escopo. Uma explicação que a ontologia reprova tem de aparecer assim na tela — "não consegui explicar isto com segurança" — em vez de o modelo inventar. **Uma recusa é um resultado correto; uma alucinação com confiança é o pior desfecho possível numa ferramenta de segurança.**
+
+### 5.7 Onde registrar o resultado da validação
+
+A regra do projeto é que tudo que a IA faz fica registrado, e uma validação que reprova uma resposta é informação de auditoria:
+
+- na **trilha de auditoria** (`src/code_agent/audit_trail.rs`)
 - no **`ScanMetadata`**, junto de `llm_provider_effective` e `llm_failure_reason`, com um campo análogo para o resultado da ontologia
 - na **TUI**, onde a fase de IA já é visível ao vivo
 
@@ -119,13 +151,15 @@ Três coisas para respeitar:
 
 - **A ontologia não pode virar mais um gateway.** Você acabou de remover um bug em que a ausência de IA bloqueava o scan. A IA é complemento. Se a ontologia faltar ou falhar, o scan continua, e a trilha registra o motivo.
 - **Nada de rede real nos testes.** A ontologia é um arquivo local; o teste carrega um fixture.
-- **Considere o tamanho.** O artigo é sobre *educação em segurança* e QA conversacional. O SmartSec é uma ferramenta de auditoria com findings estruturados. Adapte a validação para o que faz sentido aqui e **documente o que você descartou e por quê**. Não é obrigatório casar 1:1.
+- **Documente o que foi adaptado e por quê.** O artigo é sobre *educação em segurança* e QA conversacional; o SmartSec é ferramenta de auditoria com achados estruturados e o caso de uso é a explicação por achado. Não é obrigatório casar 1:1.
 
-### 5.6 Accepted, mas com uma ressalva
+### 5.8 Limitações conhecidas dos dados de referência
 
-O mesmo autor publicou trabalho sucessor: *CyberBOT: Ontology-Grounded Retrieval Augmented Generation for Reliable Cybersecurity Education*, **ACM CIKM '25, DOI `10.1145/3746252.3761478`**, que estende o CyberRAG para diálogo de múltiplos turnos. As próprias referências do artigo BigData citam o CyberRAG como preprint.
+Registre estas limitações no seu relatório. Elas são reais e afetam qualquer avaliação que você faça:
 
-**Cite os dois.** O CyberRAG é o que você foi pedido para implementar; o CyberBOT mostra a direção do trabalho. Implementar só o BigData e ignorar o sucessor é entregar um TCC desatualizado num tema que o próprio grupo de autores já evoluiu.
+- O `kb.csv` dos autores tem 2823 linhas, todas geradas por In-Context Learning, e cobre perguntas de aluno de curso de segurança — não vulnerabilidades específicas.
+- A ontologia tem **26 triplas**. É pequena demais para validar subtileza. Uma explicação pode passar na ontologia e ainda assim estar errada. Trate a validação como **filtro de verdade grosseiro**, não como prova de correção.
+- Não reproduza as métricas do artigo (BERTScore/METEOR/ROUGE) como se fossem resultado seu. Se avaliar, avalie **no seu corpus**, e diga explicitamente que os números não são comparáveis aos do artigo.
 
 ---
 
