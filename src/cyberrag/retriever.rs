@@ -4,6 +4,7 @@
 use crate::cyberrag::corpus::{searchable_text, Corpus};
 use crate::domain::vulnerability::Vulnerability;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Retrieved {
@@ -33,6 +34,12 @@ pub struct LexicalRetriever {
 }
 
 impl LexicalRetriever {
+    /// Índice do corpus embutido, construído uma única vez por processo.
+    pub fn shared() -> &'static LexicalRetriever {
+        static SHARED: OnceLock<LexicalRetriever> = OnceLock::new();
+        SHARED.get_or_init(|| Self::build(Corpus::shared()))
+    }
+
     pub fn build(corpus: &Corpus) -> Self {
         let mut docs = Vec::with_capacity(corpus.len());
         let mut document_frequency: HashMap<String, usize> = HashMap::new();

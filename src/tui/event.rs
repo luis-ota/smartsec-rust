@@ -325,15 +325,14 @@ fn start_rag_explanation(app: &mut AppState) {
     app.rag_receiver = Some(receiver);
     app.rag_pending = Some(index);
     app.rag_results.remove(&index);
-    app.exec_logs
-        .push(format!("[rag] gerando explicação do achado {}…", index + 1));
+    app.push_exec_log(format!("[rag] gerando explicação do achado {}…", index + 1));
     app.rag_task = Some(tokio::spawn(async move {
         let agent = crate::ai::agent::AIAgent::from_config(&llm);
         let model = agent.model.clone();
         let label = agent.configured_provider_label();
         let allowed = agent.allows_target_data();
-        let corpus = crate::cyberrag::corpus::Corpus::embedded();
-        let ontology = crate::cyberrag::ontology::Ontology::embedded();
+        let corpus = crate::cyberrag::corpus::Corpus::shared();
+        let ontology = crate::cyberrag::ontology::Ontology::shared();
         let result = crate::cyberrag::service::ExplanationService::new()
             .explain(
                 &crate::cyberrag::service::ExplanationContext {
@@ -342,8 +341,8 @@ fn start_rag_explanation(app: &mut AppState) {
                     provider_label: &label,
                     target_data_allowed: allowed,
                     embedding_model: &embedding_model,
-                    corpus: &corpus,
-                    ontology: &ontology,
+                    corpus,
+                    ontology,
                     trail: Some(trail.as_ref()),
                 },
                 index,
@@ -1494,7 +1493,7 @@ mod tests {
         let mut app = app();
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
-        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.set_exec_logs((0..10).map(|index| index.to_string()).collect());
         app.log_visible_height = 3;
 
         dispatch_action(&mut app, SemanticAction::ScrollUp);
@@ -1518,7 +1517,7 @@ mod tests {
         let mut app = app();
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
-        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.set_exec_logs((0..10).map(|index| index.to_string()).collect());
         app.log_total_lines = 20;
         app.log_visible_height = 5;
         app.log_scroll = app.log_max_scroll();
@@ -1544,7 +1543,7 @@ mod tests {
         let mut app = app();
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
-        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.set_exec_logs((0..10).map(|index| index.to_string()).collect());
         app.log_total_lines = 20;
         app.log_visible_height = 5;
         app.log_scroll = app.log_max_scroll();
@@ -1565,7 +1564,7 @@ mod tests {
         let mut app = app();
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
-        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.set_exec_logs((0..10).map(|index| index.to_string()).collect());
         app.log_total_lines = 20;
         app.log_visible_height = 5;
         app.log_scroll = app.log_max_scroll();
@@ -1674,9 +1673,11 @@ mod tests {
         let mut app = app();
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
-        app.exec_logs = (0..5000)
-            .map(|index| format!("[Nmap] linha {index} {}", "x".repeat(120)))
-            .collect();
+        app.set_exec_logs(
+            (0..5000)
+                .map(|index| format!("[Nmap] linha {index} {}", "x".repeat(120)))
+                .collect(),
+        );
 
         let screen = render_app(&mut app, 80, 24);
         assert!(
@@ -1927,7 +1928,7 @@ mod tests {
         let mut app = app();
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
-        app.exec_logs = (0..10).map(|index| index.to_string()).collect();
+        app.set_exec_logs((0..10).map(|index| index.to_string()).collect());
         app.log_visible_height = 2;
         dispatch_action(&mut app, SemanticAction::OpenHelp);
         dispatch_action(&mut app, SemanticAction::ScrollDown);

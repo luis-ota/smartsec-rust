@@ -96,6 +96,37 @@ mod tests {
         assert!(problems.is_empty(), "{problems:#?}");
     }
 
+    /// O corpus, a ontologia e o índice embutidos são compartilhados pelo
+    /// processo: o clique da explicação não pode reprocessar o TOML.
+    #[test]
+    fn the_embedded_assets_are_shared_instances() {
+        assert!(
+            std::ptr::eq(Corpus::shared(), Corpus::shared()),
+            "o corpus precisa ser o mesmo objeto em todo o processo"
+        );
+        assert!(
+            std::ptr::eq(Ontology::shared(), Ontology::shared()),
+            "a ontologia precisa ser o mesmo objeto em todo o processo"
+        );
+        assert!(
+            std::ptr::eq(
+                crate::cyberrag::retriever::LexicalRetriever::shared(),
+                crate::cyberrag::retriever::LexicalRetriever::shared()
+            ),
+            "o índice BM25 do corpus embutido precisa ser construído uma única vez"
+        );
+        assert_eq!(
+            crate::cyberrag::retriever::LexicalRetriever::shared().len(),
+            Corpus::shared().len(),
+            "o índice precisa cobrir todas as entradas do corpus embutido"
+        );
+        assert_eq!(
+            Corpus::embedded().len(),
+            Corpus::shared().len(),
+            "a cópia do corpus embutido mantém o conteúdo"
+        );
+    }
+
     #[test]
     fn an_uncovered_class_is_reported_as_inconsistency() {
         let corpus = Corpus::from_toml(include_str!("../../tests/fixtures/cyberrag/corpus.toml"))

@@ -240,7 +240,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(block, area);
     app.log_visible_height = inner.height.max(1) as usize;
     app.log_width = inner.width.max(1);
-    if app.exec_logs.is_empty() {
+    if app.exec_logs().is_empty() {
         app.log_total_lines = 0;
         app.log_scroll = 0;
         let message = "Aguardando a primeira saída da varredura...";
@@ -250,8 +250,20 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
         );
         return;
     }
-    let lines: Vec<_> = app
-        .exec_logs
+    // As medidas de quebra de linha são memoizadas por entrada; o total sai
+    // delas sem reprocessar o buffer inteiro a cada quadro.
+    app.sync_log_rows(inner.width);
+    let max_scroll = app.log_max_scroll();
+    app.log_scroll = if app.log_follow {
+        max_scroll
+    } else {
+        app.log_scroll.min(max_scroll)
+    };
+    let scroll = app.log_scroll.min(u16::MAX as usize);
+    // Só a janela visível é montada: com o deslocamento interno na primeira
+    // linha, o resultado é idêntico ao do buffer completo com scroll absoluto.
+    let (start, end, offset) = app.log_window(scroll, app.log_visible_height);
+    let lines: Vec<_> = app.exec_logs()[start..end]
         .iter()
         .map(|log| {
             let color = if log.contains("FALHA")
@@ -276,18 +288,13 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
             Line::styled(log.as_str(), Style::default().fg(color))
         })
         .collect();
-    let paragraph = Paragraph::new(Text::from(lines))
-        .style(Style::default().bg(SURFACE))
-        .wrap(Wrap { trim: false });
-    app.log_total_lines = paragraph.line_count(inner.width);
-    let max_scroll = app.log_max_scroll();
-    app.log_scroll = if app.log_follow {
-        max_scroll
-    } else {
-        app.log_scroll.min(max_scroll)
-    };
-    let scroll = app.log_scroll.min(u16::MAX as usize) as u16;
-    frame.render_widget(paragraph.scroll((scroll, 0)), inner);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .style(Style::default().bg(SURFACE))
+            .wrap(Wrap { trim: false })
+            .scroll((offset, 0)),
+        inner,
+    );
     app.register_hit_region(area, SemanticAction::SetFocus(FocusTarget::ExecutionLogs));
 }
 

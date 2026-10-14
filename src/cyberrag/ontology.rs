@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::OnceLock;
 
 const ENTITY_KINDS: [&str; 4] = ["fraqueza", "ativo", "mitigacao", "tecnica"];
 
@@ -109,9 +110,18 @@ pub struct Ontology {
 }
 
 impl Ontology {
+    /// Ontologia embutida, analisada uma única vez por processo.
+    pub fn shared() -> &'static Ontology {
+        static SHARED: OnceLock<Ontology> = OnceLock::new();
+        SHARED.get_or_init(|| {
+            Self::from_toml(include_str!("../../assets/cyberrag/ontology.toml"))
+                .expect("a ontologia embutida precisa ser um TOML válido")
+        })
+    }
+
+    /// Cópia própria da ontologia embutida.
     pub fn embedded() -> Self {
-        Self::from_toml(include_str!("../../assets/cyberrag/ontology.toml"))
-            .expect("a ontologia embutida precisa ser um TOML válido")
+        Self::shared().clone()
     }
 
     pub fn from_path(path: &Path) -> Result<Self> {

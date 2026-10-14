@@ -7,7 +7,7 @@ use crate::code_agent::audit_trail::AgentAuditTrail;
 use crate::cyberrag::corpus::{searchable_text, Corpus};
 use crate::cyberrag::ontology::{Ontology, OntologyClaim, OntologyVerdict};
 use crate::cyberrag::retriever::{
-    query_for_finding, Retrieved, Retriever, DEFAULT_QUERY_MAX_CHARS,
+    query_for_finding, LexicalRetriever, Retrieved, Retriever, DEFAULT_QUERY_MAX_CHARS,
 };
 use crate::cyberrag::DEFAULT_TOP_K;
 use crate::domain::vulnerability::Vulnerability;
@@ -297,6 +297,12 @@ impl ExplanationService {
     }
 
     fn retrieve_lexical(&self, context: &ExplanationContext<'_>, query: &str) -> Vec<Retrieved> {
+        // O corpus embutido é o mesmo objeto em todo o processo, então o índice
+        // BM25 é reutilizado; um corpus de teste, que é próprio da chamada,
+        // ainda é indexado na hora.
+        if std::ptr::eq(context.corpus, Corpus::shared()) {
+            return LexicalRetriever::shared().retrieve(query, DEFAULT_TOP_K);
+        }
         crate::cyberrag::retriever::LexicalRetriever::build(context.corpus)
             .retrieve(query, DEFAULT_TOP_K)
     }
@@ -728,6 +734,43 @@ mod tests {
         assert_eq!(example.id, "injecao_sql");
         assert_eq!(example.linguagem.as_deref(), Some("python"));
         assert_eq!(provider.prompts.lock().expect("prompts").len(), 1);
+    }
+
+    /// Caminho real da TUI: corpus, ontologia e índice embutidos, sem TOML por
+    /// clique. A recuperação precisa continuar entregando o exemplo correto.
+    #[tokio::test]
+    async fn the_embedded_assets_path_is_explained_with_the_shared_index() {
+        let provider = ScriptedProvider::new(vec![VALID_ANSWER]);
+        let corpus = Corpus::shared();
+        let ontology = Ontology::shared();
+
+        let result = ExplanationService::new()
+            .explain(
+                &ExplanationContext {
+                    provider: &provider,
+                    model: "modelo-de-teste",
+                    provider_label: "NVIDIA NIM",
+                    target_data_allowed: true,
+                    embedding_model: "",
+                    corpus,
+                    ontology,
+                    trail: None,
+                },
+                0,
+                &finding(),
+            )
+            .await;
+
+        assert!(result.approved(), "{:?}", result.failure_reason);
+        assert_eq!(result.retrieval_mode, "lexical");
+        assert_eq!(
+            result.example.expect("exemplo do corpus embutido").id,
+            "injecao_sql"
+        );
+        assert!(
+            std::ptr::eq(corpus, Corpus::shared()),
+            "o corpus embutido é o mesmo objeto no processo inteiro"
+        );
     }
 
     #[tokio::test]

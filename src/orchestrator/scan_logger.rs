@@ -522,6 +522,37 @@ pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Re
     Ok(path)
 }
 
+/// Cabeçalho de um registro do histórico: só os campos que a listagem exibe.
+///
+/// O log estruturado completo carrega o stdout dos scanners e os achados;
+/// desserializar tudo para montar a lista bloqueava a TUI com muitos registros.
+/// Os campos obrigatórios que a lista não usa continuam declarados, sem serem
+/// materializados, para que um registro parcial siga sendo reportado como
+/// ilegível em vez de aparecer como válido.
+#[derive(Deserialize)]
+struct ScanRecordHeader {
+    scan_id: String,
+    target_url: String,
+    started_at: String,
+    completed_at: String,
+    execution_type: String,
+    #[serde(rename = "llm_provider")]
+    _llm_provider: serde::de::IgnoredAny,
+    #[serde(rename = "tools_executed")]
+    _tools_executed: serde::de::IgnoredAny,
+    findings_count: usize,
+    critical_count: usize,
+    high_count: usize,
+    medium_count: usize,
+    low_count: usize,
+    #[serde(default)]
+    info_count: usize,
+    #[serde(rename = "findings")]
+    _findings: serde::de::IgnoredAny,
+    #[serde(rename = "agent_analysis")]
+    _agent_analysis: serde::de::IgnoredAny,
+}
+
 /// Lista o resumo de todos os scans estruturados gravados em um diretório.
 ///
 /// A listagem é somente leitura (nada é criado, reescrito ou removido), e
@@ -557,15 +588,21 @@ pub fn list_scan_logs_from_dir(dir: &PathBuf) -> Result<ScanHistory> {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
         match fs::read_to_string(&path) {
-            Ok(content) => match serde_json::from_str::<ScanMetadata>(&content) {
-                Ok(meta) => history.records.push(ScanRecordSummary {
-                    scan_id: meta.scan_id.clone(),
-                    target_url: meta.target_url.clone(),
-                    started_at: meta.started_at.clone(),
-                    completed_at: meta.completed_at.clone(),
-                    execution_type: meta.execution_type.clone(),
-                    findings_count: meta.findings_count,
-                    severity_counts: ScanSeverityCounts::from_metadata(&meta),
+            Ok(content) => match serde_json::from_str::<ScanRecordHeader>(&content) {
+                Ok(header) => history.records.push(ScanRecordSummary {
+                    scan_id: header.scan_id,
+                    target_url: header.target_url,
+                    started_at: header.started_at,
+                    completed_at: header.completed_at,
+                    execution_type: header.execution_type,
+                    findings_count: header.findings_count,
+                    severity_counts: ScanSeverityCounts {
+                        critical: header.critical_count,
+                        high: header.high_count,
+                        medium: header.medium_count,
+                        low: header.low_count,
+                        info: header.info_count,
+                    },
                     file_path: path,
                 }),
                 Err(error) => history.unreadable.push(UnreadableScanRecord {
@@ -1446,6 +1483,53 @@ mod tests {
             .expect_err("registro corrompido nao pode carregar");
         let message = format!("{error:#}");
         assert!(message.contains("Falha ao interpretar"), "{message}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A listagem lê só o cabeçalho do registro, mas um campo obrigatório
+    /// ausente precisa continuar sendo reportado como registro incompleto.
+    #[test]
+    fn a_record_missing_a_required_field_stays_unreadable_in_the_listing() {
+        let dir = history_dir("cabecalho-incompleto");
+        let _ = fs::remove_dir_all(&dir);
+
+        let valid = sample_metadata(
+            "scan_1000000000000000030",
+            "2026-09-01T10:00:00Z",
+            "http://valido.local",
+        );
+        save_scan_log_to_dir(&valid, &dir).expect("gravação de teste");
+
+        let mut incomplete = serde_json::to_value(&valid).expect("registro em json");
+        incomplete
+            .as_object_mut()
+            .expect("objeto")
+            .remove("agent_analysis");
+        incomplete["scan_id"] = serde_json::json!("scan_1000000000000000031");
+        fs::write(
+            dir.join("scan_1000000000000000031.json"),
+            serde_json::to_string(&incomplete).expect("json"),
+        )
+        .expect("gravação do registro incompleto");
+
+        let history = list_scan_logs_from_dir(&dir).expect("listagem deve funcionar");
+
+        assert_eq!(
+            history.records.len(),
+            1,
+            "o registro completo segue na lista"
+        );
+        assert_eq!(
+            history.unreadable.len(),
+            1,
+            "campo obrigatório ausente não pode virar registro válido"
+        );
+        assert!(
+            history.unreadable[0].reason.contains("agent_analysis"),
+            "o motivo deve apontar o campo: {}",
+            history.unreadable[0].reason
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -13,6 +13,7 @@ use crate::tui::interaction::{FocusTarget, HitRegion, SemanticAction};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Wrap};
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -212,6 +213,34 @@ pub(crate) enum RunEvent {
 
 const CODE_TRAIL_LIMIT: usize = 200;
 
+/// Ordem de exibição dos achados, recalculada apenas quando a sequência de
+/// severidades muda.
+///
+/// O índice é a única coisa memoizada: o vetor de achados do orquestrador pode
+/// continuar mudando de conteúdo sem invalidar a ordem, porque dentro de cada
+/// severidade a ordem do pipeline é preservada e não depende do texto.
+#[derive(Default)]
+struct FindingsOrder {
+    signature: u64,
+    indices: Vec<usize>,
+}
+
+impl FindingsOrder {
+    fn refresh(&mut self, findings: &[Vulnerability]) {
+        let signature = findings.iter().fold(0u64, |acc, finding| {
+            acc.wrapping_mul(31)
+                .wrapping_add(severity_rank(finding.severity) as u64 + 1)
+        });
+        if signature == self.signature && self.indices.len() == findings.len() {
+            return;
+        }
+        self.signature = signature;
+        self.indices = (0..findings.len()).collect();
+        self.indices
+            .sort_by_key(|index| severity_rank(findings[*index].severity));
+    }
+}
+
 pub struct AppState {
     pub config: Configuration,
     pub code_agent_trail: Vec<crate::code_agent::progress::CodeAgentEvent>,
@@ -229,7 +258,15 @@ pub struct AppState {
     pub tool_visible_height: usize,
     pub exec_current: usize,
     pub exec_tick: u64,
-    pub exec_logs: Vec<String>,
+    /// Buffer do log de execução; toda mutação passa por `push_exec_log`,
+    /// `set_exec_logs` ou `clear_exec_logs` para as medidas seguirem alinhadas.
+    exec_logs: Vec<String>,
+    /// Linhas visuais de cada entrada do log na largura de `log_rows_width`.
+    log_rows: Vec<u32>,
+    /// Soma de `log_rows`: total de linhas visuais do buffer.
+    log_rows_total: usize,
+    /// Largura em que `log_rows` foi medido.
+    log_rows_width: u16,
     pub log_scroll: usize,
     pub log_visible_height: usize,
     /// Largura interna usada na última renderização do log (para medir a quebra).
@@ -267,6 +304,8 @@ pub struct AppState {
     pub didactic_max_scroll: usize,
     pub show_settings: bool,
     pub settings_field: SettingsField,
+    /// Memória da ordem de exibição dos achados (evita reordenar por quadro).
+    findings_order: RefCell<FindingsOrder>,
     pub settings_provider_idx: usize,
     pub settings_input_base_url: String,
     pub settings_input_api_key: String,
@@ -402,6 +441,9 @@ impl AppState {
             exec_current: 0,
             exec_tick: 0,
             exec_logs: Vec::new(),
+            log_rows: Vec::new(),
+            log_rows_total: 0,
+            log_rows_width: 80,
             log_scroll: 0,
             log_visible_height: 20,
             log_width: 80,
@@ -430,6 +472,7 @@ impl AppState {
             didactic_max_scroll: 0,
             show_settings: false,
             settings_field: SettingsField::Provider,
+            findings_order: RefCell::new(FindingsOrder::default()),
             settings_provider_idx: provider_idx,
             settings_input_base_url: base_url,
             settings_input_api_key: api_key,
@@ -533,10 +576,18 @@ impl AppState {
     /// preservando a ordem do pipeline dentro de cada severidade.
     ///
     /// Só a TUI é ordenada; o relatório usa a ordem original do pipeline.
-    pub fn vulnerabilities(&self) -> Vec<Vulnerability> {
-        let mut ordered = self.orchestrator.findings.clone();
-        ordered.sort_by_key(|finding| severity_rank(finding.severity));
-        ordered
+    /// A ordem é memoizada por assinatura de severidades porque as telas de
+    /// Resultados chamam este método várias vezes por quadro: reordenar e
+    /// clonar todos os achados a cada chamada custava o quadro inteiro.
+    pub fn vulnerabilities(&self) -> Vec<&Vulnerability> {
+        let findings = &self.orchestrator.findings;
+        let mut order = self.findings_order.borrow_mut();
+        order.refresh(findings);
+        order
+            .indices
+            .iter()
+            .map(|index| &findings[*index])
+            .collect()
     }
 
     /// Registra uma ocorrência preservando todas as anteriores.
@@ -566,6 +617,115 @@ impl AppState {
     /// Linhas de log perdidas por saturação do canal (política de drop).
     pub fn dropped_log_lines(&self) -> u64 {
         self.log_drop_counter.load(Ordering::Relaxed)
+    }
+
+    /// Log de saída em leitura; o buffer é privado para as medidas de quebra de
+    /// linha não saírem de sincronia.
+    pub fn exec_logs(&self) -> &[String] {
+        &self.exec_logs
+    }
+
+    /// Acrescenta uma linha ao log, medindo a quebra dela e aplicando o limite
+    /// de retenção.
+    pub fn push_exec_log(&mut self, line: String) {
+        if self.log_rows.len() == self.exec_logs.len() {
+            let rows = log_line_rows(&line, self.log_rows_width);
+            self.log_rows.push(rows);
+            self.log_rows_total += rows as usize;
+        }
+        self.exec_logs.push(line);
+        self.apply_log_limit();
+    }
+
+    /// Substitui o buffer do log por inteiro nos testes; em produção o buffer é
+    /// preenchido pelos eventos do executor.
+    ///
+    /// O total exibido é recalculado na próxima renderização, como antes.
+    #[cfg(test)]
+    pub fn set_exec_logs(&mut self, lines: Vec<String>) {
+        self.log_rows = lines
+            .iter()
+            .map(|line| log_line_rows(line, self.log_rows_width))
+            .collect();
+        self.log_rows_total = self.log_rows.iter().map(|rows| *rows as usize).sum();
+        self.exec_logs = lines;
+    }
+
+    pub fn clear_exec_logs(&mut self) {
+        self.exec_logs.clear();
+        self.log_rows.clear();
+        self.log_rows_total = 0;
+        self.log_total_lines = 0;
+    }
+
+    /// Desconta do offset e do total as linhas que saíram, na mesma unidade
+    /// visual usada pela renderização.
+    fn apply_log_limit(&mut self) {
+        const MAX_EXEC_LOGS: usize = 5000;
+        let overflow = self.exec_logs.len().saturating_sub(MAX_EXEC_LOGS);
+        if overflow == 0 {
+            return;
+        }
+        // A medida do descarte continua saindo do próprio vetor, na largura da
+        // última renderização; o total memoizado é recalculado no próximo
+        // quadro por `sync_log_rows`.
+        let removed_rows = visual_line_count(&self.exec_logs[..overflow], self.log_width);
+        self.log_rows.drain(..self.log_rows.len().min(overflow));
+        self.exec_logs.drain(..overflow);
+        self.log_rows_total = self.log_rows_total.saturating_sub(removed_rows);
+        self.log_total_lines = self.log_total_lines.saturating_sub(removed_rows);
+        if !self.log_follow {
+            self.log_scroll = self.log_scroll.saturating_sub(removed_rows);
+        }
+    }
+
+    /// Reconcilia as medidas com o buffer e a largura atuais; é a fonte de
+    /// `log_total_lines`, com o mesmo valor de `Paragraph::line_count`.
+    pub fn sync_log_rows(&mut self, width: u16) {
+        let width = width.max(1);
+        if width != self.log_rows_width || self.log_rows.len() != self.exec_logs.len() {
+            self.log_rows_width = width;
+            self.log_rows = self
+                .exec_logs
+                .iter()
+                .map(|line| log_line_rows(line, width))
+                .collect();
+        }
+        self.log_rows_total = self.log_rows.iter().map(|rows| *rows as usize).sum();
+        self.log_total_lines = self.log_rows_total;
+    }
+
+    /// Faixa de linhas do log que cobre `viewport_rows` a partir da linha
+    /// visual `first_row`: (início, fim, deslocamento dentro do início).
+    ///
+    /// A varredura começa no fim porque o log abre no tail: desenhar só a
+    /// janela pinta os mesmos glifos sem reprocessar o buffer inteiro a cada
+    /// quadro.
+    pub fn log_window(&self, first_row: usize, viewport_rows: usize) -> (usize, usize, u16) {
+        if self.log_rows.is_empty() {
+            return (0, 0, 0);
+        }
+        let first_row = first_row.min(self.log_rows_total.saturating_sub(1));
+        let mut start = 0usize;
+        let mut offset = 0usize;
+        let mut row = self.log_rows_total;
+        for index in (0..self.log_rows.len()).rev() {
+            let count = self.log_rows[index] as usize;
+            let before = row.saturating_sub(count);
+            if before <= first_row {
+                start = index;
+                offset = first_row - before;
+                break;
+            }
+            row = before;
+        }
+        let mut covered = self.log_rows[start] as usize;
+        let mut end = start + 1;
+        while end < self.log_rows.len() && covered < offset + viewport_rows {
+            covered += self.log_rows[end] as usize;
+            end += 1;
+        }
+        (start, end, offset as u16)
     }
 
     /// Quantas ferramentas selecionadas já chegaram a um estado terminal real
@@ -666,18 +826,7 @@ impl AppState {
                         if part.trim().is_empty() {
                             continue;
                         }
-                        self.exec_logs.push(format!("{prefix}{part}"));
-                    }
-                    const MAX_EXEC_LOGS: usize = 5000;
-                    let overflow = self.exec_logs.len().saturating_sub(MAX_EXEC_LOGS);
-                    if overflow > 0 {
-                        let removed_rows =
-                            visual_line_count(&self.exec_logs[..overflow], self.log_width);
-                        self.exec_logs.drain(..overflow);
-                        self.log_total_lines = self.log_total_lines.saturating_sub(removed_rows);
-                        if !self.log_follow {
-                            self.log_scroll = self.log_scroll.saturating_sub(removed_rows);
-                        }
+                        self.push_exec_log(format!("{prefix}{part}"));
                     }
                 }
                 RunEvent::AiDecisionStarted => {
@@ -697,14 +846,14 @@ impl AppState {
                     };
                     if let Some(error) = &execution.execution_error {
                         self.record_run_issue(RunIssueScope::Tool, error.clone());
-                        self.exec_logs.push(format!(
+                        self.push_exec_log(format!(
                             "[{}] FALHA após {:.1}s: {}",
                             self.tools[index].tool.name,
                             execution.duration_ms as f64 / 1_000.0,
                             error
                         ));
                     } else {
-                        self.exec_logs.push(format!(
+                        self.push_exec_log(format!(
                             "[{}] OK em {:.1}s",
                             self.tools[index].tool.name,
                             execution.duration_ms as f64 / 1_000.0
@@ -729,8 +878,7 @@ impl AppState {
                     }
                     self.analysis_wait_secs = elapsed_secs;
                     if elapsed_secs % 10 == 0 {
-                        self.exec_logs
-                            .push(format!("[ia] análise em andamento… ({elapsed_secs}s)"));
+                        self.push_exec_log(format!("[ia] análise em andamento… ({elapsed_secs}s)"));
                     }
                 }
                 RunEvent::CodeAgent(event) => self.push_code_agent(event),
@@ -739,19 +887,18 @@ impl AppState {
                     findings,
                     limitation,
                 } => {
-                    self.exec_logs.push(format!(
+                    self.push_exec_log(format!(
                         "[codigo] auditoria leu {files_scanned} arquivo(s) e produziu \
                          {findings} achado(s)"
                     ));
                     if let Some(limit) = limitation {
-                        self.exec_logs
-                            .push(format!("[codigo] cobertura parcial: {limit}"));
+                        self.push_exec_log(format!("[codigo] cobertura parcial: {limit}"));
                     }
                 }
                 RunEvent::EnrichmentSummary(line) => {
                     // A indisponibilidade da NVD precisa ser visível na TUI,
                     // não silenciosa: a linha já carrega a causa em pt-BR.
-                    self.exec_logs.push(format!("[cve/nvd] {line}"));
+                    self.push_exec_log(format!("[cve/nvd] {line}"));
                     if line.contains("indisponível") {
                         self.enrichment_warning = Some(line.clone());
                     }
@@ -766,7 +913,7 @@ impl AppState {
                     let agent_history = self.orchestrator.agent.execution_history.clone();
                     for detail in &agent_history {
                         let detail = crate::utils::redaction::sanitize_text(detail);
-                        self.exec_logs.push(format!("[ia] {detail}"));
+                        self.push_exec_log(format!("[ia] {detail}"));
                         // Ligação com o serviço de análise (issue #23): toda
                         // entrada de `agent.execution_history` vira ocorrência.
                         self.record_run_issue(RunIssueScope::Ai, detail);
@@ -791,14 +938,15 @@ impl AppState {
                     self.sync_agent_from_orchestrator();
                     match audit_log {
                         Ok(path) => {
-                            self.exec_logs
-                                .push(format!("[auditoria] Log salvo em {}", path.display()));
+                            self.push_exec_log(format!(
+                                "[auditoria] Log salvo em {}",
+                                path.display()
+                            ));
                             self.audit_log_path = Some(path);
                         }
                         Err(error) => {
                             self.record_run_issue(RunIssueScope::Audit, error.clone());
-                            self.exec_logs
-                                .push(format!("[auditoria] FALHA ao salvar log: {error}"));
+                            self.push_exec_log(format!("[auditoria] FALHA ao salvar log: {error}"));
                         }
                     }
                     self.analysis_phase = AnalysisPhase::Complete;
@@ -838,7 +986,7 @@ impl AppState {
             {
                 tool.status = ToolStatus::Failed;
             }
-            self.exec_logs.push(format!("[executor] FALHA: {detail}"));
+            self.push_exec_log(format!("[executor] FALHA: {detail}"));
             self.step = AppStep::Results;
             self.focus = FocusTarget::ResultsList;
         } else {
@@ -894,7 +1042,7 @@ impl AppState {
         result: crate::cyberrag::service::ExplanationResult,
     ) {
         self.rag_pending = None;
-        self.exec_logs.push(format!("[rag] {}", result.summary()));
+        self.push_exec_log(format!("[rag] {}", result.summary()));
         self.orchestrator.record_rag_explanation(&result);
         self.rag_results.insert(finding_index, result);
     }
@@ -1001,9 +1149,8 @@ impl AppState {
         }
         self.exec_current = 0;
         self.exec_tick = 0;
-        self.exec_logs.clear();
+        self.clear_exec_logs();
         self.log_scroll = 0;
-        self.log_total_lines = 0;
         self.log_follow = true;
         self.exec_cancelled = false;
         self.exec_paused = false;
@@ -1235,7 +1382,7 @@ impl AppState {
                 project_dir,
             } => {
                 self.code_agent_current = None;
-                self.exec_logs.push(format!(
+                self.push_exec_log(format!(
                     "[ia/codigo] explorando {project_dir} · {total_findings} achado(s)"
                 ));
             }
@@ -1246,14 +1393,14 @@ impl AppState {
                 ..
             } => {
                 self.code_agent_current = Some(format!("{tool}({arguments})"));
-                self.exec_logs.push(format!(
+                self.push_exec_log(format!(
                     "[ia/codigo] achado #{} → {tool}({arguments})",
                     finding_index + 1
                 ));
             }
             Event::ToolCompleted(record) => {
                 self.code_agent_current = None;
-                self.exec_logs.push(format!(
+                self.push_exec_log(format!(
                     "[ia/codigo] {} {} · {}",
                     record.tool, record.outcome, record.summary
                 ));
@@ -1268,7 +1415,7 @@ impl AppState {
                 } else {
                     "localização não determinada"
                 };
-                self.exec_logs.push(format!(
+                self.push_exec_log(format!(
                     "[ia/codigo] achado #{} {desfecho} em {tool_calls} chamada(s)",
                     finding_index + 1
                 ));
@@ -1280,10 +1427,10 @@ impl AppState {
             } => {
                 self.code_agent_current = None;
                 match unavailable_reason {
-                    Some(reason) => self
-                        .exec_logs
-                        .push(format!("[ia/codigo] fase indisponível: {reason}")),
-                    None => self.exec_logs.push(format!(
+                    Some(reason) => {
+                        self.push_exec_log(format!("[ia/codigo] fase indisponível: {reason}"))
+                    }
+                    None => self.push_exec_log(format!(
                         "[ia/codigo] {located}/{total} achado(s) localizado(s)"
                     )),
                 }
@@ -1676,11 +1823,9 @@ impl AppState {
         {
             let name = tool.tool.name.clone();
             tool.status = ToolStatus::Failed;
-            self.exec_logs
-                .push(format!("[cancelled] {name} CANCELADA pelo operador"));
+            self.push_exec_log(format!("[cancelled] {name} CANCELADA pelo operador"));
         }
-        self.exec_logs
-            .push("X Cancelamento solicitado; encerrando o container".to_string());
+        self.push_exec_log("X Cancelamento solicitado; encerrando o container".to_string());
         // A auditoria e gravada agora, e nao quando a task termina: o
         // cancelamento e uma decisao do operador e precisa estar registrada
         // mesmo que o container demore a encerrar.
@@ -1702,8 +1847,7 @@ impl AppState {
         {
             tool.status = ToolStatus::Paused;
         }
-        self.exec_logs
-            .push("‖ Pausa solicitada; o container será pausado".to_string());
+        self.push_exec_log("‖ Pausa solicitada; o container será pausado".to_string());
         self.follow_latest_log();
     }
 
@@ -1721,8 +1865,7 @@ impl AppState {
         {
             tool.status = ToolStatus::Running;
         }
-        self.exec_logs
-            .push("‖ Retomada solicitada; o container será retomado".to_string());
+        self.push_exec_log("‖ Retomada solicitada; o container será retomado".to_string());
         self.follow_latest_log();
     }
 
@@ -1916,6 +2059,17 @@ fn visual_line_count(lines: &[String], width: u16) -> usize {
     Paragraph::new(text)
         .wrap(Wrap { trim: false })
         .line_count(width)
+}
+
+/// Linhas visuais de uma entrada do log, com a mesma quebra do `Paragraph`.
+/// É a medida memoizada por linha em `AppState::log_rows`.
+fn log_line_rows(line: &str, width: u16) -> u32 {
+    if width == 0 {
+        return 0;
+    }
+    Paragraph::new(Line::from(line))
+        .wrap(Wrap { trim: false })
+        .line_count(width) as u32
 }
 
 fn compact_operational_log(line: &str) -> String {
@@ -2223,7 +2377,7 @@ mod tests {
         .await;
         assert_eq!(app.analysis_wait_secs, 0);
         assert!(app
-            .exec_logs
+            .exec_logs()
             .last()
             .is_some_and(|line| line == "[ia] análise em andamento… (0s)"));
 
@@ -2234,7 +2388,7 @@ mod tests {
         )
         .await;
         assert_eq!(app.analysis_wait_secs, 2);
-        assert_eq!(app.exec_logs.len(), 1, "sem spam a cada heartbeat");
+        assert_eq!(app.exec_logs().len(), 1, "sem spam a cada heartbeat");
 
         feed(
             &mut app,
@@ -2244,7 +2398,7 @@ mod tests {
         .await;
         assert_eq!(app.analysis_wait_secs, 10);
         assert!(app
-            .exec_logs
+            .exec_logs()
             .last()
             .is_some_and(|line| line == "[ia] análise em andamento… (10s)"));
     }
@@ -2327,7 +2481,7 @@ mod tests {
             .rag_results
             .get(&0)
             .is_some_and(|stored| stored.approved()));
-        assert!(app.exec_logs.iter().any(|line| line.starts_with("[rag]")));
+        assert!(app.exec_logs().iter().any(|line| line.starts_with("[rag]")));
         let metadata = app.orchestrator.scan_metadata();
         assert_eq!(metadata.rag_explanations_count, 1);
         assert!(
@@ -2346,7 +2500,7 @@ mod tests {
 
         feed(&mut app, &sender, RunEvent::ToolStarted(0)).await;
         assert_eq!(app.tools[0].status, ToolStatus::Running);
-        assert!(app.exec_logs.is_empty());
+        assert!(app.exec_logs().is_empty());
         assert_eq!(
             app.finished_tools(),
             (0, app.tools.iter().filter(|tool| tool.selected).count()),
@@ -2359,8 +2513,8 @@ mod tests {
             RunEvent::ToolLog("[12:00:01] $ podman create --name smartsec-test".to_string()),
         )
         .await;
-        assert!(app.exec_logs[0].contains("$ podman create"));
-        assert!(app.exec_logs[0].starts_with("[Nmap]"));
+        assert!(app.exec_logs()[0].contains("$ podman create"));
+        assert!(app.exec_logs()[0].starts_with("[Nmap]"));
 
         feed(
             &mut app,
@@ -2444,6 +2598,144 @@ mod tests {
         assert!(app.export_md().contains("Versão exposta"));
     }
 
+    /// A ordem exibida é memoizada, então precisa acompanhar troca real de
+    /// severidade sem continuar servindo a lista antiga.
+    #[test]
+    fn the_display_order_cache_follows_real_changes_in_the_findings() {
+        let mut app = app();
+        let titles = |app: &AppState| -> Vec<String> {
+            app.vulnerabilities()
+                .iter()
+                .map(|item| item.title.clone())
+                .collect()
+        };
+
+        app.orchestrator.findings = vec![
+            finding(Severity::Info, "Primeiro"),
+            finding(Severity::Critical, "Segundo"),
+        ];
+        assert_eq!(titles(&app), vec!["Segundo", "Primeiro"]);
+
+        // Mesmo número de achados com severidades trocadas: a ordem muda.
+        app.orchestrator.findings = vec![
+            finding(Severity::Critical, "Terceiro"),
+            finding(Severity::Info, "Quarto"),
+        ];
+        assert_eq!(titles(&app), vec!["Terceiro", "Quarto"]);
+
+        // Só a severidade do último mudou: o empate preserva a ordem do pipeline.
+        app.orchestrator.findings[1].severity = Severity::Critical;
+        assert_eq!(titles(&app), vec!["Terceiro", "Quarto"]);
+
+        // Troca de posições com severidades iguais: a ordem acompanha o vetor.
+        app.orchestrator.findings.swap(0, 1);
+        assert_eq!(titles(&app), vec!["Quarto", "Terceiro"]);
+
+        // O achado é emprestado, não copiado: o texto exibido é o atual.
+        app.orchestrator.findings[0].title = "Quarto revisado".to_string();
+        assert_eq!(titles(&app), vec!["Quarto revisado", "Terceiro"]);
+    }
+
+    /// Testa o caminho real do `Paragraph` para provar que a contagem memoizada
+    /// por linha é igual à quebra do texto completo.
+    fn render_log_area(app: &mut AppState, width: u16, height: u16) {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal de teste");
+        terminal
+            .draw(|frame| crate::tui::render(app, frame))
+            .expect("render da execução");
+    }
+
+    fn long_log_lines(count: usize) -> Vec<String> {
+        (0..count)
+            .map(|index| format!("L{index}-INICIO{}{index}FIM", "x".repeat(200)))
+            .collect()
+    }
+
+    #[test]
+    fn the_memoized_log_rows_match_the_paragraph_wrap() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        for line in long_log_lines(5_010) {
+            app.push_exec_log(line);
+        }
+
+        render_log_area(&mut app, 80, 24);
+
+        assert_eq!(app.exec_logs().len(), 5_000, "limite de retenção");
+        let esperado = Paragraph::new(Text::from(
+            app.exec_logs()
+                .iter()
+                .map(|line| Line::from(line.as_str()))
+                .collect::<Vec<_>>(),
+        ))
+        .wrap(Wrap { trim: false })
+        .line_count(app.log_width);
+        assert_eq!(
+            app.log_total_lines, esperado,
+            "o total memoizado precisa ser igual ao do Paragraph"
+        );
+
+        let estreito = app.log_total_lines;
+        render_log_area(&mut app, 120, 24);
+        assert!(
+            app.log_total_lines < estreito,
+            "outra largura invalida a medida: {} não é menor que {estreito}",
+            app.log_total_lines
+        );
+    }
+
+    /// A janela precisa pintar o mesmo buffer que o texto completo, inclusive
+    /// quando o offset cai no meio de uma linha quebrada.
+    #[test]
+    fn the_log_window_paints_the_same_buffer_as_the_full_text() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.set_exec_logs(long_log_lines(120));
+
+        let width = 60u16;
+        let height = 16u16;
+        let render_with = |lines: &[String], scroll: u16| {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("terminal de teste");
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(
+                        Paragraph::new(Text::from(
+                            lines
+                                .iter()
+                                .map(|line| Line::from(line.as_str()))
+                                .collect::<Vec<_>>(),
+                        ))
+                        .wrap(Wrap { trim: false })
+                        .scroll((scroll, 0)),
+                        frame.area(),
+                    );
+                })
+                .expect("render");
+            terminal.backend().buffer().clone()
+        };
+
+        app.sync_log_rows(width);
+        let total = app.log_total_lines;
+        for first_row in [0usize, 1, 7, 42, total / 2, total - 1] {
+            let (start, end, offset) = app.log_window(first_row, height as usize);
+            let completo = render_with(app.exec_logs(), first_row as u16);
+            let janela = render_with(&app.exec_logs()[start..end], offset);
+            assert_eq!(
+                completo, janela,
+                "janela diferente do texto completo na linha {first_row} \
+                 (início {start}, fim {end}, offset {offset})"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn disconnected_worker_surfaces_an_error_instead_of_hanging() {
         let mut app = app();
@@ -2485,7 +2777,10 @@ mod tests {
             app.exec_cancelled,
             "o cancelamento precisa barrar o modo automatico"
         );
-        assert!(app.exec_logs.iter().any(|line| line.contains("CANCELADA")));
+        assert!(app
+            .exec_logs()
+            .iter()
+            .any(|line| line.contains("CANCELADA")));
         assert_eq!(
             app.orchestrator
                 .execution_history
@@ -2565,7 +2860,7 @@ mod tests {
 
         app.step_tick().await;
 
-        assert_eq!(app.exec_logs.len(), RUN_EVENT_CAPACITY);
+        assert_eq!(app.exec_logs().len(), RUN_EVENT_CAPACITY);
         assert_eq!(app.dropped_log_lines(), dropped);
         assert_eq!(
             app.log_scroll,
@@ -2618,7 +2913,7 @@ mod tests {
         app.log_visible_height = 10;
         app.log_width = 10;
         app.log_total_lines = 200;
-        app.exec_logs = vec!["x".repeat(25); 5000];
+        app.set_exec_logs(vec!["x".repeat(25); 5000]);
         app.log_follow = false;
         app.log_scroll = 100;
         let (sender, receiver) = run_channel();
@@ -2631,7 +2926,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(app.exec_logs.len(), 5000);
+        assert_eq!(app.exec_logs().len(), 5000);
         assert_eq!(
             app.log_scroll, 97,
             "o offset deve andar pelas linhas visuais removidas, não por entradas"
