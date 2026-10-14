@@ -1,6 +1,19 @@
 # Handoff — smartsec-rust, PR #105
 
+> **Este arquivo descreve uma sessão numa máquina específica.** Na máquina nova
+> nada abaixo existe ainda — nem o keyring, nem os arquivos em `/tmp`, nem os
+> worktrees. A seção "Reconstituindo o ambiente" diz o que precisa ser refeito.
+> Qualquer caminho citado fora do repositório é da máquina antiga, não um fato
+> sobre o projeto.
+
 Branch `feat/auditoria-codigo-ia` → `main`. Tudo commitado e pushed. PR #105 aberto e MERGEABLE.
+
+```bash
+git clone https://github.com/luis-ota/smartsec-rust.git
+cd smartsec-rust
+git fetch origin
+git checkout feat/auditoria-codigo-ia   # 41bcd62
+```
 
 ## Regras do projeto (leia antes de editar)
 
@@ -11,9 +24,12 @@ Branch `feat/auditoria-codigo-ia` → `main`. Tudo commitado e pushed. PR #105 a
 
 ## Estado atual
 
-Branch limpa, `35db5d2` no topo. Validação local: **640 testes unitários verdes**, `cargo fmt --check` limpo, `cargo clippy --all-targets -- -D warnings` com 0 avisos.
+Branch limpa, `41bcd62` no topo. Validação local: **640 testes unitários
+verdes**, `cargo fmt --check` limpo, `cargo clippy --all-targets -D warnings`
+com 0 avisos.
 
-Commits desta sessão:
+Commits desta sessão (do mais recente para o mais antigo):
+- `41bcd62` — este handoff
 - `35db5d2` — trilha de auditoria da IA + IA local fora do padrão + lista de provedores reordenada + `scan_metadata`
 - `e127c89` — IA local desligada por padrão
 - `5083e65` — corrige o `--help` (faltavam `--max-critical-findings`, "ferramenta desconhecida", "comando desconhecido")
@@ -37,32 +53,89 @@ Dois caminhos da fase **não registravam nada** e um teste pegou os dois: recusa
 
 **Isto é o que ninguém resolveu ainda e vale mais que qualquer outra tarefa.**
 
-`correlate_and_enrich_findings` roda **antes** da fase de IA (`src/main.rs` ~linha 732) e consulta a NVD **em série**: `MIN_INTERVAL_SEM_CHAVE` = 6 s entre requisições + `REQUEST_TIMEOUT` = 10 s cada (`src/orchestrator/nvd.rs` linhas 50–62). Com N CVEs são N × 16 s de espera, e sem rede cada uma vira os 10 s inteiros. Sem cache (`~/.config/smartsec/nvd-cache` está vazio aqui) o primeiro scan paga tudo.
+`correlate_and_enrich_findings` roda **antes** da fase de IA (`src/main.rs` ~linha 732) e consulta a NVD **em série**: `MIN_INTERVAL_SEM_CHAVE` = 6 s entre requisições + `REQUEST_TIMEOUT` = 10 s cada (`src/orchestrator/nvd.rs` linhas 50–62). Com N CVEs são N × 16 s de espera, e sem rede cada uma vira os 10 s inteiros. Sem cache (`~/.config/smartsec/nvd-cache` nasce vazio) o primeiro scan paga tudo.
 
 Nenhum scan chegou à fase de IA em ~6 tentativas. O sintoma é sempre o mesmo: para logo depois de `[1/4] Executando ferramentas`, processo `State: R (running)` com 9 threads, sem conexão de rede ativa. Não é o modelo, não é a NIM.
 
 O que já confirmei da fase de IA por outro caminho: `nvidia/nemotron-3-super-120b-a12b` responde tool calling em 1,5 s via curl. `meta/llama-3.3-70b-instruct`, `qwen/qwen2.5-coder-32b-instruct` e `meta/llama-3.1-8b-instruct` estão **fora de linha** (HTTP 410). Dos 15 `:free` do OpenRouter só `nvidia/nemotron-3-super-120b-a12b:free` faz tool calling.
 
-O servidor reinicia e mata processos longos a cada ~5 min. Lance com `setsid --fork nohup ... </dev/null` e acompanhe por log. `/tmp` às vezes é limpo por outro agente.
-
 ## Chaves
 
 Os valores **não** ficam neste arquivo — a regra do repositório barra
-qualquer segredo em commit, e com razão. Eles estão no keyring do usuário,
-serviço `smartsec`:
+qualquer segredo em commit, e com razão. Na máquina anterior estavam no
+keyring do usuário, serviço `smartsec`, com estes nomes de usuário:
 
 ```
 groq-api-key
 openrouter-api-key
 nvidia-nim-api-key
-llm-api-key           (a ativa; hoje aponta para a chave da NIM)
+llm-api-key           (a ativa; aponta para a chave da NIM)
 ```
 
-Para ler: `secret-tool lookup service smartsec username <nome>`
+**Na máquina nova o keyring está vazio** e os valores precisam ser pedidos ao
+usuário de novo. Ele não tem como recuperá-los deste repositório, por
+propósito. Para gravar:
 
-Configs de teste: `/tmp/ss-nim.toml` (NIM, `nvidia/nemotron-3-super-120b-a12b`), `/tmp/ss-groq.toml`, `/tmp/ss-or.toml`, `/tmp/ss-sem-ia.toml` (sem IA nenhuma).
+```bash
+printf '%s' "$CHAVE" | secret-tool store \
+  --label='NVIDIA NIM API key' service smartsec username nvidia-nim-api-key
+secret-tool lookup service smartsec username nvidia-nim-api-key   # confere
+```
 
-Alvo: `/tmp/app-vuln/app.py` na porta 3001, alcançável do container rootless via `http://169.254.1.2:3001`.
+`secret-tool` vem do `libsecret` — na Arch: `pacman -S libsecret`. Sem um
+keyring do sistema (D-Bus de sessão) o `secret-tool` falha; nesse caso use a
+variável de ambiente que o projeto lê, ou rode num ambiente com sessão
+gráfica.
+
+## Reconstituindo o ambiente de teste
+
+Nada disto foi commitado, e tudo precisa ser refeito:
+
+**Configs TOML de teste.** Ficavam em `/tmp`, que é volátil. O conteúdo de
+`/tmp/ss-nim.toml`:
+
+```toml
+target_url = "http://169.254.1.2:3001"
+output_dir = "/tmp/ss-nim-e2e"
+
+[llm]
+provider = "NVIDIA NIM"
+base_url = "https://integrate.api.nvidia.com/v1"
+model = "nvidia/nemotron-3-super-120b-a12b"
+remote_consent = true
+timeout_secs = 45
+```
+
+`provider` aceita minúsculo e variações de separador (`"personalizado"`).
+
+**Alvo de teste.** `/tmp/app-vuln/app.py`, um servidor HTTP na porta 3001 com
+SQLi concatenada em `db.execute(...)` e `DB_PASSWORD = "..."` em `db.py`. Não
+está no repositório. O endereço `169.254.1.2` é o gateway do host visto de
+dentro do container rootless — **o número muda conforme a rede da máquina**;
+descubra com `ip route` em vez de assumir.
+
+Para subir de novo: `python3 app.py &` no diretório, e o scan aponta para
+`http://<gateway-da-máquina>:3001`.
+
+## Ferramentas
+
+Presentes na máquina anterior, a confirmar na nova:
+
+```
+cargo 1.98.1 (Arch Linux, rust 1:1.98.1-1)
+podman 6.1.1
+```
+
+`podman` é obrigatório — os scanners rodam em container rootless. Sem ele a
+varredura não sai.
+
+## Ambiente de execução
+
+Alguns problemas da máquina anterior **não são do projeto** e não valsem na
+nova: o servidor reiniciava e matava processos longos a cada ~5 min (por isso
+as execuções longas eram lançadas com `setsid --fork nohup ... </dev/null` e
+acompanhadas por log), e o `/tmp` às vezes era limpo por outro agente. Se a
+máquina nova for estável, ignore isso e rode direto.
 
 ## Comandos
 
@@ -90,4 +163,9 @@ Rodar só `--bin smartsec` deixou o `--help` sem cobertura e o CI pegou três la
 
 `tests/nikto_integration.rs` roda o binário real — foi ela que pegou a mudança de "IA obrigatória".
 
-O worktree `review-77b` (detached, `e36be1d`) tem commits fora da `main`. Não mexer.
+Os worktrees `.worktrees/audit-ast` e `.worktrees/review-77b` são locais da
+máquina anterior e **não vêm no clone** (`.worktrees/` está no
+`.git/info/exclude`). Confirmei que nenhum tem trabalho perdido:
+`audit-ast` aponta para `afd2d1e`, sem commit próprio, e `review-77b` aponta
+para `e36be1d`, que já está em branches no remoto. Se a máquina nova precisar
+deles, `git worktree add .worktrees/<nome> <ref>`.
