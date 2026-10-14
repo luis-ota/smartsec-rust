@@ -2,11 +2,9 @@
 //! explica a correção no próprio código, usando apenas as ferramentas locais
 //! registradas.
 //!
-//! O agente nunca inventa arquivo, linha ou trecho. Uma localização só é
-//! declarada quando o modelo apontou uma linha que **o próprio agente leu**,
-//! pelo sandbox read-only, durante esta execução. Tudo o que não passa por essa
-//! verificação vira um resultado honesto do tipo "localização não determinada",
-//! com o motivo registrado.
+//! O agente nunca inventa arquivo, linha ou trecho: só declara uma localização
+//! quando o modelo apontou uma linha que **o próprio agente leu** no sandbox
+//! read-only desta execução; o resto vira "localização não determinada".
 //!
 //! A severidade do scanner é autoritativa (TCC_SPEC, seção 7): o agente pode
 //! apenas apontar onde corrigir, nunca reclassificar o achado.
@@ -24,8 +22,7 @@ use std::time::Duration;
 /// Prefixo que marca a mensagem de sistema do agente de código.
 ///
 /// A marcação é verificada estruturalmente ao montar o payload, e não por
-/// inspeção de conteúdo: assim um trecho lido do projeto não consegue se
-/// promover a papel de sistema.
+/// inspeção de conteúdo: um trecho lido do projeto não se promove a sistema.
 pub const SYSTEM_PREFIX: &str = "[SISTEMA-SMART SEC] ";
 
 /// Rótulo exibido quando a origem no código não pôde ser determinada.
@@ -56,14 +53,13 @@ const TRUNCATED_PREFIX: &str = "saída truncada · ";
 
 /// A localização vive em `domain`, junto do restante do contrato de findings,
 /// porque é persistida no log estruturado, impressa no relatório e exibida na
-/// TUI: um tipo próprio do agente a tornaria um segundo contrato parallelo.
+/// TUI: um tipo próprio do agente seria um contrato paralelo.
 pub use crate::domain::vulnerability::CodeLocation;
 
 /// Linha realmente lida de um arquivo do projeto.
 ///
 /// Existe para que a verificação final da localização não precise confiar no
-/// texto do modelo: só uma linha registrada aqui pode ser declarada como
-/// origem do achado.
+/// texto do modelo: só uma linha registrada aqui pode virar origem do achado.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ObservedLine {
     file: String,
@@ -139,10 +135,8 @@ pub struct ToolCallRecord {
 impl ToolCallRecord {
     /// Resumo de uma chamada bem-sucedida.
     ///
-    /// O corte entra como prefixo, e não no fim da saída, porque o resumo da
-    /// TUI e do log também é truncado: um aviso que só existe na cauda seria
-    /// descartado antes de aparecer e a auditoria mostraria uma leitura
-    /// completa que não foi.
+    /// O corte entra como prefixo porque o resumo também é truncado: um aviso
+    /// só na cauda seria descartado e a auditoria mostraria leitura completa.
     fn ok(
         finding_index: usize,
         iteration: usize,
@@ -212,18 +206,15 @@ pub struct CodeAnalysisReport {
     /// Motivo pelo qual a fase inteira não pôde começar, quando for o caso.
     ///
     /// Distinto de um achado sem localização: aqui nenhum laço rodou, e o
-    /// relatório precisa dizer isso em vez de apresentar uma lista vazia como
-    /// se nada tivesse sido procurado.
+    /// relatório precisa dizer isso em vez de mostrar uma lista vazia.
     pub unavailable_reason: Option<String>,
 }
 
 impl CodeAnalysisReport {
     /// Relatório de uma fase que não pôde começar.
     ///
-    /// Usado quando o diretório do projeto não pode ser aberto. Todos os
-    /// achados recebem "localização não determinada" com o motivo: um erro de
-    /// configuração do workspace é um resultado que o relatório precisa
-    /// mostrar, não um silêncio que pareceria sucesso.
+    /// Usado quando o diretório do projeto não pode ser aberto: um erro de
+    /// configuração é um resultado a mostrar, não um silêncio que parece sucesso.
     pub fn unavailable(project_dir: &std::path::Path, reason: &str) -> Self {
         let project = project_dir.display().to_string();
         Self {
@@ -237,10 +228,9 @@ impl CodeAnalysisReport {
 
     /// Relatório da fase quando o envio ao provedor remoto foi bloqueado.
     ///
-    /// Reaproveita o consentimento que a issue #23 já exige para enviar logs:
-    /// a diferença é que aqui o dado protegido é o **código do alvo**, e não
-    /// apenas a saída do scanner. Nenhum turno é aberto — nem mesmo um turno
-    /// sem ferramentas — porque qualquer ida ao provedor já seria o envio.
+    /// Reaproveita o consentimento que a issue #23 já exige para enviar logs; o
+    /// dado protegido aqui é o **código do alvo**. Nenhum turno é aberto, nem
+    /// mesmo um turno sem ferramentas, porque qualquer ida já seria o envio.
     pub fn blocked_by_consent(findings: &[Vulnerability], model: &str, provider: &str) -> Self {
         let reason = "o envio de trechos do código do alvo a um provedor remoto exige \
                       consentimento explícito, que não está configurado (RNF10); a localização \
@@ -314,7 +304,7 @@ impl CodeAnalysisService {
     ///
     /// Um achado que estoura o prazo recebe "localização não determinada" com o
     /// motivo; a fase continua nos demais, porque um único achado caro não pode
-    /// Privar a varredura inteira da localização.
+    /// privar a varredura inteira da localização.
     pub async fn analyze(
         &self,
         provider: &dyn LLMProvider,
@@ -336,9 +326,8 @@ impl CodeAnalysisService {
         );
         for (index, finding) in findings.iter().enumerate() {
             // O registro de chamadas é acumulado **fora** do futuro do timeout:
-            // se ficasse dentro dele, um achado que estoura o prazo perderia as
-            // chamadas já executadas e o log estruturado deixaria de mostrar
-            // ferramentas que rodaram de fato.
+            // dentro dele, um achado que estoura o prazo perderia as chamadas já
+            // executadas e o log deixaria de mostrar ferramentas que rodaram.
             let mut calls = Vec::new();
             let context = CodeAgentContext {
                 model,
@@ -483,11 +472,9 @@ impl CodeAnalysisService {
             }
 
             // O turno do modelo é registrado **antes** dos resultados: o
-            // protocolo OpenAI exige que cada `tool_calls` seja seguido dos
-            // resultados correspondentes, na mesma ordem, com o mesmo id. Sem
-            // esta linha o modelo receberia a própria pergunta de volta sem
-            // qualquer conteúdo de arquivo e nunca conseguiria localizar a
-            // origem — a leitura do sandbox viraria trabalho jogado fora.
+            // protocolo OpenAI exige cada `tool_calls` seguido dos resultados
+            // correspondentes, mesmo id e ordem; sem isso, o modelo receberia a
+            // própria pergunta de volta sem o conteúdo do arquivo.
             request.messages.push(ToolMessage::Assistant {
                 content: turn.content.clone(),
                 tool_calls: turn.tool_calls.clone(),
@@ -514,10 +501,8 @@ impl CodeAnalysisService {
                     ),
                 );
                 calls.push(dispatched.record);
-                // A recusa e a falha também voltam ao modelo: esconder a
-                // justificativa faria o modelo repetir a mesma chamada proibida
-                // até consumir o teto de iterações, gastando o orçamento do
-                // achado em tentativas que o SmartSec já sabe rejeitar.
+                // A recusa e a falha também voltam ao modelo: sem a
+                // justificativa, ele repetiria a chamada proibida até o teto.
                 request.messages.push(ToolMessage::ToolResult {
                     tool_call_id: call.id.clone(),
                     tool: call.name.clone(),
@@ -543,10 +528,9 @@ impl CodeAnalysisService {
     /// Executa uma chamada de ferramenta pelo registro local e registra o
     /// resultado para auditoria.
     ///
-    /// `read_file` e `search_code` alimentam as linhas observadas: nos dois
-    /// casos a saída vem do sandbox, e uma linha vista na busca é uma linha que
-    /// o agente realmente viu, mesmo antes de abrir o arquivo. `list_dir` e
-    /// `run_command` não revelam linhas de código e, por isso, não entram.
+    /// `read_file` e `search_code` alimentam as linhas observadas: a saída vem
+    /// do sandbox, e uma linha vista na busca é uma linha que o agente viu,
+    /// mesmo antes de abrir o arquivo. `list_dir` e `run_command` não entram.
     async fn dispatch(
         &self,
         finding_index: usize,
@@ -615,10 +599,9 @@ impl CodeAnalysisService {
 /// Saída de uma chamada de ferramenta, separada entre o registro auditável e o
 /// texto que volta ao modelo.
 ///
-/// São dois consumidores com Needs diferentes: o log estruturado guarda nome,
-/// argumentos e um resumo curto; o modelo precisa da saída inteira para
-/// continuar a exploração. Unir os dois obrigaria a truncar a informação que o
-/// modelo precisa, ou a expor inteira no log.
+/// São dois consumidores com necessidades diferentes: o log estruturado guarda
+/// nome, argumentos e um resumo curto; o modelo precisa da saída inteira para
+/// continuar a exploração. Unir os dois obrigaria a truncar um dos lados.
 struct Dispatched {
     record: ToolCallRecord,
     model_output: String,
@@ -725,9 +708,8 @@ fn finish(
 
 /// Preenche o total de chamadas de ferramenta do achado.
 ///
-/// O total vem do registro acumulado e não de um contador paralelo: assim o
-/// número exibido na TUI, no relatório e no log estruturado é o mesmo que o
-/// número de linhas que o log realmente gravou.
+/// O total vem do registro acumulado, não de um contador paralelo: o número
+/// exibido é o mesmo de linhas que o log realmente gravou.
 fn with_calls(mut analysis: FindingCodeAnalysis, calls: &[ToolCallRecord]) -> FindingCodeAnalysis {
     analysis.tool_calls = calls.len();
     analysis
@@ -735,10 +717,9 @@ fn with_calls(mut analysis: FindingCodeAnalysis, calls: &[ToolCallRecord]) -> Fi
 
 /// Extrai cada linha numerada da saída de `read_file`.
 ///
-/// A saída é `"{linha:>5} | {conteúdo}"`. Só linhas com numeração válida
-/// entram na lista: é o que permite recusar, depois, uma localização que o
-/// modelo inventou sem ter lido a linha. Linhas sem o separador — o marcador de
-/// truncamento, por exemplo — são ignoradas.
+/// A saída é `"{linha:>5} | {conteúdo}"`; só linhas com numeração válida entram
+/// na lista — é o que permite recusar, depois, uma localização inventada — e as
+/// linhas sem o separador, como o marcador de truncamento, são ignoradas.
 fn observe_read_lines(observed: &mut Vec<ObservedLine>, file: &str, output: &str) {
     for line in output.lines() {
         let Some((number, content)) = line.split_once('|') else {
@@ -755,11 +736,8 @@ fn observe_read_lines(observed: &mut Vec<ObservedLine>, file: &str, output: &str
 /// `"{arquivo}:{linha}: {trecho}"`.
 ///
 /// O arquivo de cada ocorrência precisa **resolver dentro do workspace** antes
-/// de entrar na lista de linhas observadas. A verificação não é decorativa: o
-/// aceite exige que o agente nunca saia da raiz, e uma linha declarada como
-/// origem precisa ter vindo de uma leitura real do sandbox. Sem esta checagem,
-/// um `..` no resultado da busca viraria uma origem declarada que nenhuma
-/// leitura teria produzido.
+/// de entrar nas linhas observadas: sem a checagem, um `..` no resultado da
+/// busca viraria uma origem declarada que nenhuma leitura produziu.
 fn observe_search_hits(observed: &mut Vec<ObservedLine>, workspace: &Workspace, output: &str) {
     for line in output.lines() {
         let mut parts = line.splitn(3, ':');
@@ -1078,9 +1056,8 @@ mod tests {
         assert!(record.summary.contains("def login"));
 
         // O segundo turno precisa carregar a conversa inteira: a pergunta do
-        // modelo, o resultado da ferramenta e nada depois. Sem o resultado
-        // devolvido, o modelo receberia a própria pergunta de volta e não teria
-        // como confirmar a linha que acabou de apontar.
+        // modelo e o resultado da ferramenta. Sem o resultado devolvido, ele
+        // não teria como confirmar a linha que acabou de apontar.
         let sent = requests.lock().expect("requisições").clone();
         assert_eq!(sent.len(), 2, "o segundo turno deve reabrir a conversa");
         let second = sent[1].to_wire();
@@ -1617,15 +1594,10 @@ mod tests {
 
     /// A fase nunca escreve no projeto analisado.
     ///
-    /// Este é o teste que sustenta a promessa de "read-only" do módulo. Ele
-    /// compara o conteúdo e a lista de arquivos do workspace **antes e depois**
-    /// de um laço completo, no mesmo registro que o pipeline real usa: sem
-    /// allowlist de comandos.
-    ///
-    /// O modelo é instruído a criar um arquivo (`touch`) e também a ler um
-    /// arquivo comum. A criação é recusada pela allowlist vazia; sem isso, o
-    /// teste passaria mesmo com uma implementação que escrevesse, porque
-    /// nenhuma ferramenta tentaria hacerlo.
+    /// Compara conteúdo e lista de arquivos do workspace **antes e depois** de
+    /// um laço completo, sem allowlist, como no pipeline real: o modelo tenta
+    /// criar um arquivo (`touch`) e a recusa da allowlist vazia é o que dá
+    /// sentido ao teste.
     #[tokio::test]
     async fn the_phase_never_writes_in_the_analyzed_project() {
         let root = std::env::temp_dir().join(format!(
@@ -1773,8 +1745,7 @@ mod tests {
     /// Consentimento remoto ausente bloqueia a fase **antes** de qualquer turno.
     ///
     /// O teste falha se o provedor receber uma requisição sequer: um turno sem
-    /// ferramentas ainda carregaria as pistas do alvo, e as pistas vêm do
-    /// scanner rodado contra o sistema do cliente.
+    /// ferramentas ainda carregaria as pistas do alvo.
     #[tokio::test]
     async fn remote_consent_blocks_the_phase_before_any_turn() {
         let provider = ScriptedProvider::new(
@@ -1844,9 +1815,11 @@ mod tests {
     }
 
     /// Sem nenhuma ferramenta executada, a resposta final é rejeitada e o laço
-    /// reenvia com instrução explícita. Este é o comportamento que a NIM exigiu:
-    /// com o protocolo antigo ela respondeu `{"localizacao": null}` na primeira
-    /// oportunidade, sem nunca explorar, e a fase terminava com zero chamadas.
+    /// reenvia com instrução explícita.
+    ///
+    /// Comportamento que a NIM exigiu: ela respondia `{"localizacao": null}` na
+    /// primeira oportunidade, sem nunca explorar, e a fase terminava com zero
+    /// chamadas.
     #[tokio::test]
     async fn an_answer_without_any_tool_call_is_rejected_and_the_loop_insists() {
         let provider = ScriptedProvider::new(

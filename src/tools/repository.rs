@@ -1,10 +1,9 @@
 //! Resolução e validação do repositório a analisar pelo TruffleHog.
 //!
-//! O alvo do TruffleHog não é um host de rede: é um **repositório**. Isso muda
-//! o contrato do executor, que precisa montar um diretório do host dentro do
-//! container. Este módulo isola essa decisão e reaproveita o sandbox de
-//! workspace já existente (`code_agent::workspace`) em vez de reimplementar
-//! canonicalização e bloqueio de escape.
+//! O alvo do TruffleHog é um **repositório**, não um host de rede, então o
+//! executor precisa montar um diretório do host no container; a canonicalização
+//! reaproveita o sandbox de `code_agent::workspace` em vez de reimplementar o
+//! bloqueio de escape.
 //!
 //! Duas formas são aceitas, ambas com autorização explícita do usuário:
 //!
@@ -55,9 +54,9 @@ impl RepositoryTarget {
 
     /// Volume para o executor, ausente quando o alvo é remoto.
     ///
-    /// O executor acrescenta a sufixo `:ro` a todo volume
-    /// (`orchestrator::sandbox`), então o repositório analisado só pode ser
-    /// lido. Nenhum caminho do host é devolvido quando o alvo é remoto.
+    /// O executor acrescenta o sufixo `:ro` a todo volume
+    /// (`orchestrator::sandbox`), então o repositório só pode ser lido; nenhum
+    /// caminho do host é devolvido quando o alvo é remoto.
     pub fn mounts(&self) -> Vec<(PathBuf, String)> {
         self.host_path()
             .map(|host_path| vec![(host_path.to_path_buf(), REPOSITORY_MOUNT_PATH.to_string())])
@@ -75,8 +74,8 @@ impl RepositoryTarget {
 
 /// Indica se o alvo é uma URI de repositório remoto.
 ///
-/// Só os esquemas aceitos pela validação de alvo da CLI qualify. `ssh://` e a
-/// forma scp-like (`git@host:org/repo`) ficariam de fora: a configuração já as
+/// Só valem os esquemas que a validação de alvo da CLI aceita. `ssh://` e a
+/// forma scp-like (`git@host:org/repo`) ficam de fora: a configuração já as
 /// rejeita, e aceitar aqui produziria um alvo que não sai da validação.
 pub fn is_remote_repository(target: &str) -> bool {
     let target = target.trim();
@@ -87,13 +86,10 @@ pub fn is_remote_repository(target: &str) -> bool {
 
 /// Resolve o alvo informado em um repositório montável, com mensagem em pt-BR.
 ///
-/// O caminho local é canonicalizado e precisa ser um diretório já existente.
-/// A canonicalização é a do sandbox de workspace: ela resolve `..` e symlinks
-/// **antes** do uso, de modo que o `--volume` recebe sempre o caminho real e o
-/// scanner não escapa do diretório autorizado por link simbólico.
-///
-/// A validação é deliberadamente estrita: um caminho relativo, um alvo vazio
-/// ou um caminho que não existe param a execução com um erro que aponta a
+/// A canonicalização do sandbox de workspace resolve `..` e symlinks **antes**
+/// do uso, então o `--volume` recebe sempre o caminho real e o scanner não
+/// escapa do diretório autorizado por link simbólico. A validação é estrita:
+/// caminho relativo, alvo vazio ou inexistente param com erro que aponta a
 /// correção, em vez de deixar o TruffleHog terminar com exit 0 e stdout vazio.
 pub fn resolve(target: &str) -> Result<RepositoryTarget, String> {
     let target = target.trim();
@@ -120,11 +116,9 @@ pub fn resolve(target: &str) -> Result<RepositoryTarget, String> {
             "o caminho do repositório deve ser absoluto, mas foi informado \"{target}\"; use por exemplo /home/usuario/projetos/repositorio"
         ));
     }
-    // `..` é recusado explicitamente, na mesma posição em que o sandbox de
-    // workspace o recusa. Canonicalizar sozinho resolveria `/repo/../..` para
-    // `/tmp` e montaria um diretório que o usuário não pediu, o que transformaria
-    // um erro de digitação em leitura de outra árvore. Recusar é mais seguro e
-    // mais honesto do que adivinhar a intenção.
+    // `..` é recusado na mesma posição do sandbox de workspace: canonicalizar
+    // sozinho resolveria `/repo/../..` para `/tmp` e montaria um diretório que o
+    // usuário não pediu, transformando um erro de digitação em leitura de outra árvore.
     if requested
         .components()
         .any(|component| matches!(component, Component::ParentDir))
@@ -135,11 +129,8 @@ pub fn resolve(target: &str) -> Result<RepositoryTarget, String> {
     }
 
     // `Workspace::open` canonicaliza, resolve symlinks e exige um diretório
-    // existente. Reaproveitar o sandbox evita uma segunda implementação de
-    // escape por symlink: o `--volume` recebe sempre o caminho real, nunca o
-    // link, então um link apontado para fora da árvore autorizada é montado
-    // pelo seu destino e o erro de "não encontrado" é o mesmo dos testes do
-    // sandbox de workspace.
+    // existente; o `--volume` recebe sempre o caminho real, nunca o link, então
+    // ao reaproveitar o sandbox não há segunda implementação de escape.
     let workspace = Workspace::open(requested).map_err(workspace_error_message)?;
 
     Ok(RepositoryTarget::Local {
@@ -271,10 +262,8 @@ mod tests {
         fs::create_dir(&repository).unwrap();
         symlink(&outside, repository.join("fuga")).unwrap();
 
-        // O link para fora é canônico sem quebrar a resolução da raiz: quem
-        // decide o que o scanner lê é o alvo montado, não o conteúdo do repo.
-        // O que não pode acontecer é o `--volume` receber um caminho diferente
-        // do diretório solicitado.
+        // O link para fora é canônico sem quebrar a resolução da raiz; o que não
+        // pode acontecer é o `--volume` receber um caminho diferente do solicitado.
         let resolved = resolve(&repository.display().to_string()).unwrap();
         assert_eq!(
             resolved.host_path().unwrap(),

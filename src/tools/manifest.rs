@@ -73,12 +73,9 @@ fn is_valid_component(component: &str, allow_registry_port: bool) -> bool {
         })
 }
 
-/// Manifesto de uma ferramenta de segurança.
-///
-/// O manifesto é a única fonte de metadados do catálogo: nome exibido,
-/// descrição, categoria, imagem, versão, runner, parser, comando e formato de
-/// saída. Ferramentas embutidas são construídas pelo `ToolRegistry`; novas
-/// ferramentas entram pela chave `[[tools]]` do arquivo de configuração TOML.
+/// Manifesto de uma ferramenta de segurança, única fonte de metadados do
+/// catálogo. Ferramentas embutidas são construídas pelo `ToolRegistry`; novas
+/// entram pela chave `[[tools]]` do arquivo de configuração TOML.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ToolManifest {

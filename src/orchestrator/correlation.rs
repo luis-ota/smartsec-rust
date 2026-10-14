@@ -15,38 +15,30 @@
 //!
 //! Todas as chaves incluem o alvo, então dois alvos diferentes nunca colidem.
 //!
-//! Uma chave só é emitida quando **todos** os componentes que a definem estão
-//! presentes na evidência. Uma evidência sem identidade estruturada — por
-//! exemplo a saída do parser `generic-text`, que carrega apenas a linha
-//! textual do scanner — nunca produz chave e, portanto, **nunca é mesclada**.
+//! Uma chave só é emitida quando **todos** os componentes estão presentes na
+//! evidência; sem identidade estruturada, como na saída do `generic-text`,
+//! nenhuma chave é emitida e o achado **nunca é mesclado**.
 //!
 //! ## O que deliberadamente não é usado
 //!
 //! Semelhança textual entre `title`, `description` ou `didactic` **não** gera
-//! correlação. Dois achados com textos parecidos em endpoints ou componentes
-//! diferentes são problemas distintos e precisam permanecer separados: mesclá-los
-//! produziria falso positivo e perderia achados.
+//! correlação: achados parecidos em endpoints ou componentes diferentes são
+//! problemas distintos, e mesclá-los produziria falso positivo e perderia
+//! achados.
 //!
 //! ## Regra de severidade do grupo
 //!
-//! A severidade do grupo é a **mais alta** entre as origens.
-//!
-//! Justificativa: a severidade estruturada de cada scanner é autoritativa
-//! (TCC_SPEC.md §7). O agrupamento apenas agrega observações, não reclassifica
-//! nenhuma delas. Tomar o máximo é a única regra que não pode **rebaixar** uma
-//! classificação autoritativa; rebaixar esconderia um achado crítico apenas
-//! porque outro scanner omitiu a mesma anomalia com rótulo menor. Quando as
-//! origens divergem, as duas classificações ficam preservadas em
-//! [`SeverityConflict`] e em [`FindingOrigin`]: o agrupamento nunca escolhe um
-//! "vencedor".
+//! A severidade do grupo é a **mais alta** entre as origens: a classificação
+//! estruturada de cada scanner é autoritativa (TCC_SPEC.md §7) e o agrupamento
+//! nunca **rebaixa** nem escolhe "vencedor" — quando as origens divergem, as
+//! duas ficam preservadas em [`SeverityConflict`] e em [`FindingOrigin`].
 //!
 //! ## Nada se perde
 //!
-//! O merge agrega, nunca descarta. Cada origem entra em [`FindingOrigin`] com
-//! ferramenta, severidade, evidência e timestamp próprios, inclusive a origem
-//! que virou representante do grupo. Título, descrição, recomendação e
-//! didático do representante são preservados; as evidências de todas as origens
-//! são concatenadas em `evidence`.
+//! O merge agrega, nunca descarta: cada origem entra em [`FindingOrigin`] com
+//! seus próprios dados, inclusive a que virou representante do grupo, e as
+//! evidências de todas são concatenadas em `evidence`; título, descrição,
+//! recomendação e didático do representante também são preservados.
 
 use crate::domain::enrichment::{FindingOrigin, SeverityConflict};
 use crate::domain::vulnerability::Vulnerability;
@@ -105,15 +97,11 @@ fn severity_rank(severity: Severity) -> u8 {
 
 /// Extrai `chave: valor` ou `chave=valor` da evidência de um achado.
 ///
-/// Os parsers emitem dois formatos: `chave: valor | chave: valor` (Nuclei,
-/// Nikto) e `chave=valor` separado por espaço (Nmap). Ambos são suportados
-/// porque a regra de correlação depende de recuperar esses componentes.
-///
-/// A chave pode ter palavras (`nikto referência:`), então a comparação é feita
-/// sobre o segmento inteiro, e não token a token. O valor é o restante do
-/// segmento: as chaves usadas pela correlação têm valor sem espaço, exceto o
-/// `url` do Nikto, que é registrado como endpoint e por isso precisa ser
-/// preservado por inteiro.
+/// Os parsers emitem `chave: valor | chave: valor` (Nuclei, Nikto) e
+/// `chave=valor` separado por espaço (Nmap), e a correlação depende de recuperar
+/// esses componentes. A chave pode ter palavras (`nikto referência:`), então a
+/// comparação é sobre o segmento inteiro; o valor é o restante do segmento,
+/// exceto o `url` do Nikto, preservado por inteiro por ser o endpoint.
 fn field(evidence: &str, key: &str) -> Option<String> {
     for segment in evidence.split('|') {
         let Some(value) = strip_key(segment, key) else {
@@ -131,10 +119,9 @@ fn field(evidence: &str, key: &str) -> Option<String> {
 
 /// Corta o valor no início da próxima chave do segmento.
 ///
-/// No formato do Nmap (`nmap porta=3000/tcp serviço=http produto=nginx`), o
-/// valor termina onde a próxima chave começa. Sem isso, `serviço` absorveria o
-/// resto do segmento e a identidade do scanner sairia incorreta. No formato do
-/// Nuclei e do Nikto cada chave já está isolada por `|`, então nada é cortado.
+/// No Nmap, o valor termina onde a próxima chave começa, ou `serviço` absorveria
+/// o resto do segmento e a identidade sairia incorreta; em Nuclei e Nikto cada
+/// chave já é isolada por `|`, então nada é cortado.
 fn terminate_value(value: &str) -> &str {
     let mut offset = 0;
     let mut primeira_palavra = true;
@@ -152,10 +139,9 @@ fn terminate_value(value: &str) -> &str {
 
 /// Localiza `chave:` ou `chave=` dentro do segmento e devolve o valor.
 ///
-/// A chave precisa começar num limite de palavra: `produto=` não pode casar
-/// dentro de `xproduto=`. Isso importa porque o formato do Nmap é uma sequência
-/// de `chave=valor` no mesmo segmento, enquanto Nuclei e Nikto usam
-/// `chave: valor | chave: valor`.
+/// A chave precisa começar num limite de palavra, para `produto=` não casar
+/// dentro de `xproduto=`: o Nmap encadeia `chave=valor` no mesmo segmento,
+/// enquanto Nuclei e Nikto usam `chave: valor | chave: valor`.
 fn strip_key<'a>(segment: &'a str, key: &str) -> Option<&'a str> {
     let bytes = segment.as_bytes();
     let mut from = 0;
@@ -217,9 +203,8 @@ fn extract_cve_ids(text: &str) -> Vec<String> {
     while let Some(found) = uppercase[cursor..].find("CVE-") {
         let start = cursor + found;
         let candidate = &uppercase[start..];
-        // Formato canônico: `CVE-AAAA-NNNN`, com exatamente quatro dígitos de
-        // ano e ao menos quatro de sequência. Qualquer outra forma é descartada
-        // em vez de virar uma chave de correlação errada.
+        // Formato canônico `CVE-AAAA-NNNN`: quatro dígitos de ano e ao menos
+        // quatro de sequência; outra forma viraria uma chave de correlação errada.
         let year: Vec<char> = candidate[4..].chars().take(4).collect();
         let year_len = year.len();
         let sequence_start = 4 + year_len;
@@ -274,11 +259,11 @@ pub(crate) fn cve_ids_of(text: &str) -> Vec<String> {
 
 /// Identificadores cruzados, que agrupam achados de ferramentas diferentes.
 ///
-/// A chave carrega o **endpoint** além do identificador. Sem ele, dois
-/// template-distintos do mesmo CVE em páginas diferentes seriam fundidos em um
-/// único achado, e a点是 de exposição em `/login` se perderia. A correlação por
-/// CVE continua cruzando ferramentas — o ZAP e o Nuclei reportam o campo
-/// `endpoint` — mas apenas quando apontam para o mesmo ponto.
+/// A chave carrega o **endpoint** além do identificador: sem ele, dois templates
+/// distintos do mesmo CVE em páginas diferentes virariam um único achado e o
+/// ponto de exposição em `/login` se perderia. A correlação por CVE continua
+/// cruzando ferramentas — ZAP e Nuclei reportam o campo `endpoint` — mas só
+/// quando apontam para o mesmo ponto.
 fn shared_keys(finding: &Vulnerability, parts: &EvidenceParts) -> Vec<String> {
     let endpoint = endpoint_of(finding, parts);
     let mut keys = Vec::new();

@@ -13,22 +13,19 @@ const TITLE_LIMIT: usize = 120;
 ///
 /// ## Allow-list deliberada
 ///
-/// O objeto do TruffleHog carrega o **valor completo do segredo** em três
-/// campos: `Raw`, `RawV2` e `SecretParts`. Esses campos **não são
-/// desserializados aqui** — não existem nesta estrutura, então não há como
-/// alcançarem um finding, um log, um relatório ou a evidência versionada.
-///
-/// Como isso foi medido, não presumido: em container real, um registro de
-/// chave privada privada chegou ao stdout com
+/// O objeto carrega o **valor completo do segredo** em `Raw`, `RawV2` e
+/// `SecretParts`, que **não são desserializados aqui**: não existem nesta
+/// estrutura, então não há como alcançarem um finding, um log, um relatório ou
+/// a evidência versionada. Medido em container real, um registro de chave
+/// privada chegou ao stdout assim:
 /// `"Raw":"-----BEGIN RSA PRIVATE KEY-----\nMIIE<MASCARADO>…"` e
 /// `"SecretParts":{"token":"-----BEGIN RSA PRIVATE KEY-----\n…"}`
 /// (ver `docs/evidence/issue-18-trufflehog.md`). O `serde` ignora campos não
-/// declarados, o que torna a ausência do segredo uma propriedade da estrutura
-/// de dados, não uma disciplina de codificação que alguém pode contornar com
-/// um `..field`.
+/// declarados, então a ausência do segredo é propriedade da estrutura de dados,
+/// não uma disciplina que alguém contorne com um `..field`.
 ///
-/// O campo `Redacted` do TruffleHog também não é lido: ele truca o segredo no
-/// meio e não é estável entre versões, então não serve como evidência.
+/// O campo `Redacted` também não é lido: truca o segredo no meio e não é estável
+/// entre versões, então não serve como evidência.
 #[derive(Deserialize, Debug)]
 struct TruffleHogResult {
     /// Metadados da fonte onde o segredo foi encontrado.
@@ -56,9 +53,9 @@ struct SourceMetadata {
 /// Fonte concreta: sistema de arquivos ou repositório git.
 ///
 /// As duas são lidas porque o subcomando `git` do TruffleHog é usado tanto para
-/// `file://` quanto para uma URL remota, e o formato do registro muda conforme a
-/// origem. `Filesystem` e `Git` são structs distintas justamente para que o
-/// campo `file`/`line` seja lido de onde ele realmente existe.
+/// `file://` quanto para URL remota, e o formato do registro muda conforme a
+/// origem; `Filesystem` e `Git` são structs distintas para que `file`/`line`
+/// sejam lidos de onde realmente existem.
 #[derive(Deserialize, Debug, Default)]
 struct SourceData {
     #[serde(default)]
@@ -118,15 +115,14 @@ fn truncate(value: &str, limit: usize) -> String {
 /// Traduz a verificação do TruffleHog para a severidade do SmartSec.
 ///
 /// A verificação é a única informação estruturada de confiança que o scanner
-/// publica, então ela define a severidade — nunca o texto do segredo, que além
-/// de não existir aqui não poderia ser interpretado com segurança.
+/// publica, então define a severidade — nunca o texto do segredo, que não
+/// existe aqui e não poderia ser interpretado com segurança.
 ///
-/// O caso `unknown` merece registro: o TruffleHog rebaixa para `unverified`
-/// quando a verificação falha **sem erro** quando a rede não responde
-/// (medido: 3 tentativas, 3,58 s, mesmo resultado e nenhum aviso). Como a
-/// integração roda com `--no-verification`, um `Verified: false` significa
-/// "detectado, não verificado" e nunca "inválido". A severidade reflete essa
-/// incerteza em vez de tratar o achado como falso positivo descartável.
+/// Medido: sem rede, o TruffleHog rebaixa para `unverified` **sem erro**
+/// (3 tentativas, 3,58 s, mesmo resultado e nenhum aviso). Como a integração
+/// roda com `--no-verification`, `Verified: false` significa "detectado, não
+/// verificado", nunca "inválido"; a severidade reflete essa incerteza em vez de
+/// tratar o achado como falso positivo descartável.
 fn severity_for(verified: bool) -> Severity {
     if verified {
         Severity::High
@@ -138,11 +134,10 @@ fn severity_for(verified: bool) -> Severity {
 /// Extrai a origem preservando arquivo, linha e commit quando existirem.
 ///
 /// O `file` do TruffleHog é o caminho **dentro do container** (medido:
-/// `/alvo/config/credenciais.env`), porque o scanner só enxerga o repositório pelo
-/// ponto de montagem. Esse prefixo é detalhe da implementação do executor, e
-/// incharia a evidência com um diretório que não existe para quem lê o
-/// relatório. O caminho é relativo ao repositório, que é o que o usuário
-/// precisa abrir.
+/// `/alvo/config/credenciais.env`), porque o scanner só enxerga o repositório
+/// pelo ponto de montagem; esse prefixo incharia a evidência com um diretório
+/// que não existe para quem lê o relatório. O caminho relativo ao repositório é
+/// o que o usuário precisa abrir.
 fn origin_of(metadata: &SourceMetadata) -> Origin {
     if let Some(git) = &metadata.data.git {
         return Origin {
@@ -199,10 +194,10 @@ fn repository_label(repository: &str) -> String {
 
 /// Rótulo do valor de verificação, em pt-BR.
 ///
-/// `verified: false` **não** significa que o segredo é inválido. Significa que
-/// ele foi detectado e não confirmado — que, com `--no-verification`, é o
-/// resultado esperado para todo achado. Dizer "não validado" evita que o
-/// relatório sugira descartar o achado.
+/// `verified: false` **não** significa segredo inválido: significa detectado e
+/// não confirmado — com `--no-verification`, o resultado esperado de todo
+/// achado. Dizer "detectado, não validado" evita que o relatório sugira
+/// descartar o achado.
 fn verification_label(verified: bool) -> &'static str {
     if verified {
         "confirmado pelo provedor"
@@ -224,11 +219,10 @@ pub fn parse_trufflehog_findings(output: &str, target: &str) -> Vec<Vulnerabilit
 
 /// Retorna os achados e os erros da varredura.
 ///
-/// O TruffleHog não emite array: cada linha do stdout é um registro independente
-/// e uma linha malformada não invalida as demais. Ainda assim, saída que não
-/// produz nenhum registro é reportada como erro, porque "nenhum segredo" e "a
-/// varredura não produziu nada analisável" precisam ser distinguíveis no
-/// relatório.
+/// O TruffleHog não emite array: cada linha é um registro independente e uma
+/// linha malformada não invalida as demais. Saída que não produz nenhum registro
+/// é erro, porque "nenhum segredo" e "nada analisável" precisam ser
+/// distinguíveis no relatório.
 pub fn parse_trufflehog_findings_with_errors(
     output: &str,
     target: &str,
@@ -244,10 +238,10 @@ pub fn parse_trufflehog_findings_with_errors(
         );
     }
     // Saída vazia com exit status 0 **é** a varredura limpa: nenhum segredo
-    // encontrado, nenhum registro emitido. Isso foi medido no container, e é o
-    // oposto do caso que parecia驱动器. O alvo inválido, que também produz
-    // stdout vazio, é coberto por `--fail-on-scan-errors`, que faz o container
-    // encerrar com status 1 e o executor prefixar a saída com `[ERRO]`.
+    // encontrado, nenhum registro emitido, medido no container. O alvo inválido,
+    // que também produz stdout vazio, é coberto por `--fail-on-scan-errors`, que
+    // faz o container encerrar com status 1 e o executor prefixar a saída com
+    // `[ERRO]`.
     if trimmed.is_empty() {
         return (Vec::new(), Vec::new());
     }

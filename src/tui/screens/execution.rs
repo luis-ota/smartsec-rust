@@ -60,9 +60,8 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
 /// Todas as ocorrências da execução, não apenas a primeira.
 ///
-/// Ferramenta, auditoria, IA, executor, validação e exportação têm rótulos
-/// próprios; avisos de IA (fallback, consentimento, resposta descartada) são
-/// mostrados em tom distinto porque não interrompem a varredura.
+/// Cada escopo tem rótulo próprio; avisos de IA aparecem em tom distinto porque
+/// não interrompem a varredura.
 fn render_issues(app: &AppState, frame: &mut Frame, area: Rect) {
     let block = chrome::panel("Ocorrências", false);
     let inner = block.inner(area);

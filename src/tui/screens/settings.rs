@@ -218,12 +218,9 @@ fn reliability_fields(app: &AppState) -> Vec<FieldView> {
         field_view(app, SettingsField::Retries),
         field_view(app, SettingsField::FallbackEnabled),
     ];
-    // O diretório entra na coluna de confiabilidade porque é o campo que decide
-    // o **escopo de leitura** do agente de código: fica ao lado dos limites e
-    // do consentimento, e não junto de provedor e modelo, que são parâmetros de
-    // transporte. Agrupá-lo com o consentimento também deixa visível que os
-    // dois controlam a mesma coisa: o que o SmartSec pode ler e para onde pode
-    // enviá-lo.
+    // O diretório fica na coluna de confiabilidade, junto dos limites e do
+    // consentimento, porque decide o **escopo de leitura** do agente — e não
+    // junto de provedor e modelo, que são parâmetros de transporte.
     fields.push(field_view(app, SettingsField::ProjectDir));
     if app.settings_fallback_enabled {
         fields.extend([
@@ -389,16 +386,10 @@ mod tests {
     }
 
     /// Criterio de aceite 2: salvar uma configuracao valida remove o aviso.
-    /// Sem isso, o operador corrigiria o problema e a interface continuaria
-    /// anunciando que ele existe.
     ///
-    /// Verifica o `commit_settings` e nao o `apply_settings` por um motivo
-    /// concreto: `apply_settings` termina em `save`, que grava em
-    /// `~/.config/smartsec/config.toml` e escreve no keyring do sistema. Um
-    /// teste que passa por ali apaga a configuracao real de quem roda
-    /// `cargo test` e depende de haver um servico de segredos na maquina — foi
-    /// exatamente o que quebrou no CI. O `commit` e onde o aviso decide, e nao
-    /// depende do ambiente.
+    /// Testa `commit_settings`, nao `apply_settings`: o `apply` termina em
+    /// `save`, que grava no config.toml real e no keyring do sistema — foi o
+    /// que quebrou no CI. O `commit` e onde o aviso decide, sem tocar o ambiente.
     #[test]
     fn saving_a_valid_configuration_clears_the_opening_warning() {
         let mut app = app();

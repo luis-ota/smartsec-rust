@@ -282,10 +282,8 @@ fn option_line(app: &AppState, index: usize, label: &str) -> Line<'static> {
     .style(Style::default().bg(if active { ACCENT } else { SURFACE }))
 }
 
-/// Registra as escolhas a partir da linha em que começam.
-///
-/// `first_row` existe porque a lista de opções raramente ocupa a tela inteira:
-/// sem ele, clicar num texto explicativo valeria como ativar a primeira opção.
+/// Registra as escolhas a partir da linha em que começam; sem `first_row`,
+/// clicar num texto explicativo valeria como ativar a primeira opção.
 fn register_list(app: &mut AppState, inner: Rect, first_row: u16, count: usize) {
     for offset in 0..count {
         register_option(app, inner, first_row + offset as u16, offset);

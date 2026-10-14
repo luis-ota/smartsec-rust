@@ -22,14 +22,12 @@ use tokio::task::JoinHandle;
 
 /// Capacidade do canal de eventos da execução.
 ///
-/// Política de drop (documentada em TCC_SPEC.md, seção 7): eventos de
-/// controle (`ToolStarted`, `ToolFinished`, `Completed`) são enviados com
-/// `send().await` e **nunca** são descartados; o fluxo apenas sofre
-/// contrapressão até a TUI drenar o canal, o que acontece a cada quadro, mesmo
-/// com uma camada sobreposta aberta. Linhas de log (`ToolLog`) usam
-/// `try_send`: sob saturação a linha é descartada e contada em
-/// `log_drop_counter`, para que a memória do executor permaneça limitada e a
-/// tela nunca trave. A contagem é exibida ao usuário.
+/// Política de drop (TCC_SPEC.md, seção 7): controle (`ToolStarted`,
+/// `ToolFinished`, `Completed`) usa `send().await` e nunca é descartado — a TUI
+/// sofre contrapressão e drena o canal a cada quadro, mesmo com camada
+/// sobreposta aberta. Log (`ToolLog`) usa `try_send`: sob saturação a linha é
+/// descartada e contada em `log_drop_counter`, sem travar a tela, e a contagem é
+/// exibida ao usuário.
 const RUN_EVENT_CAPACITY: usize = 256;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,8 +72,8 @@ pub enum AnalysisPhase {
 
 /// Origem de uma ocorrência registrada durante a execução.
 ///
-/// A TUI não reconstrói nem reclassifica erros: cada registro guarda a etapa
-/// do pipeline que o produziu, para que a tela diga de onde veio a falha.
+/// A TUI não reconstrói nem reclassifica erros: cada registro guarda a etapa do
+/// pipeline que o produziu, para a tela dizer de onde veio a falha.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RunIssueScope {
     Tool,
@@ -135,10 +133,8 @@ pub enum SettingsField {
     FallbackModel,
     /// Diretório do projeto analisado pelo agente de código (issue #76).
     ///
-    /// Vive na tela de configurações ao lado do provedor porque é o campo que
-    /// decide **o que** o agente de código pode ler: trocá-lo muda o escopo da
-    /// fase de análise, e escondê-lo em outro lugar tornaria essa mudança
-    /// invisível justamente onde o operador decide o que será lido.
+    /// Fica ao lado do provedor porque decide **o que** o agente pode ler:
+    /// escondê-lo tornaria invisível uma mudança de escopo da análise.
     ProjectDir,
 }
 
@@ -146,9 +142,8 @@ pub struct ToolItem {
     pub tool: ToolManifest,
     pub runner: RunnerKind,
     pub selected: bool,
-    /// Estado real da ferramenta no pipeline. Não há porcentagem sintética: o
-    /// orquestrador só emite `ToolStarted` e `ToolFinished`, e é essa a
-    /// informação de progresso que existe.
+    /// Estado real da ferramenta no pipeline: não há porcentagem sintética
+    /// porque o orquestrador só emite `ToolStarted` e `ToolFinished`.
     pub status: ToolStatus,
 }
 
@@ -267,9 +262,8 @@ pub struct AppState {
     /// Gravador da configuração concluída; trocável para não tocar a máquina.
     pub(crate) onboarding_persister: Box<dyn crate::config::onboarding::OnboardingPersister>,
     /// Problema de configuracao detectado na abertura da TUI, antes de qualquer
-    /// execucao. Vive separado de `settings_error` porque nasce do
-    /// carregamento e nao de uma tentativa de salvar, e porque um continua
-    /// valendo enquanto o outro so existe ate a proxima edicao.
+    /// execucao. Separado de `settings_error`: nasce do carregamento, nao de uma
+    /// tentativa de salvar, e continua valendo ate a proxima edicao.
     pub config_warning: Option<String>,
     pub llm_warning: Option<String>,
     pub audit_log_path: Option<PathBuf>,
@@ -282,10 +276,10 @@ pub struct AppState {
     pub history_detail_max_scroll: usize,
     pub history_error: Option<String>,
     pub history_return_step: AppStep,
+    /// Primeiro erro por natureza, usado nas linhas de status resumidas.
     pub run_error: Option<String>,
     /// Aviso de indisponibilidade do enriquecimento CVE/NVD, exibido na TUI.
     pub enrichment_warning: Option<String>,
-    /// Primeiro erro por natureza (usado nas linhas de status resumidas).
     /// Todas as ocorrências da execução, na ordem em que foram registradas.
     pub run_issues: Vec<RunIssue>,
     pub exec_cancelled: bool,
@@ -476,9 +470,8 @@ impl AppState {
 
     /// Rótulo do estado real do container, lido do canal de controle.
     ///
-    /// A tela de execução usa este rótulo para o indicador de pausa: a TUI e o
-    /// executor compartilham o mesmo canal, então ele reflete o que o
-    /// `podman pause`/`unpause` realmente fez, e não a intenção do usuário.
+    /// TUI e executor compartilham o canal, então o rótulo reflete o que o
+    /// `podman pause`/`unpause` fez, não a intenção do usuário.
     pub fn run_control_label(&self) -> &'static str {
         self.orchestrator.control.label()
     }
@@ -491,19 +484,17 @@ impl AppState {
     /// Achados na ordem de leitura da tela: críticos primeiro (REQ15),
     /// preservando a ordem do pipeline dentro de cada severidade.
     ///
-    /// O relatório Markdown continua usando `orchestrator.findings` na ordem
-    /// original do pipeline; só a visão da TUI é ordenada por severidade.
+    /// Só a TUI é ordenada; o relatório usa a ordem original do pipeline.
     pub fn vulnerabilities(&self) -> Vec<Vulnerability> {
         let mut ordered = self.orchestrator.findings.clone();
         ordered.sort_by_key(|finding| severity_rank(finding.severity));
         ordered
     }
 
-    /// Registra uma ocorrência da execução preservando todas as anteriores.
+    /// Registra uma ocorrência preservando todas as anteriores.
     ///
-    /// `run_error` continua sendo o primeiro erro por natureza, usado nas linhas
-    /// de status resumidas; `run_issues` é a lista completa exibida na tela de
-    /// Execução e no resumo de Resultados.
+    /// `run_error` fica com o primeiro erro por natureza; `run_issues`, com a
+    /// lista completa exibida na Execução e no resumo de Resultados.
     pub fn record_run_issue(&mut self, scope: RunIssueScope, detail: impl Into<String>) {
         let detail = detail.into();
         self.run_issues.push(RunIssue {
@@ -568,12 +559,9 @@ impl AppState {
         }
     }
 
-    /// Drena os eventos do pipeline real.
-    ///
-    /// Não há contagem de ticks: cada transição de tela acontece no evento que
-    /// a justifica. O drain roda mesmo com uma camada sobreposta aberta, para
-    /// que o canal limitado não acumule eventos enquanto o usuário está na
-    /// ajuda ou nas configurações.
+    /// Drena os eventos do pipeline real: cada transição de tela acontece no
+    /// evento que a justifica, não em contagem de ticks. O drain roda mesmo com
+    /// camada sobreposta aberta, para o canal não acumular eventos.
     pub async fn step_tick(&mut self) {
         self.spawn_onboarding_probe();
         self.poll_onboarding_events().await;
@@ -582,8 +570,7 @@ impl AppState {
 
     /// Indica se há uma camada sobreposta capturando a interação.
     ///
-    /// Os atalhos de pausa e cancelamento são ignorados enquanto existe uma,
-    /// para que `p` e `c` não virem ação dentro de um overlay.
+    /// Com uma aberta, `p` e `c` são ignorados para não virarem ação no overlay.
     pub fn has_blocking_layer(&self) -> bool {
         self.show_settings
             || self.onboarding.is_some()
@@ -725,9 +712,8 @@ impl AppState {
                     for detail in &agent_history {
                         let detail = crate::utils::redaction::sanitize_text(detail);
                         self.exec_logs.push(format!("[ia] {detail}"));
-                        // Ponto de ligação com o serviço de análise com
-                        // provenance (issue #23): toda entrada de
-                        // `agent.execution_history` vira uma ocorrência visível.
+                        // Ligação com o serviço de análise (issue #23): toda
+                        // entrada de `agent.execution_history` vira ocorrência.
                         self.record_run_issue(RunIssueScope::Ai, detail);
                     }
                     self.llm_warning = agent_history
@@ -763,8 +749,7 @@ impl AppState {
                     self.analysis_phase = AnalysisPhase::Complete;
                     self.ai_activity = AiActivity::Complete;
                     self.analysis_findings = self.orchestrator.findings.len();
-                    // A análise acabou de verdade: sem espera artificial, os
-                    // resultados já podem ser revisados.
+                    // A análise terminou: os resultados já podem ser revisados.
                     self.step = AppStep::Results;
                     self.focus = FocusTarget::ResultsList;
                     completed = true;
@@ -843,8 +828,8 @@ impl AppState {
 
     /// Limite de scroll considerando as linhas visuais após a quebra automática.
     ///
-    /// Antes do primeiro render `log_total_lines` ainda é zero; nesse caso a
-    /// quantidade de entradas serve como piso para nunca perder linhas.
+    /// Antes do primeiro render `log_total_lines` é zero e a quantidade de
+    /// entradas serve de piso, para nunca perder linhas.
     pub fn log_max_scroll(&self) -> usize {
         let total = self.log_total_lines.max(self.exec_logs.len());
         total
@@ -878,12 +863,9 @@ impl AppState {
         }
     }
 
-    /// Inicia a execução das ferramentas selecionadas.
-    ///
-    /// Não existe "detecção de catálogo" na TUI: o catálogo vem do registry de
-    /// forma síncrona em `AppState::new`, portanto a listagem já está pronta
-    /// quando a tela aparece e a execução começa na primeira decisão real do
-    /// usuário (modo assistido) ou no primeiro quadro (modo automático).
+    /// Inicia a execução das ferramentas selecionadas: o catálogo já veio pronto
+    /// do registry (`AppState::new`), então a listagem não espera nada quando a
+    /// tela aparece.
     pub fn start_selected_tools(&mut self) {
         if self.step != AppStep::ToolSelect || !self.tools.iter().any(|tool| tool.selected) {
             return;
@@ -1109,10 +1091,9 @@ impl AppState {
                     }
                 }
             });
-            // A fase do agente de código roda depois da análise de logs, pela
-            // mesma razão do headless: os achados precisam existir e já estar
-            // classificados. O heartbeat continua vivo para que a TUI não fique
-            // parada durante a exploração do projeto.
+            // A fase do agente de código roda depois da análise de logs, como no
+            // headless: os achados precisam existir e estar classificados. O
+            // heartbeat continua vivo para a TUI não parecer travada.
             orchestrator.analyze_code(Some(&code_tx)).await;
             drop(code_tx);
             heartbeat.abort();
@@ -1386,9 +1367,8 @@ impl AppState {
 
     /// Monta a configuração a partir do rascunho **sem** gravar nada.
     ///
-    /// Separação necessária porque `save` toca o arquivo do usuário e o keyring
-    /// do sistema: o assistente de primeira execução precisa montar e validar o
-    /// candidato antes de decidir se ele vale a pena ser persistido.
+    /// `save` toca o arquivo do usuário e o keyring: o assistente precisa montar
+    /// e validar o candidato antes de decidir se ele será persistido.
     pub fn settings_candidate(&self) -> Result<Configuration, String> {
         let provider =
             LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx]);
@@ -1439,17 +1419,15 @@ impl AppState {
 
     /// Aplica uma configuração já validada e persistida.
     ///
-    /// Separado de [`Self::apply_settings`] porque `save` toca o disco do
-    /// usuário e o keyring do sistema: misturar as duas coisas tornaria
-    /// impossível verificar o efeito no estado sem uma máquina de verdade.
+    /// Separado de [`Self::apply_settings`] para o efeito no estado ser
+    /// verificável sem tocar o disco do usuário nem o keyring.
     pub(crate) fn commit_settings(&mut self, candidate: Configuration) {
         self.config = candidate;
         self.reset_settings_draft();
         self.show_settings = false;
         // Uma configuracao valida foi salva: o aviso de abertura perdeu o
-        // objeto e sai, para que a proxima execucao comece limpa. Se o `save`
-        // falhar, ele nem chega aqui — e o aviso continuar e o correto,
-        // porque o problema nao foi corrigido em lugar nenhum.
+        // objeto e sai, para a proxima execucao comecar limpa. Se o `save`
+        // falhasse, ele nao chegaria aqui e manter o aviso seria o correto.
         self.config_warning = None;
     }
 
@@ -1480,14 +1458,10 @@ impl AppState {
         }
     }
 
-    /// Cancela a execução em andamento pelo canal de controle compartilhado,
-    /// tanto na varredura quanto na análise da IA.
-    ///
-    /// O container é encerrado de forma cooperativa (`podman stop` seguido de
-    /// `podman rm --force`) pelo executor; a task **não** é abortada às cegas,
-    /// porque isso impediria a limpeza e a persistência da auditoria. O
-    /// cancelamento na tela de Análise também precisa existir: sem isso o
-    /// operador ficaria preso na espera pela resposta do modelo.
+    /// Cancela a execução pelo canal de controle compartilhado, na varredura e
+    /// na análise: a task não é abortada às cegas — isso impediria a limpeza e a
+    /// auditoria —, e o cancelamento na Análise evita prender o operador na
+    /// espera do modelo.
     pub fn cancel_run(&mut self) {
         if !matches!(self.step, AppStep::Execution | AppStep::Analysis) || self.exec_cancelled {
             return;
@@ -1584,13 +1558,9 @@ impl AppState {
         self.persist_cancelled_run();
     }
 
-    /// Persiste a execução sintética de cancelamento para auditoria.
-    ///
-    /// A TUI **não** executa nenhum scanner para isso: o registro é fabricado a
-    /// partir do estado da tela e serve apenas para deixar claro, no log
-    /// estruturado, qual ferramenta estava em execução quando o operador
-    /// cancelou. O registro real do container vem do executor, com o trace do
-    /// Podman, e é combinado a este.
+    /// Persiste a execução sintética de cancelamento para auditoria: nenhum
+    /// scanner roda, o registro é fabricado do estado da tela só para o log dizer
+    /// qual ferramenta estava em execução; o registro real vem do executor.
     fn persist_cancelled_run(&mut self) {
         self.orchestrator.record_interruption(
             crate::orchestrator::control::InterruptionReason::user_cancelled(),
@@ -1634,11 +1604,10 @@ impl AppState {
         self.agent.last_analysis = self.orchestrator.last_log.clone();
     }
 
-    /// Carrega o histórico de execuções gravados em disco.
-    ///
-    /// A leitura não altera nenhum artefato original; registros ilegíveis ficam
-    /// em [`ScanHistory::unreadable`](crate::orchestrator::scan_logger::ScanHistory)
-    /// e são exibidos ao usuário em vez de sumirem.
+    /// Carrega o histórico de execuções gravado em disco; a leitura não altera
+    /// nenhum artefato, e registros ilegíveis ficam em
+    /// [`ScanHistory::unreadable`](crate::orchestrator::scan_logger::ScanHistory)
+    /// e são exibidos em vez de sumir.
     pub fn load_history(&mut self) {
         match crate::orchestrator::scan_logger::list_scan_logs_from_dir(&self.history_dir) {
             Ok(history) => {
@@ -1696,9 +1665,8 @@ impl AppState {
 
     /// Motivo pelo qual um achado ficou sem origem no código.
     ///
-    /// O texto vem do relatório da fase, indexado pela posição do achado, e é
-    /// sanitizado porque é um diagnóstico que pode carregar detalhe do
-    /// transporte do provedor.
+    /// O texto vem do relatório da fase (indexado pela posição do achado) e é
+    /// sanitizado: o diagnóstico pode carregar detalhe do transporte.
     pub fn code_reason_for_index(&self, index: usize) -> Option<String> {
         self.orchestrator
             .last_code_report
@@ -1923,8 +1891,8 @@ mod tests {
         assert!(!app.run_issues.is_empty() || app.run_error.is_none());
     }
 
-    /// A cadência artificial sumiu: quantos quadros passem, a tela só muda
-    /// quando o pipeline emite o evento correspondente.
+    /// A tela só muda quando o pipeline emite o evento correspondente, quantos
+    /// quadros passem.
     #[tokio::test]
     async fn the_analysis_transition_waits_for_the_pipeline_and_not_for_ticks() {
         let mut app = app();

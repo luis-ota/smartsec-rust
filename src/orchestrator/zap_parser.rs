@@ -12,8 +12,8 @@ const EVIDENCE_LIMIT: usize = 300;
 /// Quantidade máxima de instâncias preservadas por alerta.
 ///
 /// O ZAP agrupa todas as URLs que dispararam o mesmo alerta em um único item com
-/// um array `instances`. Só as primeiras instâncias entram na evidência, para
-/// que um alerta repetido em centenas de URLs não inunde o relatório.
+/// um array `instances`; só as primeiras entram na evidência, para que um alerta
+/// repetido em centenas de URLs não inunde o relatório.
 const INSTANCE_LIMIT: usize = 3;
 
 /// Relatório JSON `traditional-json` do ZAP.
@@ -99,12 +99,11 @@ fn truncate(value: &str, limit: usize) -> String {
 
 /// Traduz o campo `riskcode` do ZAP para a severidade do SmartSec.
 ///
-/// A severidade do scanner é autoritativa (TCC_SPEC §7) e não é reinterpretada a
-/// partir do texto de `desc`/`riskdesc`: o ZAP publica um risco estruturado
-/// próprio, de `0` a `3`, e é dele que a classificação vem. O ZAP não tem o nível
-/// `Crítico` da taxonomia do SmartSec, então o risco alto é o teto. Um
-/// `riskcode` ausente ou fora da faixa vira `Info` em vez de ser elevado, para
-/// que uma saída inesperada nunca produza severidade maior do que a do scanner.
+/// A severidade do scanner é autoritativa (TCC_SPEC §7) e vem do risco
+/// estruturado de `0` a `3`, não do texto de `desc`/`riskdesc`. O ZAP não tem o
+/// nível `Crítico`, então risco alto é o teto; `riskcode` ausente ou fora da
+/// faixa vira `Info` em vez de ser elevado, para que saída inesperada nunca
+/// produza severidade maior que a do scanner.
 fn severity_for_risk(riskcode: &str) -> Severity {
     match riskcode.trim() {
         "3" => Severity::High,
@@ -128,9 +127,9 @@ fn confidence_label(confidence: &str) -> &'static str {
 
 /// Extrai o texto de um campo do ZAP escrito em HTML.
 ///
-/// Os campos `desc` e `solution` chegam como HTML do wiki do ZAP. O texto puro é
-/// suficiente para a descrição e a recomendação, e evita marcar o relatório com
-/// marcação vinda de fonte externa.
+/// Os campos `desc` e `solution` chegam como HTML do wiki do ZAP; o texto puro
+/// basta para descrição e recomendação e evita marcar o relatório com marcação
+/// de fonte externa.
 fn html_to_text(value: &str) -> String {
     let mut text = String::with_capacity(value.len());
     let mut inside_tag = false;
@@ -170,9 +169,8 @@ fn reference_for(alert: &ZapAlert) -> String {
 
 /// Constrói a URL absoluta a partir do alvo e da URI relatada pelo ZAP.
 ///
-/// O ZAP reporta a URL completa (`uri`). Ela é preservada como está, com a
-/// query string removida pela sanitização; quando a URI é relativa, é composta
-/// com o alvo.
+/// O ZAP reporta a URL completa (`uri`), preservada como está com a query string
+/// removida pela sanitização; quando a URI é relativa, é composta com o alvo.
 fn absolute_url(target: &str, uri: &str) -> String {
     let uri = uri.trim();
     if uri.is_empty() {
@@ -193,9 +191,9 @@ fn absolute_url(target: &str, uri: &str) -> String {
 /// proveniência completa.
 ///
 /// URL, método HTTP, referência (regra do add-on, variação e CWE) e evidência
-/// mínima sanitizada são preservados. O template `traditional-json` não traz
-/// cabeçalhos nem corpos de requisição/resposta, e a sanitização remove
-/// query strings e credenciais de qualquer campo que sobre.
+/// mínima sanitizada são preservados: o template `traditional-json` não traz
+/// cabeçalhos nem corpos de requisição/resposta, e a sanitização remove query
+/// strings e credenciais do que sobrar.
 #[allow(dead_code)]
 pub fn parse_zap_findings(json_output: &str, target: &str) -> Vec<Vulnerability> {
     parse_zap_findings_with_errors(json_output, target).0

@@ -1,7 +1,5 @@
-//! Trilha append-only das ações da IA, gravada enquanto a fase acontece.
-//!
-//! O log estruturado do scan só é escrito no fim, então uma fase interrompida
-//! não deixava registro do que a IA chegou a fazer.
+//! Trilha append-only das ações da IA, gravada enquanto a fase acontece: o log
+//! estruturado do scan só é escrito no fim, então uma fase interrompida se perde.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;

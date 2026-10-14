@@ -25,7 +25,7 @@ fn is_diagnostic(line: &str) -> bool {
 /// Parser `generic-text`: extrai achados informativos simples do texto.
 ///
 /// Cada linha não vazia e não diagnóstica vira um achado `Info` real com
-/// proveniência completa. Linhas repetidas são deduplicadas.
+/// proveniência completa; linhas repetidas são deduplicadas.
 pub fn parse_generic_findings_with_errors(
     output: &str,
     target: &str,

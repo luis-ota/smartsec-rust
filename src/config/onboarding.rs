@@ -165,8 +165,8 @@ impl OnboardingState {
 
 /// Gravação da configuração concluída.
 ///
-/// Separada do fluxo para que o teste observe quantas gravações acontecem sem
-/// tocar o arquivo do usuário nem o keyring.
+/// Separada do fluxo para o teste contar gravações sem tocar o arquivo do
+/// usuário nem o keyring.
 pub trait OnboardingPersister: Send {
     fn save(&self, config: &Configuration) -> Result<(), String>;
 }
@@ -182,10 +182,8 @@ impl OnboardingPersister for SystemOnboardingPersister {
 pub const KEYRING_BLOCK_REMOTE: &str = "o cofre de segredos do sistema recusou gravar a chave";
 pub const CONSENT_REFUSED: &str = "você recusou o envio dos logs para fora desta máquina";
 
-/// Primeira execução é a ausência do arquivo global de configuração.
-///
-/// Separado da leitura do disco para que a decisão seja verificável sem tocar
-/// o arquivo do usuário.
+/// Primeira execução é a ausência do arquivo global de configuração, separada
+/// da leitura do disco para a decisão ser verificável sem tocar o arquivo.
 pub fn is_first_run(config_exists: bool) -> bool {
     !config_exists
 }

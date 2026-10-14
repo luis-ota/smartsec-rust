@@ -24,13 +24,9 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     render_actions(app, frame, rows[2]);
 }
 
-/// Etapa real do pipeline e progresso mensurável.
-///
-/// O rótulo vem do estado observado pelo orquestrador (ferramentas concluídas,
-/// achados construídos, chamada de IA em curso) e o medidor só é fechado em
-/// `100` quando a etapa terminou de fato. Enquanto a IA trabalha não há
-/// porcentagem a mostrar, porque o pipeline não produz uma: o medidor fica
-/// indeterminado e a tela informa o tempo real decorrido.
+/// Rótulo e progresso vêm do estado observado pelo orquestrador: o medidor só
+/// fecha em `100` quando a etapa termina, e enquanto a IA trabalha o tempo
+/// decorrido substitui a porcentagem que o pipeline não produz.
 fn stage_state(app: &AppState) -> (String, Option<f64>) {
     match app.analysis_phase {
         AnalysisPhase::Scanning => {
@@ -73,8 +69,7 @@ fn render_stage(app: &AppState, frame: &mut Frame, area: Rect, label: &str, rati
                 .label(caption),
             inner,
         ),
-        // Sem porcentagem inventada: enquanto a etapa não produz um valor
-        // mensurável, a tela mostra o estado real e o tempo decorrido.
+        // Sem porcentagem inventada: o tempo decorrido é o único progresso real.
         None => frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(app.spinner_char(), Style::default().fg(color)),

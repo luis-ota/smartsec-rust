@@ -10,11 +10,9 @@ use crate::tools::zap::{ZAP_IMAGE, ZAP_VERSION};
 pub const RUNNER_NMAP: &str = "nmap";
 pub const RUNNER_NUCLEI: &str = "nuclei";
 pub const RUNNER_GENERIC: &str = "generic";
-/// Runner que monta o alvo dentro do container, em modo somente leitura.
-///
-/// Diferente do `generic`, que não recebe mount algum, o `repository` canonicaliza
-/// o diretório do repositório e o monta em `:ro`, porque o scanner precisa ler um
-/// repositório que vive no host.
+/// Runner que monta o alvo dentro do container, em modo somente leitura: o
+/// `repository` canonicaliza o diretório do repositório e o monta em `:ro`,
+/// diferente do `generic`, que não recebe mount algum.
 pub const RUNNER_REPOSITORY: &str = "repository";
 /// Runner do ZAP: monta o plano de automação e coleta o relatório gravado pelo container.
 pub const RUNNER_ZAP: &str = "zap";
@@ -121,11 +119,10 @@ pub struct RegisteredTool {
     pub parser: ParserKind,
 }
 
-/// Catálogo de ferramentas do SmartSec.
-///
-/// Contém os manifestos embutidos (Nmap e Nuclei) e as ferramentas registradas
-/// pela chave `[[tools]]` do TOML. Ferramentas duplicadas, campos obrigatórios
-/// ausentes e runner/parser desconhecidos produzem erros acionáveis em pt-BR.
+/// Catálogo de ferramentas do SmartSec: manifestos embutidos e ferramentas
+/// registradas pela chave `[[tools]]` do TOML. Entradas inválidas (duplicadas,
+/// campo obrigatório ausente, runner/parser desconhecido) viram erros
+/// acionáveis em pt-BR.
 #[derive(Clone, Debug, Default)]
 pub struct ToolRegistry {
     tools: Vec<RegisteredTool>,
@@ -305,10 +302,9 @@ fn nuclei_manifest() -> ToolManifest {
 
 /// Manifesto embutido do Nikto.
 ///
-/// Usa o runner `generic`: o `command_template` abaixo é o comando validado
-/// empiricamente no container (ver `docs/evidence/issue-14-nikto.md`), sem
-/// shell, com `-o -` para escrever o JSON no stdout e `-ask no` para impedir
-/// que o prompt do CIRT.net contamine a saída.
+/// Usa o runner `generic`: o `command_template` é o comando validado no
+/// container (`docs/evidence/issue-14-nikto.md`), sem shell e com `-o -` para
+/// escrever o JSON no stdout.
 fn nikto_manifest() -> ToolManifest {
     ToolManifest {
         name: "Nikto".to_string(),
@@ -326,10 +322,9 @@ fn nikto_manifest() -> ToolManifest {
 
 /// Manifesto embutido do SQLMap.
 ///
-/// Usa o runner `generic`: o `command_template` abaixo é o comando validado
-/// empiricamente no container (ver `docs/evidence/issue-15-sqlmap.md`), sem
-/// shell e sem arquivo. O SQLMap não tem modo JSON, então o `output_format` é
-/// `text` e o resultado é lido do stdout.
+/// Usa o runner `generic`: o `command_template` é o comando validado no
+/// container (`docs/evidence/issue-15-sqlmap.md`), sem shell e sem arquivo; o
+/// SQLMap não tem modo JSON, então o `output_format` é `text`.
 fn sqlmap_manifest() -> ToolManifest {
     ToolManifest {
         name: "SQLMap".to_string(),
@@ -346,12 +341,9 @@ fn sqlmap_manifest() -> ToolManifest {
 }
 /// Manifesto embutido do TruffleHog.
 ///
-/// Usa o runner `repository`: o `command_template` abaixo é o comando validado
-/// empiricamente no container (ver `docs/evidence/issue-18-trufflehog.md`), sem
-/// shell, com `--json` porque sem ele o TruffleHog imprime o valor do segredo em
-/// claro no stdout. O `{target}` é substituído pela URI resolvida pelo runner:
-/// `file:///alvo` para repositório local montado em somente leitura, ou a URI
-/// remota autorizada.
+/// Usa o runner `repository`: o comando foi validado no container
+/// (`docs/evidence/issue-18-trufflehog.md`), sem shell, com `--json` porque sem
+/// ele o TruffleHog imprime o valor do segredo em claro no stdout.
 fn trufflehog_manifest() -> ToolManifest {
     ToolManifest {
         name: "TruffleHog".to_string(),
@@ -361,11 +353,8 @@ fn trufflehog_manifest() -> ToolManifest {
         version: TRUFFLEHOG_VERSION.to_string(),
         runner: RUNNER_REPOSITORY.to_string(),
         parser: PARSER_TRUFFLEHOG_JSONL.to_string(),
-        // O `{target}` é a URI resolvida pelo runner: `file:///alvo` para
-        // repositório local montado em somente leitura, ou a URI remota
-        // autorizada. O mount em si é aplicado pelo executor, fora do comando.
-        // Passar o placeholder com montagem vazia devolve exatamente a mesma
-        // lista de `container_arguments`, com o marcador no lugar da URI.
+        // `{target}` é a URI resolvida pelo runner (`file:///alvo` para local
+        // montado, ou a URI remota); o mount é aplicado pelo executor.
         command_template: crate::tools::trufflehog::container_arguments(TARGET_PLACEHOLDER, ""),
         output_format: "jsonl".to_string(),
         enabled: true,
@@ -375,9 +364,8 @@ fn trufflehog_manifest() -> ToolManifest {
 ///
 /// O job `report` do ZAP sempre acrescenta a extensão do template ao nome do
 /// arquivo, então o relatório nunca vai para o stdout: o runner `zap` monta o
-/// plano de automação em memória, monta-o em somente leitura e coleta o
-/// relatório gravado no diretório de saída (ver
-/// `docs/evidence/issue-28-zap.md`).
+/// plano em memória e coleta o relatório do diretório de saída
+/// (`docs/evidence/issue-28-zap.md`).
 fn zap_manifest() -> ToolManifest {
     ToolManifest {
         name: "ZAP".to_string(),

@@ -7,11 +7,9 @@ pub trait LLMProvider: Send + Sync {
 
     /// Declara se o provedor implementa o turno com ferramentas.
     ///
-    /// O padrão é `false` de propósito: um provedor que não sabe conversar em
-    /// tool calling precisa se declarar incapaz **antes** de qualquer chamada.
-    /// Sem isso, o agente de código tentaria o turno, receberia texto solto sem
-    /// chamadas de ferramenta e poderia apresentar como observação do código
-    /// algo que o modelo inventou sem nunca ter lido um arquivo.
+    /// O padrão é `false` de propósito: um provedor sem tool calling precisa se
+    /// declarar incapaz **antes** de qualquer chamada, senão o agente receberia
+    /// texto solto e poderia apresentar como observação algo nunca lido.
     fn supports_tool_calling(&self) -> bool {
         false
     }

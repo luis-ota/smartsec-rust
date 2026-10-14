@@ -32,8 +32,8 @@ fn now_iso8601() -> String {
 
 /// Parseia a saída JSONL do Nuclei e retorna achados reais com proveniência completa.
 ///
-/// Todos os achados produzidos têm `source: FindingSource::Real`.
-/// Nenhum `Box::leak` é utilizado; todos os campos são `String`.
+/// Todos os achados têm `source: FindingSource::Real`; nenhum `Box::leak` é
+/// utilizado, todos os campos são `String`.
 #[allow(dead_code)]
 pub fn parse_nuclei_findings(jsonl_output: &str, target: &str) -> Vec<Vulnerability> {
     parse_nuclei_findings_with_errors(jsonl_output, target).0

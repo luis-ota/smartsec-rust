@@ -16,9 +16,8 @@ pub(crate) struct ProviderOutcome {
     pub fallback_used: bool,
     /// Erro do provedor principal quando a alternativa local respondeu.
     ///
-    /// Sem este campo o log estruturado registraria `llm_fallback_used: true`
-    /// sem explicar **por que** o provedor configurado foi abandonado, e a
-    /// queda passaria a parecer uma escolha em vez de uma falha.
+    /// Sem ele o log registraria `llm_fallback_used: true` sem explicar por que
+    /// o provedor configurado foi abandonado, e a queda pareceria escolha.
     pub primary_error: Option<String>,
 }
 
@@ -98,23 +97,19 @@ impl AIAgent {
         self.provider_label.clone()
     }
 
-    /// Provedor configurado como `dyn LLMProvider`, para a fase do agente de
-    /// código (issue #76).
+    /// Provedor configurado, para a fase do agente de código (issue #76).
     ///
-    /// O provedor é devolvido por referência viva, e não clonado, porque o agente
-    /// de código conversa em vários turnos com o mesmo provedor: clonar exigiria
-    /// `Clone` no trait e duplicaria estado de sessão em cada achado.
+    /// Devolvido por referência viva porque o agente de código conversa em
+    /// vários turnos: clonar duplicaria estado de sessão a cada achado.
     pub fn provider_handle(&self) -> &dyn LLMProvider {
         self.provider.as_ref()
     }
 
     /// `true` quando o provedor configurado pode receber dados do alvo.
     ///
-    /// O agente de código usa este sinal **antes** de qualquer chamada, e não
-    /// apenas para bloquear a requisição: sem ele, um provedor remoto sem
-    /// consentimento receberia trechos do código do alvo auditado, o que RNF10
-    /// proíbe de forma mais estrita do que proíbe o envio de logs, porque o
-    /// código é o ativo protegido do cliente.
+    /// O agente de código consulta este sinal **antes** de qualquer chamada: sem
+    /// ele, um provedor remoto sem consentimento receberia o código do alvo, que
+    /// o RNF10 proíbe enviar de forma mais estrita que o envio de logs.
     pub fn allows_target_data(&self) -> bool {
         self.remote_allowed && self.configuration_error.is_none()
     }
@@ -252,16 +247,11 @@ impl AIAgent {
     /// Executa o prompt na cadeia principal -> alternativa local dentro de um
     /// orçamento de tempo único.
     ///
-    /// O prazo (RNF04) é contado uma vez e **dividido**: o provedor principal
-    /// recebe `primary_share` e a alternativa local fica com o restante. Sem
-    /// essa divisão, um provedor principal que trava consumiria os 45 segundos
-    /// inteiros — o mesmo valor de `timeout_secs` validado pela configuração —
-    /// e a alternativa local jamais seria llamada, tornando o fallback (RNF06)
-    /// decorativo no caminho que mais importa, que é a queda do provedor.
+    /// Divide o prazo (RNF04) entre principal e alternativa local; sem isso um
+    /// principal que trava consumiria os 45 s e o fallback (RNF06) nunca rodaria.
     ///
-    /// O retorno identifica qual provedor respondeu e carrega o erro do
-    /// principal, porque o resultado persistido precisa distinguir "a
-    /// alternativa respondeu" de "a alternativa nunca foi tentada".
+    /// O retorno identifica quem respondeu e carrega o erro do principal, para
+    /// distinguir "a alternativa respondeu" de "a alternativa nunca foi tentada".
     pub(crate) async fn execute_with_fallback(
         &mut self,
         prompt: &str,
@@ -352,14 +342,10 @@ fn prompt_limit(deadline: Duration, started: Instant) -> Duration {
     deadline.saturating_sub(started.elapsed())
 }
 
-/// Fatia do orçamento reservada ao provedor principal.
-///
-/// A alternativa local fica com o que sobrar, o que é o mínimo necessário para
-/// ela conseguir responder. Com o padrão de 45 s, o principal recebe 33 s e a
-/// alternativa 12 s; a soma continua sendo o teto de RNF04.
 /// Fração do orçamento reservada ao provedor principal: 3/4.
 ///
-/// O restante fica com a alternativa local. Ver `primary_budget`.
+/// O restante fica com a alternativa local (45 s → 33 s/12 s); a soma continua
+/// sendo o teto de RNF04. Ver `primary_budget`.
 pub(crate) const PRIMARY_BUDGET_NUMERATOR: u32 = 3;
 pub(crate) const PRIMARY_BUDGET_DENOMINATOR: u32 = 4;
 

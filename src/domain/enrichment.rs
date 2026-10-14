@@ -1,8 +1,8 @@
 //! Contexto externo e multi-origem anexado a um achado.
 //!
-//! These types complete the finding contract of REQ11/REQ12. They are
-//! deliberately additive: every field has a serde default so that audit logs
-//! persisted before issue #19 keep deserializing.
+//! Estes tipos completam o contrato de achados de REQ11/REQ12 e são
+//! deliberadamente aditivos: todo campo tem default do serde para que logs de
+//! auditoria persistidos antes da issue #19 continuem desserializando.
 //!
 //! Regra central (TCC_SPEC.md §7): a severidade do scanner é autoritativa.
 //! O enriquecimento NVD **acrescenta** contexto e **nunca** reclassifica o
@@ -75,7 +75,7 @@ pub struct CveEnrichment {
 }
 
 impl CveEnrichment {
-    /// Line única para relatório e tela, em pt-BR, sem corpo HTTP.
+    /// Linha única para relatório e tela, em pt-BR, sem corpo HTTP.
     pub fn summary_pt_br(&self) -> String {
         let score = self
             .cvss_base_score
@@ -125,7 +125,7 @@ impl CveEnrichment {
 /// autoritativa e a classificação da NVD é mantida ao lado para auditoria.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeverityConflict {
-    /// Detalhe em pt-BR com a severidade de cada origem quereportou.
+    /// Detalhe em pt-BR com a severidade de cada origem que reportou.
     pub detail: String,
     /// Severidade da NVD, quando o enriquecimento foi consultado.
     pub nvd_severity: Option<Severity>,

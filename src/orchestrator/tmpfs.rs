@@ -1,42 +1,39 @@
 //! Verificação de que um diretório de escrita efêmera do host está em `tmpfs`.
 //!
 //! O TCC (`TCC_SPEC.md`) exige que a configuração temporária e o relatório do
-//! scanner fiquem restritos a `tmpfs`. O requisito não pode ser satisfeito por
-//! construção apenas olhando o `TMPDIR`: o processo herda o `TMPDIR` do
-//! ambiente, e em uma máquina (ou runner de CI) em que ele aponte para um
-//! diretório comum em disco, o mesmo código passaria a gravar fora da regra sem
-//! nenhum sinal. Por isso a condição é **verificada em execução**, e a falha é
-//! explícita: sem `tmpfs`, a execução não acontece.
+//! scanner fiquem restritos a `tmpfs`. Olhar só o `TMPDIR` herdado do ambiente
+//! não basta: numa máquina (ou runner de CI) em que ele aponte para disco comum,
+//! o mesmo código gravaria fora da regra sem nenhum sinal. Por isso a condição é
+//! **verificada em execução** e a falha é explícita: sem `tmpfs`, a execução não
+//! acontece.
 //!
 //! ## Como o tipo do filesystem é obtido
 //!
-//! `std::fs::metadata` não serve: ele devolve o modo, o dono e o tipo de inode,
-//! não o tipo do sistema de arquivos. Sem adicionar dependência, o tipo é
-//! resolvido lendo `/proc/self/mountinfo` e casando o ponto de montagem do
-//! diretório. `mountinfo` foi escolhido em vez de `/proc/mounts` porque
-//! carrega o conjunto completo de campos por entrada, é o mesmo formato
-//! consumido por `statx`/`openat2` no kernel e não depende de resolução de
-//! nomes de blocos.
+//! `std::fs::metadata` devolve o modo, o dono e o tipo de inode, não o sistema
+//! de arquivos. Sem adicionar dependência, o tipo é resolvido lendo
+//! `/proc/self/mountinfo` e casando o ponto de montagem do diretório; escolhido
+//! em vez de `/proc/mounts` porque carrega o conjunto completo de campos por
+//! entrada, é o mesmo formato consumido por `statx`/`openat2` e não depende de
+//! resolução de nomes de blocos.
 //!
 //! ## Limitações conhecidas (documentadas, não escondidas)
 //!
-//! - **Namespace de montagens:** a tabela lida é a do *namespace* do processo
-//!   (`/proc/self/mountinfo`). Se o `SmartSec` for executado em um namespace
-//!   diferente do que o container enxerga, os dois podem divergir. O
-//!   Podman rootless não cria namespace de montagem próprio para o processo do
-//!   host, e o bind mount referencia o mesmo inode do host, então a checagem
-//!   vale para o objeto que é de fato montado.
+//! - **Namespace de montagens:** a tabela é a do *namespace* do processo
+//!   (`/proc/self/mountinfo`); se o `SmartSec` rodar em namespace diferente do
+//!   que o container enxerga, os dois podem divergir. O Podman rootless não cria
+//!   namespace de montagem próprio para o processo do host, e o bind mount
+//!   referencia o mesmo inode do host, então a checagem vale para o objeto
+//!   montado.
 //! - **Symlink:** o caminho verificado é canonicalizado antes do casamento, de
 //!   modo que um `TMPDIR` que é symlink para disco é detectado. Um symlink
 //!   trocado entre a verificação e a criação do diretório (TOCTOU) ficaria fora
-//!   do alcance desta checagem; a janela exige escrita no `TMPDIR` por um
-//!   processo concorrente.
-//! - **`overlay`:** o tipo `overlay` **não** é aceito. Ele é a camada
-//!   copy-on-write de um container, e o dado escrito nele vive no diretório
-//!   superior, normalmente em disco do host: aceitar `overlay` equivaleria a
-//!   aceitar escrita em disco com outro nome, que é exatamente o que a regra do
-//!   TCC proíbe. Em container de CI o `/tmp` costuma ser uma `tmpfs` própria; se
-//!   não for, a execução falha e a mensagem diz como corrigir o ambiente.
+//!   do alcance; a janela exige escrita no `TMPDIR` por processo concorrente.
+//! - **`overlay`:** o tipo `overlay` **não** é aceito: é a camada copy-on-write
+//!   do container, e o dado escrito nele vive no diretório superior, normalmente
+//!   em disco do host — aceitar `overlay` seria aceitar escrita em disco com
+//!   outro nome, exatamente o que a regra do TCC proíbe. Em container de CI o
+//!   `/tmp` costuma ser uma `tmpfs` própria; se não for, a execução falha e a
+//!   mensagem diz como corrigir o ambiente.
 //! - **Kernels sem `mountinfo`:** se a tabela não puder ser lida, a verificação
 //!   falha. Degradar para "assumir `tmpfs`" reintroduziria a violação silenciosa
 //!   que a verificação existe para impedir.
@@ -59,10 +56,9 @@ pub struct MountEntry {
 
 /// Fonte do tipo de filesystem que contém um caminho.
 ///
-/// A separação existe para que o tipo possa ser **injetado** nos testes: o
-/// caminho negativo (diretório em disco comum) precisa ser exercitado sem
-/// depender da máquina de teste. O fluxo real nunca injeta nada e usa
-/// [`ProcMounts`].
+/// A separação permite **injetar** o tipo nos testes: o caminho negativo
+/// (diretório em disco comum) precisa ser exercitado sem depender da máquina de
+/// teste; o fluxo real usa [`ProcMounts`].
 pub trait FilesystemProbe {
     /// Tipo do filesystem que contém `path`.
     ///

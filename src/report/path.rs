@@ -9,10 +9,8 @@ pub const PDF_EXTENSION: &str = "pdf";
 
 /// Resolve o caminho do relatório Markdown a partir de `output_file`/`output_dir`.
 ///
-/// `output_dir` tem precedência sobre o diretório de `output_file`: quando ele
-/// está definido, apenas o nome do arquivo é reaproveitado. O diretório é
-/// criado aqui para que a falha de escrita seja visível antes de qualquer
-/// tentativa de gravar o artefato.
+/// Com `output_dir` definido, só o nome do arquivo é reaproveitado; o diretório
+/// de destino é criado na gravação do artefato.
 pub fn resolve_report_path(config: &Configuration) -> Result<std::path::PathBuf> {
     let file = config
         .output_file
@@ -23,15 +21,12 @@ pub fn resolve_report_path(config: &Configuration) -> Result<std::path::PathBuf>
     Ok(resolve_in_dir(file, config.output_dir.as_deref()))
 }
 
-/// Aplica a mesma resolução de [`resolve_report_path`] trocando a extensão por PDF.
-///
-/// O PDF é sempre gravado ao lado do Markdown e com o mesmo nome, para que os
-/// dois artefatos de uma execução sejam encontrados juntos (REQ18).
+/// Troca a extensão do caminho do Markdown por PDF (REQ18): os dois artefatos
+/// ficam lado a lado, com o mesmo nome.
 pub fn resolve_pdf_path(markdown_path: &std::path::Path) -> std::path::PathBuf {
     markdown_path.with_extension(PDF_EXTENSION)
 }
 
-/// Monta o caminho final a partir do nome do arquivo e do diretório de saída.
 fn resolve_in_dir(file: &str, output_dir: Option<&str>) -> std::path::PathBuf {
     let Some(directory) = output_dir.map(str::trim).filter(|dir| !dir.is_empty()) else {
         return std::path::PathBuf::from(file);

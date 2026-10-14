@@ -30,10 +30,8 @@ pub struct Configuration {
     pub max_critical_findings: usize,
     /// Diretório do projeto analisado pelo agente de código (issue #76).
     ///
-    /// `None` significa "diretório atual": o SmartSec é uma CLI e espera ser
-    /// iniciado no workdir da aplicação auditada. Mesmo quando ausente, o valor
-    /// efetivo é canonicalizado e registrado no log estruturado e no relatório,
-    /// para que a auditoria saiba qual árvore foi lida.
+    /// `None` = diretório atual: a CLI roda no workdir da aplicação auditada, e o
+    /// valor efetivo é canonicalizado para o log estruturado e o relatório.
     pub project_dir: Option<String>,
     pub show_help: bool,
     pub show_version: bool,
@@ -53,15 +51,10 @@ impl Configuration {
         crate::config::persistence::load_config_file().into()
     }
 
-    /// Carrega a configuração para a TUI **sem** abortar quando ela é inválida.
-    ///
-    /// A TUI precisa abrir justamente para permitir corrigir o que está
-    /// errado: abortar deixa o operador sem caminho, porque a tela que
-    /// resolve o problema é a própria que não abre. O modo headless continua
-    /// validando e falhando, por [`Self::load`].
-    ///
-    /// Devolve a configuração e a lista de problemas encontrados, para que a
-    /// interface consiga exibi-los em vez de imprimi-los e sair.
+    /// Carrega a configuração para a TUI **sem** abortar quando ela é inválida: a
+    /// tela que resolve o problema é a própria que não abriria, e abortar deixaria
+    /// o operador sem caminho. Devolve a configuração e a lista de problemas; o
+    /// headless continua validando e falhando, por [`Self::load`].
     pub fn load_for_tui() -> Result<(Self, Vec<String>), String> {
         let mut config = Self::load_unvalidated();
         config
@@ -73,11 +66,8 @@ impl Configuration {
 
     /// Lista os problemas de configuração **sem** interrompê-los.
     ///
-    /// Reúne os dois pontos que abortam o fluxo — a LLM e as ferramentas
-    /// registradas — na ordem em que o operador precisa corrigir. A ordem
-    /// importa: sem chave de LLM remota não há análise, e sem ferramenta
-    /// válida não há varredura, mas a segunda correção depende da primeira
-    /// quando o operador ainda nem chegou a configurá-la.
+    /// Reúne LLM e ferramentas na ordem em que o operador precisa corrigir: sem
+    /// chave remota não há análise, e a correção das ferramentas depende dela.
     pub fn validation_problems(&self) -> Vec<String> {
         let mut problems = Vec::new();
         if let Err(error) = self.llm.validate() {
@@ -204,10 +194,8 @@ impl Configuration {
 
     /// Diretório do projeto analisado, com padrão no diretório atual.
     ///
-    /// O caminho devolvido é o que o agente de código vai canonicalizar e abrir
-    /// como raiz do sandbox; a validação real acontece em
-    /// `code_agent::workspace::Workspace::open`, que exige um diretório
-    /// existente e legível.
+    /// O caminho devolvido é o que o agente canonicaliza e abre como raiz do
+    /// sandbox; a validação real é de `code_agent::workspace::Workspace::open`.
     pub fn effective_project_dir(&self) -> PathBuf {
         self.project_dir
             .as_deref()

@@ -257,9 +257,8 @@ impl AppState {
 
 /// Índice do provedor local na lista de rótulos.
 ///
-/// Localizado pelo endpoint padrão em loopback em vez de por posição fixa: a
-/// ordem e os rótulos dos provedores evoluem, e o assistente precisa continuar
-/// escolhendo o provedor que não manda nada para fora da máquina.
+/// Localizado pelo endpoint loopback em vez de posição fixa: a ordem dos
+/// provedores evolui e o assistente precisa continuar escolhendo o local.
 fn local_provider_index() -> usize {
     LlmProviderKind::all_labels()
         .iter()

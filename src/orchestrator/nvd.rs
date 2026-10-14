@@ -25,7 +25,7 @@
 //! Cada consulta é gravada em `~/.config/smartsec/nvd-cache/{cve}.json` com o
 //! TTL documentado de [`CACHE_TTL_DAYS`] (7 dias). O dado de terceiro
 //! envelhece, e o relatório precisa dizer de quando ele é: `queried_at`
-//! travels junto da resposta, inclusive quando ela vem do cache.
+//! viaja junto da resposta, inclusive quando ela vem do cache.
 //!
 //! [5 requisições a cada 30 segundos sem chave de API]: https://nvd.nist.gov/developers/vulnerabilities
 //! [50 requisições a cada 30 segundos com chave]: https://nvd.nist.gov/developers/vulnerabilities
@@ -148,8 +148,8 @@ pub fn has_api_key() -> bool {
 
 /// Limite de taxa em vigor, em pt-BR, para o relatório.
 ///
-/// A chave nunca é impressa: apenas se existe ou não. Ela é lida de variável de
-/// ambiente e não aparece em log, arquivo ou relatório.
+/// A chave nunca é impressa, apenas se existe ou não, e não aparece em log,
+/// arquivo nem relatório.
 pub fn rate_limit_pt_br() -> String {
     let com_chave = has_api_key();
     let (requisicoes, intervalo) = if com_chave {
@@ -168,12 +168,9 @@ pub fn rate_limit_pt_br() -> String {
     )
 }
 
-/// Resposta da NVD para a consulta por `cveId`. Somente o necessário é tipado;
-/// o restante da resposta é ignorado de propósito, para não persistir dados de
-/// terceiros que o SmartSec não usa.
-///
-/// Campos desconhecidos são aceitos de propósito: a NVD acrescenta campos com
-/// frequência e ignorá-los é o comportamento correto.
+/// Resposta da NVD para a consulta por `cveId`: só o necessário é tipado e
+/// campos desconhecidos são aceitos de propósito (a NVD acrescenta campos com
+/// frequência), para não persistir dados de terceiros que o SmartSec não usa.
 #[derive(Debug, Deserialize)]
 struct NvdResponse {
     #[serde(default)]
@@ -391,10 +388,9 @@ impl NvdClient {
             });
         }
 
-        // O envelope precisa ser um objeto com `vulnerabilities`. Um array ou um texto
-        // no lugar do objeto indica proxy, portal cativo ou página de erro, e
-        // não uma resposta da NVD. Sem esta checagem um `[]` seria lido como
-        // "CVE inexistente" e a indisponibilidade passaria por resultado limpo.
+        // O envelope precisa ser um objeto com `vulnerabilities`: array ou texto
+        // indica proxy, portal cativo ou página de erro. Sem esta checagem um `[]`
+        // viraria "CVE inexistente" em vez de indisponibilidade visível.
         let bruto = response.text().await.map_err(|error| NvdError {
             message: format!("a NVD devolveu resposta ilegível para {cve_id}: {error}"),
             retryable: is_retryable(&error),
@@ -556,7 +552,7 @@ fn pick_reference(references: &[NvdReference]) -> Option<String> {
 
 /// Traduz a severidade declarada pela NVD.
 ///
-/// Rótulos desconhecidos viram `None`: semCVSS a NVD não diz nada, e inventar
+/// Rótulos desconhecidos viram `None`: sem CVSS a NVD não diz nada, e inventar
 /// uma severidade seria exatamente o que a regra de não reclassificar proíbe.
 fn severity_from_label(label: Option<&str>) -> Option<Severity> {
     match label.map(|label| label.to_ascii_uppercase()).as_deref() {
@@ -673,19 +669,12 @@ mod tests {
       ]
     }"#;
 
-    /// Teste de integração real contra a API pública da NVD.
+    /// Teste de integração real contra a API pública da NVD; não roda por padrão
+    /// porque o limite público (5 requisições a cada 30 s) é compartilhado com a
+    /// suíte, e a falha dependeria do momento, não do código.
     ///
-    /// Não roda por padrão: o limite público da NVD é de 5 requisições a cada
-    /// 30 segundos, e a suíte emite mais que isso, então o resultado passa a
-    /// depender do momento em que a suíte roda. Com o limite atingido, a
-    /// resposta vira `Unavailable` e o teste falha **sem que nada tenha mudado
-    /// no código** — o sinal se perde e a reprodutibilidade quebrada.
-    ///
-    /// Para executar sob demanda:
-    /// `cargo test -- --ignored consulta_real_na_nvd`
-    ///
-    /// A degradação por limite de taxa, que é o comportamento mais importante
-    /// deste módulo, tem cobertura offline por mock HTTP.
+    /// Sob demanda: `cargo test -- --ignored consulta_real_na_nvd`. A degradação
+    /// por limite de taxa tem cobertura offline por mock HTTP.
     #[ignore = "consulta a API publica da NVD; sujeita ao limite de taxa"]
     #[tokio::test]
     async fn consulta_real_na_nvd_persiste_cve_cvss_referencia_e_data() {
@@ -731,10 +720,8 @@ mod tests {
 
     /// O cache é consultado **antes** de qualquer requisição de rede, e a data da
     /// consulta original é preservada: dado de terceiro envelhece e o relatório
-    /// precisa declarar quando foi obtido.
-    ///
-    /// O teste semeia o cache em vez de chamar a rede, para ser determinístico e
-    /// para não gastar uma requisição do limite público da NVD.
+    /// precisa declarar quando foi obtido. O teste semeia o cache em vez de
+    /// chamar a rede, para ser determinístico e não gastar o limite público.
     #[tokio::test]
     async fn segunda_consulta_vem_do_cache_sem_ir_a_rede() {
         let client = NvdClient::with_cache_dir(temp_cache_dir()).expect("cliente");
@@ -764,13 +751,9 @@ mod tests {
         assert!(do_cache.summary_pt_br().contains("cache local"));
     }
 
-    /// Regressão: o cache precisa valer [`CACHE_TTL_DAYS`], e não o tempo limite de
-    /// requisição.
-    ///
-    /// Versão anterior desta issue passava `REQUEST_TIMEOUT * 4` (40 s) para
-    /// `read_cache`. Na prática isso fazia cada execução voltar à NVD, estourando o
-    /// limite público de taxa sem necessidade — observado na execução real. Este
-    /// teste fixa o TTL real e prova a diferença entre os dois.
+    /// Regressão: o cache precisa valer [`CACHE_TTL_DAYS`], e não o tempo limite
+    /// de requisição — `REQUEST_TIMEOUT * 4` (40 s) fazia cada execução voltar à
+    /// NVD e estourar o limite público, defeito observado na execução real.
     #[test]
     fn o_ttl_do_cache_e_o_documentado_e_nao_o_tempo_de_requisicao() {
         assert_eq!(cache_ttl(), Duration::from_secs(7 * 24 * 60 * 60));
@@ -851,19 +834,10 @@ mod tests {
         assert!(matches!(resultado, NvdOutcome::Enriched(_)));
     }
 
-    /// Teste de integração real contra a API pública da NVD.
-    ///
-    /// Não roda por padrão: o limite público da NVD é de 5 requisições a cada
-    /// 30 segundos, e a suíte emite mais que isso, então o resultado passa a
-    /// depender do momento em que a suíte roda. Com o limite atingido, a
-    /// resposta vira `Unavailable` e o teste falha **sem que nada tenha mudado
-    /// no código** — o sinal se perde e a reprodutibilidade quebrada.
-    ///
-    /// Para executar sob demanda:
-    /// `cargo test -- --ignored consulta_real_na_nvd`
-    ///
-    /// A degradação por limite de taxa, que é o comportamento mais importante
-    /// deste módulo, tem cobertura offline por mock HTTP.
+    /// Teste de integração real contra a API pública da NVD; não roda por padrão
+    /// porque o limite de taxa é compartilhado com a suíte, e a falha dependeria
+    /// do momento, não do código. Sob demanda: `cargo test -- --ignored
+    /// cve_inexistente_vem_como_nao_encontrado_e_nao_como_erro`.
     #[ignore = "consulta a API publica da NVD; sujeita ao limite de taxa"]
     #[tokio::test]
     async fn cve_inexistente_vem_como_nao_encontrado_e_nao_como_erro() {

@@ -1,11 +1,7 @@
-/// Imagem e versão do TruffleHog usadas pelo manifesto embutido.
+/// Imagem e versão do TruffleHog do manifesto embutido.
 ///
-/// A imagem é fixada por digest para que a versão do scanner seja auditável no
-/// log estruturado (RNF09) e não dependa de uma tag mutável. O digest é
-/// multi-arch: a mesma referência resolve localmente sem pull e reporta a
-/// versão declarada em `TRUFFLEHOG_VERSION`.
-///
-/// Origem empírica de todos os valores deste arquivo:
+/// O digest é multi-arch e mantém a versão auditável no log estruturado (RNF09)
+/// sem depender de uma tag mutável; origem empírica em
 /// `docs/evidence/issue-18-trufflehog.md`.
 pub const TRUFFLEHOG_IMAGE: &str = "docker.io/trufflesecurity/trufflehog@sha256:52e67fef4d054ecff5c2ce4b4ae376626d1ef54aa0898b53cac19c25e92e14db";
 /// Versão do TruffleHog reportada por `--version` dentro da imagem fixada.
@@ -13,69 +9,58 @@ pub const TRUFFLEHOG_VERSION: &str = "3.97.9";
 
 /// Ponto de montagem do repositório dentro do container.
 ///
-/// O repositório analisado entra **somente leitura** (`TCC_SPEC.md` §7: "os
-/// templates sao montados em modo somente leitura"), pela mesma razão pela
-/// qual os templates do Nuclei são montados: o scanner precisa ler um diretório
-/// do host, e o executor sempre acrescenta a sufixo `:ro` ao volume. O
-/// TruffleHog só precisa de leitura, então o ganho de escrita seria zero.
+/// O repositório entra **somente leitura** (`TCC_SPEC.md` §7), como os templates
+/// do Nuclei: o executor sempre acrescenta o sufixo `:ro` ao volume, e o
+/// TruffleHog só precisa de leitura.
 pub const REPOSITORY_MOUNT_PATH: &str = "/alvo";
 
-/// Prefixo do esquema que identifica um repositório remoto autorizado.
+/// Prefixos de esquema que identificam um repositório remoto autorizado.
 ///
-/// O `git` do TruffleHog aceita `https://`, `http://`, `ssh://` e `file://`.
-/// O SmartSec só encaminha os dois primeiros, porque são os únicos que a
-/// validação de alvo da configuração aceita.
+/// O `git` do TruffleHog aceita `https://`, `http://`, `ssh://` e `file://`;
+/// só os dois primeiros passam pela validação de alvo da configuração.
 pub const REMOTE_URI_PREFIXES: &[&str] = &["https://", "http://"];
 
 /// Argumentos do container para a varredura de um repositório.
 ///
-/// A imagem declara `ENTRYPOINT ["trufflehog"]`, e o executor monta
-/// `podman create … IMAGEM <argumentos>`. Cada item é um argumento literal:
+/// A imagem declara `ENTRYPOINT ["trufflehog"]` e o executor monta
+/// `podman create … IMAGEM <argumentos>`; cada item é um argumento literal:
 /// nenhum shell é usado.
 ///
-/// `container_repo_path` é o ponto de montagem do repositório local. Quando
-/// não está vazio, o alvo vira `file://<mount>` e nenhum caminho do host
-/// atravessa o comando. Quando está vazio, `target` é um repositório remoto já
-/// autorizado e é repassado como URI.
+/// `container_repo_path` é o ponto de montagem do repositório local: quando não
+/// está vazio, o alvo vira `file://<mount>` e nenhum caminho do host atravessa o
+/// comando; quando está vazio, `target` é um repositório remoto já autorizado.
 ///
-/// O subcomando `git` abre a lista porque o `command_template` do manifesto
-/// exige que o primeiro item seja o executável e não comece com `-`. Repetir
-/// `trufflehog` como primeiro item **não** funciona: o CLIKING do TruffleHog
-/// rejeita com `expected command but got "trufflehog"` e exit 1, medido. As
-/// flags globais são aceitas normalmente depois do subcomando, então a ordem
-/// não altera o resultado.
+/// O subcomando `git` abre a lista porque o `command_template` do manifesto exige
+/// que o primeiro item seja o executável e não comece com `-`. Repetir
+/// `trufflehog` **não** funciona: o CLI rejeita com `expected command but got
+/// "trufflehog"` e exit 1, medido; as flags globais são aceitas depois dele.
 ///
-/// Cada flag existe por um motivo medido em container real, não por hábito:
+/// Cada flag existe por um motivo medido em container:
 ///
-/// - `--json` **obrigatório**. Sem ele o TruffleHog imprime o valor completo
-///   do segredo em texto legível no stdout (`Found unverified result …
-///   Raw result: -----BEGIN RSA PRIVATE KEY----- …`). É o modo que torna a
-///   integração possível, e o `--json` sozinho não resolve a exposição: os
-///   campos `Raw`, `RawV2` e `SecretParts` continuam carregando o segredo
-///   inteiro, e o parser os descarta por allow-list.
-/// - `--no-update` **obrigatório**. Sem ele o auto-updater tenta gravar o
-///   binário novo sob o `--read-only` do executor, falha com
-///   `cannot move binary (exit status 1)` e **aborta a varredura inteira**
-///   com exit 1 e stdout vazio. O SmartSec reportaria "nenhum segredo
-///   encontrado" para uma varredura que sequer executou.
-/// - `--fail-on-scan-errors` **obrigatório**. Sem ele, um alvo inexistente
-///   termina com exit 0 e stdout vazio, e o `lstat … no such file or
-///   directory` fica só no stderr: o scanner não autorizaria o alvo
-///   silenciosamente como varredura limpa.
-/// - `--no-verification` desliga a verificação remota. A verificação sai pela
-///   rede para o endpoint do provedor de cada detector **enviando o segredo
-///   detectado**, e degrada em silêncio quando a rede não responde: medido,
-///   3,58 s e 3 tentativas a mais, com o achado rebaixado para `unverified`
-///   e nenhum erro reportado. Desligada por padrão, a decisão está registrada
-///   para review.
-/// - `--no-color` evita sequências ANSI no JSONL. O executor não aloca TTY, e
-///   a cor poluiria a evidência parsada sem acrescentar informação.
+/// - `--json` **obrigatório**: sem ele o TruffleHog imprime o segredo em texto
+///   legível no stdout (`Raw result: -----BEGIN RSA PRIVATE KEY----- …`), e o
+///   `--json` sozinho não resolve a exposição, porque `Raw`, `RawV2` e
+///   `SecretParts` ainda carregam o segredo inteiro — o parser os descarta por
+///   allow-list.
+/// - `--no-update` **obrigatório**: sem ele o auto-updater falha ao gravar o
+///   binário novo sob o `--read-only` com `cannot move binary (exit status 1)` e
+///   **aborta a varredura inteira** com exit 1 e stdout vazio, que o SmartSec
+///   reportaria como "nenhum segredo encontrado".
+/// - `--fail-on-scan-errors` **obrigatório**: sem ele um alvo inexistente termina
+///   com exit 0 e stdout vazio, com `lstat … no such file or directory` só no
+///   stderr, e a varredura passaria por limpa.
+/// - `--no-verification` desliga a verificação remota, que sai pela rede para o
+///   provedor de cada detector **enviando o segredo detectado** e degrada em
+///   silêncio quando a rede não responde: medido, 3,58 s e 3 tentativas a mais,
+///   achado rebaixado para `unverified`, sem erro reportado. Desligada por
+///   padrão, por decisão registrada para review.
+/// - `--no-color` evita sequências ANSI no JSONL: o executor não aloca TTY e a
+///   cor poluiria a evidência parsada sem acrescentar informação.
 ///
-/// Não há flag de limitação de profundidade (`--max-depth`, `--since-commit`):
-/// as duas foram medidas e **suprimem achados reais** de forma reprodutível
-/// (`--max-depth=1` e `2` sobre um repositório de 2 commits apagam o segredo
-/// encontrado). O escopo é limitado pelo alvo explícito do usuário e pelo
-/// mount somente leitura, não por essas flags.
+/// `--max-depth` e `--since-commit` não estão presentes: medidas, **suprimem
+/// achados reais** de forma reprodutível (`--max-depth=1` e `2` sobre um
+/// repositório de 2 commits apagam o segredo encontrado). O escopo é limitado
+/// pelo alvo explícito do usuário e pelo mount somente leitura.
 pub fn container_arguments(target: &str, container_repo_path: &str) -> Vec<String> {
     let source = if container_repo_path.is_empty() {
         target.to_string()
@@ -220,7 +205,7 @@ mod tests {
             );
         }
         // `ssh://` e `file://` não passam pela validação de alvo da CLI, e
-        // `git@host:org/repo` (scp-like) também não: não são offered aqui.
+        // `git@host:org/repo` (scp-like) também não: não são aceitos aqui.
         for target in ["ssh://git@host/repo.git", "file:///alvo", "/home/dev/repo"] {
             assert!(
                 !REMOTE_URI_PREFIXES

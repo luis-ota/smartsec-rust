@@ -1,10 +1,10 @@
 //! Agente de código: sandbox read-only, ferramentas locais e o laço de
 //! tool calling que localiza a origem dos achados no projeto analisado.
 //!
-//! O módulo é a única superfície pela qual o SmartSec lê o código do alvo.
-//! Toda leitura passa pelo sandbox de `workspace`, que canonicaliza o caminho e
-//! exige contenção na raiz, e pelas ferramentas de `tools`, que nunca escrevem
-//! no projeto analisado.
+//! O módulo é a única superfície pela qual o SmartSec lê o código do alvo: toda
+//! leitura passa pelo sandbox de `workspace`, que canonicaliza o caminho e exige
+//! contenção na raiz, e pelas ferramentas de `tools`, que nunca escrevem no
+//! projeto analisado.
 
 pub mod agent;
 pub mod audit_trail;

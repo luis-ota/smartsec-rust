@@ -4,10 +4,9 @@ use crate::code_agent::agent::ToolCallRecord;
 
 /// Uma linha de atividade observável durante a fase do agente de código.
 ///
-/// A TUI precisa mostrar o que a IA está fazendo enquanto faz. O relatório final
-/// sozinho chega tarde demais: entre "Iniciar" e o resultado há dezenas de
-/// chamadas de ferramenta, e uma tela parada nesse intervalo é indistinguível de
-/// um travamento.
+/// O relatório final chega tarde demais: entre "Iniciar" e o resultado há
+/// dezenas de chamadas de ferramenta, e uma tela parada nesse intervalo é
+/// indistinguível de um travamento.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodeAgentEvent {
     Started {

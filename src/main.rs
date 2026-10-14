@@ -1,8 +1,8 @@
-//! SmartSec - Security Analysis Platform
+//! SmartSec - Plataforma de análise de segurança
 //!
-//! Entry point: `CommandLineInterface::main`.
+//! Ponto de entrada: `CommandLineInterface::main`.
 //!
-//! Supports interactive TUI mode and structured `scan`/`tool` commands.
+//! Suporta o modo TUI interativo e os comandos estruturados `scan`/`tool`.
 
 mod ai;
 mod code_agent;
@@ -36,10 +36,10 @@ const EXIT_SUCCESS: i32 = 0;
 const EXIT_CRITICAL: i32 = 1;
 const EXIT_ERROR: i32 = 2;
 
-/// CommandLineInterface (per class diagram).
+/// CommandLineInterface (conforme o diagrama de classes).
 ///
-/// Responsible for parsing arguments, initializing configuration, and
-/// displaying the TUI. The actual analysis work is delegated to the
+/// Responsável por interpretar os argumentos, inicializar a configuração e
+/// exibir a TUI; o trabalho de análise é delegado ao
 /// [`orchestrator::Orchestrator`].
 pub struct CommandLineInterface {
     pub arguments: Vec<String>,
@@ -336,10 +336,10 @@ impl CommandLineInterface {
                 Ok(EXIT_SUCCESS)
             }
             None => {
-                // A TUI abre mesmo com configuracao invalida: e a propria tela de
-                // Configurar IA que permite consertar o que esta errado, entao
-                // abortar aqui deixaria o operador sem caminho. Os problemas
-                // encontrados viram aviso visivel. O headless segue validando.
+                // A TUI abre mesmo com configuração inválida: é a própria tela de
+                // Configurar IA que conserta o que está errado, então abortar
+                // deixaria o operador sem caminho; os problemas viram aviso
+                // visível e o headless segue validando.
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
                 Self::display_tui(config, problems, force_onboarding).await?;
@@ -354,8 +354,8 @@ impl CommandLineInterface {
         force_onboarding: bool,
     ) -> Result<()> {
         let mut app = tui::state::AppState::new(initial_config)?;
-        // O aviso de configuracao entra antes de qualquer execucao e so sai
-        // quando o operador salva uma configuracao valida pela propria tela.
+        // O aviso de configuração entra antes de qualquer execução e só sai
+        // quando o operador salva uma configuração válida pela própria tela.
         app.set_config_warning(Some(config_problems.join(" · ")));
         if force_onboarding {
             app.start_onboarding();
@@ -758,9 +758,9 @@ impl CommandLineInterface {
         let project_dir = config.effective_project_dir().display().to_string();
 
         // Fase do agente de código: roda depois dos scanners, porque a
-        // severidade já está classificada e o agente apenas aponta onde
-        // corrigir. O diretório efetivo é impresso antes do resultado para
-        // que a saída diga qual árvore foi lida.
+        // severidade já está classificada e o agente só aponta onde corrigir; o
+        // diretório efetivo é impresso antes do resultado para a saída dizer
+        // qual árvore foi lida.
         let code_report = orchestrator.analyze_code(None).await;
         println!("[3/4] Localização no código (projeto: {})", project_dir);
         print_code_report(&orchestrator.findings, &code_report);
@@ -841,10 +841,9 @@ async fn finalize_headless(
     );
     let report_path = crate::report::resolve_report_path(config)?;
     let pdf_file = crate::report::resolve_pdf_path(&report_path);
-    // Markdown e log estruturado sao gravados antes do PDF e da mensagem final
-    // (TCC_SPEC.md, secao 10): se a geracao do PDF falhar, os dois artefatos
-    // que sustentam a auditoria ja estao no disco e o operador recebe a falha
-    // com caminho e causa.
+    // Markdown e log estruturado são gravados antes do PDF e da mensagem final
+    // (TCC_SPEC.md, seção 10): se a geração do PDF falhar, os dois artefatos da
+    // auditoria já estão no disco e a falha sai com caminho e causa.
     let log_result = orchestrator.persist_scan_log();
     let report_result =
         crate::report::ReportGenerator::export_to_markdown(&report, &report_path.to_string_lossy());
@@ -887,9 +886,9 @@ async fn finalize_headless(
 
 /// Imprime a localização no código de cada achado, ou o motivo da recusa.
 ///
-/// A linha impressa aqui é a mesma que vai para o log estruturado e para o
-/// relatório: o modo headless não pode afirmar uma origem que a auditoria não
-/// registra, nem omitir um achado cuja origem não foi determinada.
+/// A linha impressa é a mesma do log estruturado e do relatório: o headless não
+/// pode afirmar uma origem que a auditoria não registra nem omitir um achado sem
+/// origem determinada.
 fn print_code_report(
     findings: &[Vulnerability],
     report: &crate::code_agent::agent::CodeAnalysisReport,
@@ -913,10 +912,10 @@ fn print_code_report(
                 }
             }
             None => {
-                // O motivo vem do relatório da fase, indexado pela mesma
-                // posição do achado: sem ele, o operador veria apenas
-                // "localização não determinada" e não saberia se o agente
-                // falhou, recusou ou se o provedor não suporta tool calling.
+                // O motivo vem do relatório da fase, indexado pela posição do
+                // achado; sem ele o operador veria só "localização não
+                // determinada", sem saber se o agente falhou, recusou ou não
+                // suporta tool calling.
                 let analysis = report
                     .findings
                     .iter()
@@ -1073,9 +1072,9 @@ fn selected_tools<'a>(
         .collect()
 }
 
-/// Ponto de entrada do binario.
+/// Ponto de entrada do binário.
 ///
-/// Publico porque `src/aliases/smartsec_rust.rs` o invoca para manter o nome
+/// Público porque `src/aliases/smartsec_rust.rs` o invoca para manter o nome
 /// antigo do comando como alias do novo.
 #[tokio::main]
 pub async fn main() {
@@ -1350,18 +1349,15 @@ mod tests {
         ])
         .is_err());
     }
-    /// Criterio de aceite 3: o headless **continua recusando** a mesma
-    /// configuracao que a TUI agora aceita. Se o headless passasse a aceitar, a
-    /// diferenca entre os dois modos viraria um furo: o pipeline de automacao
-    /// perderia a validacao que a interface flexivel.
+    /// Critério de aceite 3: o headless **continua recusando** a configuração
+    /// que a TUI agora aceita; aceitar aqui abriria um furo no pipeline de
+    /// automação.
     ///
-    /// A falha usada e a de **timeout invalido**, e nao a de credencial ou
-    /// consentimento, por um motivo que o primeiro CI revelou: `LlmConfig::validate`
-    /// checa a credencial **antes** do consentimento, e a credencial vem do keyring
-    /// do sistema. Com chave no keyring a mensagem era uma, sem chave era outra, e
-    /// o teste passava ou falhava conforme o estado da maquina. O timeout nao
-    /// depende de keyring, disco nem rede, entao prova o mesmo critério sem as
-    /// tres variabilidades.
+    /// A falha usada é a de **timeout inválido**, não a de credencial ou
+    /// consentimento: o primeiro CI revelou que `LlmConfig::validate` checa a
+    /// credencial (que vem do keyring) antes do consentimento, então o teste
+    /// passava ou falhava conforme o estado da máquina. O timeout não depende de
+    /// keyring, disco nem rede.
     #[test]
     fn headless_still_refuses_an_invalid_llm_configuration() {
         let path =
@@ -1388,9 +1384,8 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    /// A TUI e o headless devem recusar **pelo mesmo motivo**, nao apenas ambos
-    /// recusarem. Se cada um escolhesse uma falha diferente da mesma configuracao,
-    /// a operacao leria dois textos para um defeito so.
+    /// A TUI e o headless devem recusar **pelo mesmo motivo**, não apenas ambos
+    /// recusarem: falhas diferentes para o mesmo defeito dariam dois textos ao operador.
     #[test]
     fn the_tui_and_the_headless_report_the_same_reason_for_the_same_defect() {
         let config = Configuration {

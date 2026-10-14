@@ -1,11 +1,9 @@
 use crate::config::llm_config::LlmConfig;
 use async_trait::async_trait;
 
-/// Sondagem de ambiente do assistente de primeira execução.
-///
-/// Tudo que depende da máquina é descrito aqui como um relatório de partes, e o
-/// texto que o operador lê é derivado desse relatório por [`EnvironmentReport::findings`].
-/// Nenhum teste precisa de rede, keyring ou Podman: basta montar o relatório.
+/// Sondagem de ambiente do assistente de primeira execução: o texto que o
+/// operador lê vem de [`EnvironmentReport::findings`], e nenhum teste precisa de
+/// rede, keyring ou Podman.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvironmentReport {
     pub local_llm: Option<LocalEndpoint>,
@@ -230,8 +228,8 @@ impl SystemOnboardingProbe {
 
 /// Traduz o status HTTP em causa acionável.
 ///
-/// Separado da chamada para que a mensagem que o operador lê seja verificável
-/// sem rede: um "erro" genérico esconderia o que ele precisa corrigir.
+/// Separado da chamada para a mensagem ser verificável sem rede: um "erro"
+/// genérico esconderia o que o operador precisa corrigir.
 fn connection_from_status(url: &str, status: u16) -> ConnectionCheck {
     if (200..300).contains(&status) {
         return ConnectionCheck::Succeeded(format!("{url} respondeu e a chave foi aceita"));
