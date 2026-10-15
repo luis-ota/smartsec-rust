@@ -3,9 +3,9 @@
 /// O digest é multi-arch e mantém a versão auditável no log estruturado (RNF09)
 /// sem depender de uma tag mutável; origem empírica em
 /// `docs/evidence/issue-18-trufflehog.md`.
-pub const TRUFFLEHOG_IMAGE: &str = "docker.io/trufflesecurity/trufflehog@sha256:52e67fef4d054ecff5c2ce4b4ae376626d1ef54aa0898b53cac19c25e92e14db";
+pub const TRUFFLEHOG_IMAGE: &str = "docker.io/trufflesecurity/trufflehog@sha256:47a84bc18a0d04a165498bbbd3bacfd84176661cbc91f8e0f85467f6a771e99a";
 /// Versão do TruffleHog reportada por `--version` dentro da imagem fixada.
-pub const TRUFFLEHOG_VERSION: &str = "3.97.9";
+pub const TRUFFLEHOG_VERSION: &str = "3.99.2";
 
 /// Ponto de montagem do repositório dentro do container.
 ///
@@ -189,7 +189,7 @@ mod tests {
     fn pins_the_image_by_digest_and_registers_the_version() {
         assert!(TRUFFLEHOG_IMAGE.contains("@sha256:"));
         assert_eq!(
-            TRUFFLEHOG_VERSION, "3.97.9",
+            TRUFFLEHOG_VERSION, "3.99.2",
             "a versão deve corresponder ao `trufflehog --version` da imagem fixada"
         );
     }

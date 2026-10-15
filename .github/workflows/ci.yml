@@ -78,7 +78,7 @@ env:
   SMARTSEC_FERRAMENTAS: 'Nmap'
   # Espelha NMAP_IMAGE de src/tools/nmap.rs. Se a imagem mudar no código, atualize
   # aqui; o smoke test do passo de pré-requisitos passa a validar a imagem nova.
-  SMARTSEC_IMAGEM_NMAP: 'docker.io/instrumentisto/nmap:7.95'
+  SMARTSEC_IMAGEM_NMAP: 'docker.io/instrumentisto/nmap:7.98@sha256:96f6ed194519b62421a1a1c57809e65a7f94d2aa1c8c25676f247e5e148c0827'
   # Provedor usado no CI. `ollama` é loopback: o agente cai no fallback
   # determinístico local quando não há Ollama no runner, sem alterar o exit code.
   SMARTSEC_PROVEDOR_IA: 'llama.cpp'

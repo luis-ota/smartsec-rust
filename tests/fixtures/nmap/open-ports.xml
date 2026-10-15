@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<nmaprun scanner="nmap" args="nmap -sV -oX - server.example.test" start="1787832000" version="7.95" xmloutputversion="1.05">
+<nmaprun scanner="nmap" args="nmap -sV -oX - server.example.test" start="1787832000" version="7.98" xmloutputversion="1.05">
   <host starttime="1787832000" endtime="1787832002">
     <status state="up" reason="syn-ack" reason_ttl="0"/>
     <address addr="192.0.2.10" addrtype="ipv4"/>

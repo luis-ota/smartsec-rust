@@ -176,7 +176,7 @@ fn trufflehog_is_selectable_in_the_headless_run_and_records_image_and_version() 
     // A imagem fixada e o comando sem shell chegam ao container.
     let calls = sandbox.calls();
     assert!(
-        calls.contains("docker.io/trufflesecurity/trufflehog@sha256:52e67fef4d054ecff5c2ce4b4ae376626d1ef54aa0898b53cac19c25e92e14db"),
+        calls.contains("docker.io/trufflesecurity/trufflehog@sha256:47a84bc18a0d04a165498bbbd3bacfd84176661cbc91f8e0f85467f6a771e99a"),
         "{calls}"
     );
     // O container é criado com as travas de segurança do executor.
@@ -307,10 +307,10 @@ fn o_segredo_plantado_nao_aparece_no_log_estruturado_nem_no_relatorio() {
     assert!(!scan_log.is_empty(), "o log estruturado deve existir");
     // Imagem e versão registradas no log estruturado (RNF09).
     assert!(
-        scan_log.contains("docker.io/trufflesecurity/trufflehog@sha256:52e67fef4d054ecff5c2ce4b4ae376626d1ef54aa0898b53cac19c25e92e14db"),
+        scan_log.contains("docker.io/trufflesecurity/trufflehog@sha256:47a84bc18a0d04a165498bbbd3bacfd84176661cbc91f8e0f85467f6a771e99a"),
         "{scan_log}"
     );
-    assert!(scan_log.contains("3.97.9"), "{scan_log}");
+    assert!(scan_log.contains("3.99.2"), "{scan_log}");
     // Evidência mínima preservada: detector, arquivo, linha e verificação.
     assert!(scan_log.contains("trufflehog detector: AWS"), "{scan_log}");
     assert!(

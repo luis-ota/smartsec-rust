@@ -1,9 +1,9 @@
 /// Imagem e versão do OWASP ZAP do manifesto embutido, fixadas por digest para a
 /// versão ser auditável no log estruturado (RNF09); o digest foi conferido com
 /// `podman pull` contra o registro (`docs/evidence/issue-28-zap.md`).
-pub const ZAP_IMAGE: &str = "ghcr.io/zaproxy/zaproxy:2.14.0@sha256:3280adc730131f1f4460ab226b0f85e3e9ab3301ef5a7030f745ac4dd6b6ff87";
+pub const ZAP_IMAGE: &str = "ghcr.io/zaproxy/zaproxy:2.16.0@sha256:391f66efa53b30de40d4a1c6e28146477263552fc828bc7613c9cd11a2949908";
 /// Versão do ZAP reportada no relatório `traditional-json` (`@version`).
-pub const ZAP_VERSION: &str = "2.14.0";
+pub const ZAP_VERSION: &str = "2.16.0";
 
 /// Limite de memória do container do ZAP: a varredura DAST usa muito mais memória
 /// que um scan de templates. O padrão do executor (`512m`) só funciona em alvos
@@ -46,7 +46,7 @@ pub const ZAP_REPORT_FILE: &str = "zap-report.json";
 ///   `includePaths: .*`, `excludePaths: []` para a varredura não escapar do alvo.
 /// - o job `spider` percorre o alvo; `user: ""` impede reaproveitar credenciais.
 /// - `passiveScan-wait` vai sem parâmetros: `maxTime` **não** é reconhecido pela
-///   2.14 e produziria `Unrecognised parameter`.
+///   2.16 e produziria `Unrecognised parameter for job passiveScan-wait`.
 /// - o job `report` usa `template: traditional-json`, que exclui cabeçalhos e
 ///   corpos de requisição/resposta (ao contrário dos templates `*-plus`), então
 ///   nenhum corpo HTTP chega ao achado.
@@ -117,10 +117,10 @@ mod tests {
 
     #[test]
     fn fixa_a_imagem_por_digest_e_registra_a_versao() {
-        assert!(ZAP_IMAGE.contains("ghcr.io/zaproxy/zaproxy:2.14.0@sha256:"));
+        assert!(ZAP_IMAGE.contains("ghcr.io/zaproxy/zaproxy:2.16.0@sha256:"));
         assert!(ZAP_IMAGE
-            .contains("sha256:3280adc730131f1f4460ab226b0f85e3e9ab3301ef5a7030f745ac4dd6b6ff87"));
-        assert_eq!(ZAP_VERSION, "2.14.0");
+            .contains("sha256:391f66efa53b30de40d4a1c6e28146477263552fc828bc7613c9cd11a2949908"));
+        assert_eq!(ZAP_VERSION, "2.16.0");
     }
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
         assert!(plan.contains("- type: spider"), "{plan}");
         assert!(plan.contains("- type: passiveScan-wait"), "{plan}");
         assert!(plan.contains("- type: report"), "{plan}");
-        // `maxTime` e `delay` são rejeitados pela 2.14.
+        // `maxTime` e `delay` ficam fora do plano validado no container.
         assert!(!plan.contains("maxTime"), "{plan}");
         // O relatório vai para o diretório gravável com a extensão implícita.
         assert!(plan.contains("template: traditional-json"), "{plan}");

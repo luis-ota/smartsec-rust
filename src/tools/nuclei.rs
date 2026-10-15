@@ -3,8 +3,8 @@ use crate::orchestrator::decision::{NucleiPlan, NucleiTemplateProfile};
 
 pub struct NucleiTool;
 
-pub const NUCLEI_VERSION: &str = "v3.4.10";
-pub const NUCLEI_IMAGE: &str = "docker.io/projectdiscovery/nuclei@sha256:2a11faa83464d769a888f1abb9396d5b4d8640619dfc6310086bf5c0d4003481";
+pub const NUCLEI_VERSION: &str = "v3.11.1";
+pub const NUCLEI_IMAGE: &str = "docker.io/projectdiscovery/nuclei@sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb";
 pub const NUCLEI_TEMPLATES_COMMIT: &str = "b98e6097cb84e73e7a480436062d685a8f898824";
 
 fn split_host_port(target: &str) -> (String, Option<String>) {
