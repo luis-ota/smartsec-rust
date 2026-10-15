@@ -1,6 +1,9 @@
 use super::chrome::{ACCENT, ACCENT_HOVER, DANGER, SURFACE, SURFACE_HOVER};
 use super::interaction::{FocusTarget, SemanticAction};
-use super::state::{AnalysisPhase, AppState, AppStep, RunIssueScope, SettingsField, ToolStatus};
+use super::state::{
+    AiTimelineEntry, AiTimelineOrigin, AnalysisPhase, AppState, AppStep, RunIssueScope,
+    SettingsField, ToolStatus,
+};
 use crate::config::environment::{
     EnvironmentReport, KeyringAvailability, LocalEndpoint, PodmanMode,
 };
@@ -656,6 +659,100 @@ fn traceability_overlay_matches_80x24_snapshots() {
         snapshot.contains("aguardando análise de código"),
         "{snapshot}"
     );
+}
+
+/// O bloco de IA da Execução anuncia o atalho e é clicável: é a porta de
+/// entrada do painel ao vivo enquanto uma ferramenta demora.
+#[test]
+fn the_execution_ai_block_offers_the_live_timeline() {
+    let mut app = app();
+    app.step = AppStep::Execution;
+    app.focus = FocusTarget::ExecutionLogs;
+
+    let snapshot = assert_snapshot(&mut app, &["Atuação da IA", "i abre"]);
+    assert!(
+        app.hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::OpenAiTimeline),
+        "o bloco de IA precisa ser clicável\n{snapshot}"
+    );
+}
+
+#[test]
+fn ai_timeline_overlay_matches_80x24_snapshots() {
+    let mut app = app();
+    app.step = AppStep::Execution;
+    app.ai_timeline = vec![
+        AiTimelineEntry {
+            time: "14:02:10".to_string(),
+            origin: AiTimelineOrigin::Planning,
+            text: "planejando o uso do Nuclei…".to_string(),
+        },
+        AiTimelineEntry {
+            time: "14:02:14".to_string(),
+            origin: AiTimelineOrigin::Planning,
+            text:
+                "plano do Nuclei definido: a IA decidiu · motivo: Plano aceito pela política segura"
+                    .to_string(),
+        },
+        AiTimelineEntry {
+            time: "14:03:41".to_string(),
+            origin: AiTimelineOrigin::Ai,
+            text: "análise em andamento (10s)".to_string(),
+        },
+        AiTimelineEntry {
+            time: "14:04:02".to_string(),
+            origin: AiTimelineOrigin::Code,
+            text: "ferramenta read_file no achado #1".to_string(),
+        },
+    ];
+    app.show_ai_timeline = true;
+    app.focus = FocusTarget::AiTimelineClose;
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Atividade da IA",
+            "4 ação(ões) registradas",
+            "14:02:10 planejamento planejando o uso do Nuclei…",
+            "14:02:14 planejamento plano do Nuclei definido",
+            "fechar",
+        ],
+    );
+    // Cada entrada sai como `HH:MM:SS origem texto`, com a origem da etapa.
+    for (time, origin, text) in [
+        ("14:03:41", "IA", "análise em andamento (10s)"),
+        ("14:04:02", "código", "ferramenta read_file no achado #1"),
+    ] {
+        let line = snapshot
+            .lines()
+            .find(|line| line.contains(time))
+            .unwrap_or_else(|| panic!("linha de {time} ausente\n{snapshot}"));
+        assert!(
+            line.contains(origin) && line.contains(text),
+            "formato inesperado: {line}"
+        );
+    }
+    assert!(
+        app.hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::Back),
+        "o botão fechar precisa de região clicável\n{snapshot}"
+    );
+
+    // Estado vazio: o painel explica quando a IA age, em vez de parecer travado.
+    app.ai_timeline.clear();
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "Atividade da IA",
+            "0 ação(ões) registradas",
+            "A IA ainda não agiu nesta execução",
+            "antes do Nuclei",
+            "(planejamento) e depois das ferramentas",
+        ],
+    );
+    assert!(snapshot.contains("agente de código"), "{snapshot}");
 }
 
 #[test]

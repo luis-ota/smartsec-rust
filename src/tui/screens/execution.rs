@@ -91,8 +91,8 @@ fn render_issues(app: &AppState, frame: &mut Frame, area: Rect) {
     );
 }
 
-fn render_ai_activity(app: &AppState, frame: &mut Frame, area: Rect) {
-    let block = chrome::panel("Atuação da IA", false);
+fn render_ai_activity(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let block = chrome::panel("Atuação da IA · i abre", false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -176,6 +176,9 @@ fn render_ai_activity(app: &AppState, frame: &mut Frame, area: Rect) {
         .style(Style::default().bg(SURFACE)),
         inner,
     );
+    // O bloco inteiro é clicável: é a porta para ler a atividade da IA sem
+    // parar a varredura.
+    app.register_hit_region(area, SemanticAction::OpenAiTimeline);
 }
 
 fn render_progress(app: &AppState, frame: &mut Frame, area: Rect, percent: u16) {

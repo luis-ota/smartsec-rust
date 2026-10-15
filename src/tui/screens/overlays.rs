@@ -1,7 +1,7 @@
-use crate::tui::chrome::{ACCENT, SURFACE, SURFACE_HOVER};
+use crate::tui::chrome::{ACCENT, MUTED, SUCCESS, SURFACE, SURFACE_HOVER, TEXT, WARNING};
 use crate::tui::commands::command_items;
 use crate::tui::interaction::SemanticAction;
-use crate::tui::state::{AppState, AppStep};
+use crate::tui::state::{AiTimelineOrigin, AppState, AppStep};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
@@ -12,7 +12,7 @@ use ratatui::{
 
 pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
     app.hit_regions.clear();
-    let popup = centered_fixed(area, 68, 18);
+    let popup = centered_fixed(area, 68, 19);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -47,6 +47,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
         shortcut("enter / espaço", "acionar o item em foco ou abrir o campo"),
         shortcut("p", "pausar ou retomar a execução"),
         shortcut("c", "cancelar a execução em andamento"),
+        shortcut("i", "abrir a atividade da IA (ou clique no bloco)"),
         shortcut("ctrl+u", "limpar o campo de texto em foco"),
         shortcut("esc", "sair do campo em edição ou voltar"),
         shortcut("f1", "abrir ajuda em qualquer contexto"),
@@ -228,6 +229,97 @@ pub fn render_report_viewer(app: &mut AppState, frame: &mut Frame, area: Rect) {
                         SURFACE
                     }),
             ),
+        rows[2],
+    );
+}
+
+/// Painel ao vivo "Atividade da IA": o que a IA fez e está fazendo durante a
+/// execução, sem o ruído das saídas das ferramentas de varredura.
+pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    use ratatui::widgets::Wrap;
+    app.hit_regions.clear();
+    let popup = centered_fixed(area, 76, 20);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Atividade da IA ")
+        .title_style(Style::default().fg(Color::White).bold())
+        .style(Style::default().bg(SURFACE));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{} ação(ões) registradas · horário local",
+            app.ai_timeline.len()
+        ))
+        .style(Style::default().fg(MUTED).bg(SURFACE)),
+        rows[0],
+    );
+
+    let visible = rows[1].height.max(1) as usize;
+    app.ai_timeline_max_scroll = app.ai_timeline.len().saturating_sub(visible);
+    app.ai_timeline_scroll = if app.ai_timeline_follow {
+        app.ai_timeline_max_scroll
+    } else {
+        app.ai_timeline_scroll.min(app.ai_timeline_max_scroll)
+    };
+    if app.ai_timeline.is_empty() {
+        frame.render_widget(
+            Paragraph::new(
+                "A IA ainda não agiu nesta execução; ela atua antes do Nuclei \
+                 (planejamento) e depois das ferramentas (análise e agente de código).",
+            )
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(MUTED).bg(SURFACE)),
+            rows[1],
+        );
+    } else {
+        let body: Vec<Line> = app
+            .ai_timeline
+            .iter()
+            .skip(app.ai_timeline_scroll)
+            .take(visible)
+            .map(|entry| {
+                let origin_color = match entry.origin {
+                    AiTimelineOrigin::Planning => ACCENT,
+                    AiTimelineOrigin::Ai => SUCCESS,
+                    AiTimelineOrigin::Code => WARNING,
+                };
+                Line::from(vec![
+                    Span::styled(format!("{} ", entry.time), Style::default().fg(MUTED)),
+                    Span::styled(
+                        format!("{:<12} ", entry.origin.label()),
+                        Style::default().fg(origin_color).bold(),
+                    ),
+                    Span::styled(
+                        crate::tui::chrome::truncate_width(
+                            &entry.text,
+                            rows[1].width.saturating_sub(22) as usize,
+                        ),
+                        Style::default().fg(TEXT),
+                    ),
+                ])
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(Text::from(body)).style(Style::default().bg(SURFACE)),
+            rows[1],
+        );
+    }
+
+    app.register_hit_region(rows[2], SemanticAction::Back);
+    frame.render_widget(
+        Paragraph::new("↑↓ rolar · enter ou esc  fechar")
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(ACCENT).bg(SURFACE)),
         rows[2],
     );
 }
