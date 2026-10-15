@@ -919,9 +919,18 @@ impl Orchestrator {
                         .collect(),
                     executed_at: execution.executed_at.clone(),
                     output_bytes: execution.output.len(),
-                    output_sample: sanitize(&execution.output).chars().take(200).collect(),
-                    stdout: sanitize(&execution.output),
-                    stderr: sanitize(&execution.stderr),
+                    output_sample: sanitize(
+                        &execution.output.chars().take(400).collect::<String>(),
+                    )
+                    .chars()
+                    .take(200)
+                    .collect(),
+                    stdout: sanitize(&crate::orchestrator::scan_logger::capped_stream(
+                        &execution.output,
+                    )),
+                    stderr: sanitize(&crate::orchestrator::scan_logger::capped_stream(
+                        &execution.stderr,
+                    )),
                     status: execution.status.clone(),
                     duration_ms: execution.duration_ms,
                     tool_version: execution.tool_version.clone(),
@@ -930,7 +939,10 @@ impl Orchestrator {
                     podman_trace: execution
                         .podman_trace
                         .iter()
-                        .map(|line| sanitize(line))
+                        .take(crate::orchestrator::scan_logger::MAX_LOG_TRACE_LINES)
+                        .map(|line| {
+                            sanitize(&crate::orchestrator::scan_logger::capped_trace_line(line))
+                        })
                         .collect(),
                 },
             )
@@ -1106,7 +1118,15 @@ fn validate_templates(path: &std::path::Path, expected: Option<&str>) -> anyhow:
             })?;
         let actual = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !output.status.success() || actual != expected {
-            anyhow::bail!("commit dos templates do Nuclei divergente: esperado {expected}, encontrado {actual}");
+            let found = if actual.is_empty() {
+                format!(
+                    "'{}' não é um clone git; refaça o clone fixado conforme docs/INSTALACAO.md",
+                    path.display()
+                )
+            } else {
+                format!("esperado {expected}, encontrado {actual}")
+            };
+            anyhow::bail!("templates do Nuclei fora do commit fixado: {found}");
         }
     }
     Ok(())
@@ -1858,5 +1878,23 @@ mod tests {
             .execution_history
             .iter()
             .all(|execution| execution.execution_error.is_none()));
+    }
+
+    /// Medido em produção: uma pasta de templates baixada por zip não tem
+    /// `.git`, a validação falhava com "encontrado" vazio e o operador não
+    /// sabia o que fazer; a mensagem agora diz o remédio.
+    #[test]
+    fn a_templates_dir_that_is_not_a_git_clone_explains_itself() {
+        let dir =
+            std::env::temp_dir().join(format!("smartsec-templates-sem-git-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let error = validate_templates(&dir, Some("b98e6097cb84e73e7a480436062d685a8f898824"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("não é um clone git"), "{error}");
+        assert!(error.contains("docs/INSTALACAO.md"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

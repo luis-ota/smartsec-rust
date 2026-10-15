@@ -39,7 +39,8 @@ pub fn parse_nuclei_findings(jsonl_output: &str, target: &str) -> Vec<Vulnerabil
     parse_nuclei_findings_with_errors(jsonl_output, target).0
 }
 
-/// Retorna os achados e os erros de cada linha JSONL inválida. Uma linha inválida
+/// Retorna os achados e os erros de cada registro JSONL malformado. Ruído que
+/// não começa com `{` (banner, aviso, trace) é ignorado; uma linha inválida
 /// nunca é tratada como execução bem-sucedida silenciosamente.
 pub fn parse_nuclei_findings_with_errors(
     jsonl_output: &str,
@@ -52,7 +53,9 @@ pub fn parse_nuclei_findings_with_errors(
 
     for line in jsonl_output.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() {
+        // Linha que não começa com `{` não é registro do Nuclei (banner, aviso,
+        // trace com timestamp); só um objeto malformado é erro de verdade.
+        if trimmed.is_empty() || !trimmed.starts_with('{') {
             continue;
         }
 
@@ -288,9 +291,13 @@ mod tests {
     }
 
     #[test]
-    fn invalid_jsonl_lines_are_reported() {
-        let (findings, errors) = parse_nuclei_findings_with_errors("not-json\n{}", "target");
+    fn non_json_noise_is_ignored_and_malformed_records_are_reported() {
+        let (findings, errors) = parse_nuclei_findings_with_errors(
+            "banner do scanner\n[12:00:00] trace ao vivo\n{\"template-id\": }\n",
+            "target",
+        );
         assert!(findings.is_empty());
-        assert_eq!(errors.len(), 2);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("linha Nuclei inválida"));
     }
 }
