@@ -1089,7 +1089,7 @@ where
                 flush_captured_line(&mut capture, &mut pending, Some(byte), false, sink.as_ref());
             } else {
                 pending.push(byte);
-                if pending.len() >= MAX_PENDING_LINE_BYTES {
+                if pending.len() >= MAX_CAPTURED_STREAM_BYTES {
                     flush_captured_line(&mut capture, &mut pending, None, true, sink.as_ref());
                     capture.truncated = true;
                 }
@@ -1113,9 +1113,10 @@ where
 /// Tetos da captura de um stream do container.
 ///
 /// Medido: uma TUI de 7,9 GB de RAM foi morta pelo OOM-killer com a captura
-/// sem teto de stdout/stderr de uma ferramenta fora de controle.
+/// sem teto de stdout/stderr de uma ferramenta fora de controle. O teto da
+/// linha sem terminador é o mesmo do stream: saídas legítimas de linha única
+/// (o JSON do Nikto sai com ~21 KB numa linha) precisam sobreviver intactas.
 const MAX_CAPTURED_STREAM_BYTES: usize = 2 * 1024 * 1024;
-const MAX_PENDING_LINE_BYTES: usize = 16 * 1024;
 const MAX_TRACE_LINES_PER_STREAM: usize = 5_000;
 const MAX_LINE_DISPLAY_CHARS: usize = 2_000;
 
@@ -2044,6 +2045,21 @@ mod tests {
 
         assert_eq!(capture.lines.len(), 3, "{:?}", capture.lines);
         assert!(!capture.truncated);
+    }
+
+    /// Regressão medida: o JSON do Nikto sai numa linha única de ~21 KB, e um
+    /// teto de linha menor que isso cortava o JSON no meio — o parser reportava
+    /// "trailing characters" e a ferramenta falhava.
+    #[tokio::test]
+    async fn a_long_single_line_below_the_stream_ceiling_survives_intact() {
+        let mut input = vec![b'x'; 64 * 1024];
+        input.push(b'\n');
+
+        let capture = read_stream_live(&input[..], None).await;
+
+        assert_eq!(capture.bytes, input);
+        assert!(!capture.truncated);
+        assert_eq!(capture.lines.len(), 1);
     }
 
     /// Medido em produção: uma linha sem terminador crescia sem teto até o
