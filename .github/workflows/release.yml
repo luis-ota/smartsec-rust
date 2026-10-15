@@ -85,7 +85,15 @@ jobs:
           set -euo pipefail
           binario="target/${{ matrix.alvo }}/release/smartsec"
           file "$binario"
-          "$binario" --version
+          # A release v0.2.1 saiu com o binario reportando 0.2.0 (Cargo.toml
+          # sem bump); a tag e o binario precisam contar a mesma versao.
+          versao_binario="$("$binario" --version | awk '{print $2}')"
+          versao_tag="${{ inputs.tag || github.ref_name }}"
+          versao_tag="${versao_tag#v}"
+          if [ "$versao_binario" != "$versao_tag" ]; then
+            echo "::error::o binario reporta $versao_binario, mas a tag e $versao_tag; atualize a version do Cargo.toml antes de taguear"
+            exit 1
+          fi
           "$binario" --help
 
       - name: Empacotar tar.gz

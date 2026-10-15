@@ -153,6 +153,8 @@ network_cmd = "pasta"
 
 ## Instalar um artefato pronto
 
+**Procedimento de release:** atualize `version` no `Cargo.toml`, commite e crie a tag `vX.Y.Z`; o workflow confere se o binário reporta a mesma versão da tag antes de publicar (a `v0.2.1` saiu com o binário reportando `0.2.0` e essa guarda existe para isso não repetir).
+
 Cada tag `v*` publica `.tar.gz` para Linux, um `.deb` para Ubuntu/Debian e os
 checksums SHA256 em `SHA256SUMS` (o `install.sh` do `curl | sh` tambem e um
 asset). Pelo bootstrap:
