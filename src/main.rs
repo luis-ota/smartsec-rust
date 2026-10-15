@@ -12,6 +12,7 @@ mod cyberrag;
 mod domain;
 mod llm;
 mod orchestrator;
+mod project_profile;
 mod report;
 mod tools;
 mod tui;

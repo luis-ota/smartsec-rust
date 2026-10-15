@@ -28,7 +28,9 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
     } else {
         match app.step {
             AppStep::Splash => "Defina o alvo, o modo de execução e inicie a análise.",
-            AppStep::ToolSelect => "Escolha as ferramentas que serão executadas contra o alvo.",
+            AppStep::ToolSelect => {
+                "Escolha as ferramentas; a recomendação vem do perfil do projeto."
+            }
             AppStep::Execution => {
                 "Acompanhe o progresso, pause (p), retome (p) ou cancele (c) a execução."
             }

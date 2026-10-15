@@ -168,6 +168,9 @@ pub struct ToolItem {
     pub tool: ToolManifest,
     pub runner: RunnerKind,
     pub selected: bool,
+    /// Motivo curto da recomendação do perfil do projeto
+    /// (`project_profile`); `None` quando a seleção não veio de recomendação.
+    pub recommendation: Option<&'static str>,
     /// Estado real da ferramenta no pipeline: não há porcentagem sintética
     /// porque o orquestrador só emite `ToolStarted` e `ToolFinished`.
     pub status: ToolStatus,
@@ -253,6 +256,13 @@ pub struct AppState {
     pub tick: u64,
     pub spinner_idx: usize,
     pub tools: Vec<ToolItem>,
+    /// Assinatura do projeto em que a pré-seleção foi aplicada: evita reaplicar
+    /// a recomendação por quadro e preserva o ajuste manual do usuário.
+    pub(crate) tool_preselection: Option<PathBuf>,
+    /// Lista explícita em `config.active_tools` desliga a recomendação do perfil.
+    pub(crate) tool_preselection_enabled: bool,
+    /// Resumo do perfil do projeto exibido na tela de Ferramentas.
+    pub project_profile_summary: Option<String>,
     pub tool_cursor: usize,
     pub tool_scroll: usize,
     pub tool_visible_height: usize,
@@ -396,10 +406,17 @@ impl AppState {
             .map(|registered| ToolItem {
                 tool: registered.manifest.clone(),
                 runner: registered.runner,
-                selected: true,
+                selected: selected_from_active_tools(
+                    &config.active_tools,
+                    &registered.manifest.name,
+                ),
+                recommendation: None,
                 status: ToolStatus::Pending,
             })
             .collect();
+        // Lista explícita no arquivo de configuração é do usuário: a
+        // recomendação do perfil não a substitui.
+        let tool_preselection_enabled = config.active_tools.is_empty();
 
         let (provider_idx, base_url, api_key, model) = {
             let llm = &config.llm;
@@ -435,6 +452,9 @@ impl AppState {
             tick: 0,
             spinner_idx: 0,
             tools,
+            tool_preselection: None,
+            tool_preselection_enabled,
+            project_profile_summary: None,
             tool_cursor: 0,
             tool_scroll: 0,
             tool_visible_height: 8,
@@ -1126,6 +1146,45 @@ impl AppState {
             AppStep::Execution => self.advance_execution(),
             AppStep::Analysis => self.advance_execution(),
             _ => {}
+        }
+    }
+
+    /// Aplica a recomendação do perfil do projeto na seleção das ferramentas.
+    ///
+    /// Roda quando a tela de Ferramentas é montada e quando o projeto muda; a
+    /// assinatura impede reaplicar por quadro, para o ajuste manual sobreviver.
+    pub fn apply_tool_preselection(&mut self) {
+        if !self.tool_preselection_enabled {
+            return;
+        }
+        let project_dir = self.config.effective_project_dir();
+        if self.tool_preselection.as_deref() == Some(project_dir.as_path()) {
+            return;
+        }
+        self.tool_preselection = Some(project_dir.clone());
+        match crate::project_profile::profile_project(&project_dir) {
+            Some(profile) => {
+                for tool in &mut self.tools {
+                    match crate::project_profile::recommendation_for(&tool.tool.name, &profile) {
+                        Some(recommendation) => {
+                            tool.selected = recommendation.selected;
+                            tool.recommendation = Some(recommendation.reason);
+                        }
+                        // Ferramenta fora do catálogo embutido: sem recomendação.
+                        None => tool.recommendation = None,
+                    }
+                }
+                self.project_profile_summary =
+                    Some(crate::project_profile::summary_pt_br(&profile));
+            }
+            // Projeto inacessível: sem perfil, vale o comportamento de hoje.
+            None => {
+                for tool in &mut self.tools {
+                    tool.selected = true;
+                    tool.recommendation = None;
+                }
+                self.project_profile_summary = None;
+            }
         }
     }
 
@@ -2029,6 +2088,15 @@ impl AppState {
             &self.config.effective_project_dir().display().to_string(),
         )
     }
+}
+
+/// Seleção inicial da ferramenta: lista explícita em `config.active_tools`
+/// manda; lista vazia deixa tudo marcado (a pré-seleção só age na tela).
+fn selected_from_active_tools(active_tools: &[String], name: &str) -> bool {
+    active_tools.is_empty()
+        || active_tools
+            .iter()
+            .any(|selected| selected.trim().eq_ignore_ascii_case(name.trim()))
 }
 
 /// Ordem de leitura dos achados: a severidade do scanner é autoritativa
@@ -3092,5 +3160,182 @@ mod tests {
         app.commit_settings(app.settings_candidate().expect("candidato válido"));
 
         assert_eq!(app.settings_dirty_count(), 0);
+    }
+
+    fn temp_profile_project(label: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "smartsec-preselecao-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (relative, contents) in files {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, contents).unwrap();
+        }
+        root
+    }
+
+    fn app_with_project(root: &std::path::Path, active_tools: Vec<String>) -> AppState {
+        let config = Configuration {
+            project_dir: Some(root.display().to_string()),
+            active_tools,
+            ..Configuration::default()
+        };
+        AppState::new(config).expect("configuração de teste válida")
+    }
+
+    fn selected_of(app: &AppState, name: &str) -> bool {
+        app.tools
+            .iter()
+            .find(|tool| tool.tool.name == name)
+            .unwrap_or_else(|| panic!("{name} deveria estar no catálogo"))
+            .selected
+    }
+
+    fn recommendation_of(app: &AppState, name: &str) -> Option<&'static str> {
+        app.tools
+            .iter()
+            .find(|tool| tool.tool.name == name)
+            .unwrap_or_else(|| panic!("{name} deveria estar no catálogo"))
+            .recommendation
+    }
+
+    /// A recomendação marca as ferramentas e guarda o motivo de cada uma; o
+    /// perfil do projeto fica resumido para a tela.
+    #[test]
+    fn the_profile_recommendation_marks_tools_and_explains_them() {
+        let root = temp_profile_project(
+            "nosql",
+            &[(
+                "package.json",
+                r#"{"dependencies":{"mongoose":"^8.0.0","redis":"^4.6.0"}}"#,
+            )],
+        );
+        let mut app = app_with_project(&root, Vec::new());
+
+        assert!(app.tool_preselection.is_none());
+        app.apply_tool_preselection();
+
+        assert!(!selected_of(&app, "SQLMap"), "projeto NoSQL sem SQL");
+        assert_eq!(
+            recommendation_of(&app, "SQLMap"),
+            Some(crate::project_profile::NO_SQL_NOSQL_REASON)
+        );
+        assert!(selected_of(&app, "Nmap"));
+        assert_eq!(
+            recommendation_of(&app, "Nmap"),
+            Some(crate::project_profile::NMAP_REASON)
+        );
+        assert!(!selected_of(&app, "TruffleHog"), "sem .git no fixture");
+        assert!(app.project_profile_summary.is_some());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A assinatura impede reaplicar a recomendação: o ajuste manual do
+    /// usuário não é sobrescrito na volta à tela.
+    #[test]
+    fn the_recommendation_is_not_reapplied_over_a_manual_toggle() {
+        let root = temp_profile_project(
+            "ajuste",
+            &[("package.json", r#"{"dependencies":{"mongoose":"^8.0.0"}}"#)],
+        );
+        let mut app = app_with_project(&root, Vec::new());
+
+        app.apply_tool_preselection();
+        assert!(!selected_of(&app, "SQLMap"));
+
+        app.tools
+            .iter_mut()
+            .find(|tool| tool.tool.name == "SQLMap")
+            .unwrap()
+            .selected = true;
+        app.apply_tool_preselection();
+
+        assert!(
+            selected_of(&app, "SQLMap"),
+            "toggle manual do usuário sempre vence"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Trocar o projeto recalculou o perfil: a recomendação acompanha.
+    #[test]
+    fn changing_the_project_recomputes_the_recommendation() {
+        let nosql = temp_profile_project(
+            "troca-nosql",
+            &[("package.json", r#"{"dependencies":{"mongoose":"^8.0.0"}}"#)],
+        );
+        let sqlite = temp_profile_project("troca-sqlite", &[("app.py", "import sqlite3\n")]);
+        let mut app = app_with_project(&nosql, Vec::new());
+
+        app.apply_tool_preselection();
+        assert!(!selected_of(&app, "SQLMap"));
+
+        app.config.project_dir = Some(sqlite.display().to_string());
+        app.apply_tool_preselection();
+
+        assert!(selected_of(&app, "SQLMap"));
+        assert_eq!(
+            recommendation_of(&app, "SQLMap"),
+            Some(crate::project_profile::SQL_REASON)
+        );
+
+        let _ = std::fs::remove_dir_all(&nosql);
+        let _ = std::fs::remove_dir_all(&sqlite);
+    }
+
+    /// Lista explícita em `config.active_tools` é do usuário: manda na seleção
+    /// inicial e desliga a recomendação do perfil.
+    #[test]
+    fn explicit_active_tools_win_over_the_recommendation() {
+        let root = temp_profile_project(
+            "lista",
+            &[("package.json", r#"{"dependencies":{"mongoose":"^8.0.0"}}"#)],
+        );
+        let mut app = app_with_project(&root, vec!["Nmap".to_string(), "Nikto".to_string()]);
+
+        assert!(selected_of(&app, "Nmap"));
+        assert!(selected_of(&app, "Nikto"));
+        assert!(!selected_of(&app, "SQLMap"));
+
+        app.apply_tool_preselection();
+
+        assert!(
+            selected_of(&app, "Nikto"),
+            "a lista explícita continua valendo"
+        );
+        assert!(!selected_of(&app, "SQLMap"));
+        assert!(app.tools.iter().all(|tool| tool.recommendation.is_none()));
+        assert!(app.project_profile_summary.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Projeto inacessível: sem perfil, nada é desmarcado por dúvida.
+    #[test]
+    fn an_unreadable_project_keeps_every_tool_selected() {
+        let missing = std::env::temp_dir().join(format!(
+            "smartsec-preselecao-inexistente-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&missing);
+        let mut app = app_with_project(&missing, Vec::new());
+
+        app.apply_tool_preselection();
+
+        assert!(
+            app.tools.iter().all(|tool| tool.selected),
+            "sem perfil vale o comportamento de hoje: tudo marcado"
+        );
+        assert!(app.tools.iter().all(|tool| tool.recommendation.is_none()));
+        assert!(app.project_profile_summary.is_none());
     }
 }
