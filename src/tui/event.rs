@@ -19,7 +19,7 @@ pub fn handle_events(app: &mut AppState) -> std::io::Result<bool> {
         Event::Key(key) if key.kind == KeyEventKind::Press => handle_key(app, key),
         Event::Mouse(mouse) => handle_mouse(app, mouse),
         Event::Paste(text) => dispatch_action(app, SemanticAction::InsertText(text)),
-        Event::Resize(_, _) => false,
+        Event::Resize(_, _) => handle_resize(app),
         _ => false,
     };
     Ok(should_quit)
@@ -200,6 +200,7 @@ fn paste_from_clipboard(app: &mut AppState) {
 }
 
 fn handle_mouse(app: &mut AppState, mouse: MouseEvent) -> bool {
+    app.set_mouse_position(Some((mouse.column, mouse.row)));
     let action = match mouse.kind {
         MouseEventKind::ScrollUp => Some(SemanticAction::ScrollUp),
         MouseEventKind::ScrollDown => Some(SemanticAction::ScrollDown),
@@ -207,6 +208,13 @@ fn handle_mouse(app: &mut AppState, mouse: MouseEvent) -> bool {
         _ => None,
     };
     action.is_some_and(|action| dispatch_action(app, action))
+}
+
+/// Depois de um resize as coordenadas antigas não descrevem mais a tela: sem
+/// limpá-las, o hover acenderia um elemento que já mudou de lugar.
+fn handle_resize(app: &mut AppState) -> bool {
+    app.set_mouse_position(None);
+    false
 }
 
 pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> bool {
@@ -2672,5 +2680,27 @@ mod tests {
             FocusTarget::SettingsField(SettingsField::BaseUrl)
         );
         assert_eq!(app.settings_editing, Some(SettingsField::BaseUrl));
+    }
+
+    /// O movimento do mouse alimenta o hover; um resize invalida as coordenadas
+    /// antigas para o realce não apontar para um lugar que já mudou.
+    #[test]
+    fn mouse_movement_feeds_hover_and_resize_clears_it() {
+        let mut app = app();
+        assert_eq!(app.mouse_position, None);
+
+        assert!(!handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 12,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            },
+        ));
+        assert_eq!(app.mouse_position, Some((12, 5)));
+
+        assert!(!handle_resize(&mut app));
+        assert_eq!(app.mouse_position, None);
     }
 }

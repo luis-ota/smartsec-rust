@@ -120,21 +120,21 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     {
         let current = index == app.history_cursor;
         let active = current && focused;
+        let record_area = Rect::new(
+            viewport.x,
+            viewport.y + (row * ROWS_PER_RECORD) as u16,
+            viewport.width,
+            ROWS_PER_RECORD as u16,
+        );
+        let hovered = app.mouse_over(record_area);
         lines.extend(record_lines(
             &app.history.records[index],
             current,
             active,
+            hovered,
             viewport.width as usize,
         ));
-        app.register_hit_region(
-            Rect::new(
-                viewport.x,
-                viewport.y + (row * ROWS_PER_RECORD) as u16,
-                viewport.width,
-                ROWS_PER_RECORD as u16,
-            ),
-            SemanticAction::OpenHistoryRecord(index),
-        );
+        app.register_hit_region(record_area, SemanticAction::OpenHistoryRecord(index));
     }
     frame.render_widget(
         Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
@@ -187,9 +187,16 @@ fn record_lines(
     record: &ScanRecordSummary,
     current: bool,
     active: bool,
+    hovered: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let background = if active { chrome::ACCENT } else { SURFACE };
+    let background = if active {
+        chrome::ACCENT
+    } else if hovered {
+        chrome::SURFACE_HOVER
+    } else {
+        SURFACE
+    };
     let foreground = if active { Color::Black } else { TEXT };
     let counts = &record.severity_counts;
     // Colunas fixas da segunda linha: 4 + alvo + 2 + "N ach." + 2 + "C0 A0 M0 B0 I0".
@@ -243,7 +250,7 @@ fn severity_color(critical: usize, active: bool) -> Color {
 
 fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let focused = app.focus == FocusTarget::HistoryDetail;
-    let block = chrome::panel("Detalhe da execução", focused);
+    let block = chrome::panel_hover("Detalhe da execução", focused, app.mouse_over(area));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(metadata) = app.history_detail.as_ref() else {

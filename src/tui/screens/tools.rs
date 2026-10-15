@@ -58,6 +58,8 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .min(app.tools.len().saturating_sub(app.tool_scroll) as u16);
     for row in 0..visible {
         let index = app.tool_scroll + row as usize;
+        let row_area = Rect::new(inner.x, inner.y + row, inner.width, 1);
+        let hovered = app.mouse_over(row_area);
         let line = {
             let tool = &app.tools[index];
             let current = index == app.tool_cursor;
@@ -80,14 +82,17 @@ fn render_tool_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
             Line::from(spans).style(
                 Style::default()
                     .fg(if active { Color::Black } else { TEXT })
-                    .bg(if active { ACCENT } else { SURFACE }),
+                    .bg(if active {
+                        ACCENT
+                    } else if hovered {
+                        chrome::SURFACE_HOVER
+                    } else {
+                        SURFACE
+                    }),
             )
         };
         lines.push(line);
-        app.register_hit_region(
-            Rect::new(inner.x, inner.y + row, inner.width, 1),
-            SemanticAction::ToggleTool(index),
-        );
+        app.register_hit_region(row_area, SemanticAction::ToggleTool(index));
     }
     frame.render_widget(
         Paragraph::new(Text::from(lines))

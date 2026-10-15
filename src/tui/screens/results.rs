@@ -278,12 +278,16 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let first_row = app.result_scroll;
     let cursor = app.result_cursor;
     let vulnerabilities = app.vulnerabilities();
+    let row_areas: Vec<Rect> = (0..rows)
+        .map(|row| Rect::new(inner.x, inner.y + row as u16, inner.width, 1))
+        .collect();
     let mut lines = Vec::new();
-    for row in 0..rows {
+    for (row, row_area) in row_areas.iter().enumerate() {
         let index = first_row + row;
         let item = vulnerabilities[index];
         let current = index == cursor;
         let active = current && focused;
+        let hovered = app.mouse_over(*row_area);
         lines.push(
             Line::from(vec![
                 Span::styled(if current { "> " } else { "  " }, Style::default().bold()),
@@ -302,7 +306,13 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .style(
                 Style::default()
                     .fg(severity_color(item.severity))
-                    .bg(if active { SURFACE_ACTIVE } else { SURFACE })
+                    .bg(if active {
+                        SURFACE_ACTIVE
+                    } else if hovered {
+                        chrome::SURFACE_HOVER
+                    } else {
+                        SURFACE
+                    })
                     .add_modifier(if current {
                         ratatui::style::Modifier::BOLD
                     } else {
@@ -317,9 +327,9 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     );
     // As regiões entram depois do desenho, na mesma ordem de antes: o vetor de
     // achados empresta o estado e não convive com o registro mutável.
-    for row in 0..rows {
+    for (row, row_area) in row_areas.iter().enumerate() {
         app.register_hit_region(
-            Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            *row_area,
             SemanticAction::OpenVulnerability(first_row + row),
         );
     }
@@ -447,7 +457,7 @@ fn push_wrapped_owned<'a>(lines: &mut Vec<Line<'a>>, value: String, width: usize
 fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize) {
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(area);
     let focused = app.focus == FocusTarget::ResultsDetail;
-    let block = chrome::panel("Evidência e recomendação", focused);
+    let block = chrome::panel_hover("Evidência e recomendação", focused, app.mouse_over(rows[0]));
     let inner = block.inner(rows[0]);
     frame.render_widget(block, rows[0]);
     let vulnerabilities = app.vulnerabilities();
@@ -601,7 +611,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
 fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(area);
     let focused = app.focus == FocusTarget::DidacticContent;
-    let block = chrome::panel("Em linguagem direta", focused);
+    let block = chrome::panel_hover("Em linguagem direta", focused, app.mouse_over(rows[0]));
     let inner = block.inner(rows[0]);
     frame.render_widget(block, rows[0]);
     let vulnerabilities = app.vulnerabilities();

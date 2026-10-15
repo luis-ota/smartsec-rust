@@ -1,5 +1,7 @@
 use crate::config::llm_config::LlmProviderKind;
-use crate::tui::chrome::{self, ACCENT, DANGER, MUTED, SURFACE, SURFACE_ACTIVE, TEXT, WARNING};
+use crate::tui::chrome::{
+    self, ACCENT, DANGER, MUTED, SURFACE, SURFACE_ACTIVE, SURFACE_HOVER, TEXT, WARNING,
+};
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::{AppState, SettingsField};
 use ratatui::{
@@ -171,6 +173,7 @@ fn render_field(app: &mut AppState, frame: &mut Frame, area: Rect, view: &FieldV
     let active = app.focused_settings_field() == Some(view.field);
     let editing = app.settings_editing == Some(view.field);
     let changed = app.settings_field_changed(view.field);
+    let hovered = app.mouse_over(area);
     let label_width = area.width.saturating_sub(view.hint.len() as u16 + 2) as usize;
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -185,7 +188,11 @@ fn render_field(app: &mut AppState, frame: &mut Frame, area: Rect, view: &FieldV
                 Style::default().fg(if active { ACCENT } else { MUTED }),
             ),
         ]))
-        .style(Style::default().bg(SURFACE)),
+        .style(Style::default().bg(if hovered && !active {
+            SURFACE_HOVER
+        } else {
+            SURFACE
+        })),
         Rect::new(area.x, area.y, area.width, 1),
     );
     let value = chrome::truncate_width(&view.value, area.width.saturating_sub(4) as usize);
@@ -210,7 +217,13 @@ fn render_field(app: &mut AppState, frame: &mut Frame, area: Rect, view: &FieldV
     frame.render_widget(
         Paragraph::new(value_line).style(
             Style::default()
-                .bg(if active { SURFACE_ACTIVE } else { SURFACE })
+                .bg(if active {
+                    SURFACE_ACTIVE
+                } else if hovered {
+                    SURFACE_HOVER
+                } else {
+                    SURFACE
+                })
                 .fg(TEXT),
         ),
         Rect::new(area.x, area.y + 1, area.width, 1),
@@ -246,6 +259,8 @@ fn render_compact_form(app: &mut AppState, frame: &mut Frame, area: Rect) {
         let view = &fields[app.settings_scroll + row];
         let active = app.focused_settings_field() == Some(view.field);
         let changed = app.settings_field_changed(view.field);
+        let row_area = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
+        let hovered = app.mouse_over(row_area);
         let value_width = inner.width.saturating_sub(24) as usize;
         lines.push(
             Line::from(vec![
@@ -271,13 +286,16 @@ fn render_compact_form(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .style(
                 Style::default()
                     .fg(if active { Color::Black } else { TEXT })
-                    .bg(if active { ACCENT } else { SURFACE }),
+                    .bg(if active {
+                        ACCENT
+                    } else if hovered {
+                        SURFACE_HOVER
+                    } else {
+                        SURFACE
+                    }),
             ),
         );
-        app.register_hit_region(
-            Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
-            SemanticAction::SelectSettingsField(view.field),
-        );
+        app.register_hit_region(row_area, SemanticAction::SelectSettingsField(view.field));
     }
     frame.render_widget(
         Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),

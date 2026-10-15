@@ -1,4 +1,4 @@
-use super::chrome::{ACCENT, DANGER, SURFACE};
+use super::chrome::{ACCENT, ACCENT_HOVER, DANGER, SURFACE, SURFACE_HOVER};
 use super::interaction::{FocusTarget, SemanticAction};
 use super::state::{AnalysisPhase, AppState, AppStep, RunIssueScope, SettingsField, ToolStatus};
 use crate::config::environment::{
@@ -11,6 +11,7 @@ use crate::domain::vulnerability::{FindingSource, Vulnerability};
 use crate::domain::Severity;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
@@ -52,6 +53,35 @@ fn assert_snapshot(app: &mut AppState, expected: &[&str]) -> String {
 
 fn app() -> AppState {
     AppState::new(Configuration::default()).expect("configuração de teste válida")
+}
+
+/// Células de uma área como (símbolo, fg, bg, bold): o hover é estilo, então a
+/// comparação precisa enxergar cor e modificador, não só texto.
+fn styled_cells(
+    buffer: &Buffer,
+    area: Rect,
+) -> Vec<(String, ratatui::style::Color, ratatui::style::Color, bool)> {
+    let mut cells = Vec::new();
+    for row in area.y..area.y.saturating_add(area.height) {
+        for column in area.x..area.x.saturating_add(area.width) {
+            let cell = &buffer[(column, row)];
+            cells.push((
+                cell.symbol().to_string(),
+                cell.fg,
+                cell.bg,
+                cell.modifier.contains(ratatui::style::Modifier::BOLD),
+            ));
+        }
+    }
+    cells
+}
+
+fn region_of(app: &AppState, action: &SemanticAction) -> Rect {
+    app.hit_regions
+        .iter()
+        .find(|region| &region.action == action)
+        .map(|region| region.area)
+        .expect("a ação precisa ter região clicável")
 }
 
 fn finding() -> Vulnerability {
@@ -1095,4 +1125,81 @@ fn semantic_focus_changes_the_rendered_list_style() {
     app.focus = FocusTarget::ToolRun;
     let (_, blurred_backend) = render_80x24(&mut app);
     assert_eq!(blurred_backend[(row.x, row.y)].bg, SURFACE);
+}
+
+/// Hover no botão: o realce aparece sob o mouse e some quando ele sai, sem
+/// depender do foco do teclado.
+#[test]
+fn hovering_a_button_lights_it_and_leaving_restores_the_cells() {
+    let mut app = app();
+    let (_, plain_buffer) = render_80x24(&mut app);
+    let button = region_of(&app, &SemanticAction::StartScan);
+    let plain = styled_cells(&plain_buffer, button);
+    assert_eq!(plain_buffer[(button.x, button.y)].bg, ACCENT);
+
+    app.mouse_position = Some((button.x + 1, button.y));
+    let (_, hover_buffer) = render_80x24(&mut app);
+    assert_ne!(plain, styled_cells(&hover_buffer, button));
+    assert_eq!(hover_buffer[(button.x, button.y)].bg, ACCENT_HOVER);
+
+    app.mouse_position = Some((0, 0));
+    let (_, restored_buffer) = render_80x24(&mut app);
+    assert_eq!(styled_cells(&restored_buffer, button), plain);
+}
+
+/// Hover numa linha da lista de Resultados: a linha acende e volta ao normal.
+#[test]
+fn hovering_a_result_row_lights_the_line() {
+    let mut app = app();
+    app.step = AppStep::Results;
+    app.orchestrator.findings.push(finding());
+    let (_, plain_buffer) = render_80x24(&mut app);
+    let row = region_of(&app, &SemanticAction::OpenVulnerability(0));
+    let plain = styled_cells(&plain_buffer, row);
+    assert_eq!(plain_buffer[(row.x, row.y)].bg, SURFACE);
+
+    app.mouse_position = Some((row.x + 2, row.y));
+    let (_, hover_buffer) = render_80x24(&mut app);
+    assert_ne!(plain, styled_cells(&hover_buffer, row));
+    assert_eq!(hover_buffer[(row.x, row.y)].bg, SURFACE_HOVER);
+
+    app.mouse_position = Some((0, 0));
+    let (_, restored_buffer) = render_80x24(&mut app);
+    assert_eq!(styled_cells(&restored_buffer, row), plain);
+}
+
+/// Hover numa linha de Configurações: o campo inteiro (rótulo e valor) acende.
+#[test]
+fn hovering_a_settings_field_lights_both_lines() {
+    let mut app = app();
+    app.show_settings = true;
+    let (_, plain_buffer) = render_80x24(&mut app);
+    let field = region_of(
+        &app,
+        &SemanticAction::SelectSettingsField(SettingsField::Timeout),
+    );
+    let plain = styled_cells(&plain_buffer, field);
+
+    app.mouse_position = Some((field.x + 2, field.y));
+    let (_, hover_buffer) = render_80x24(&mut app);
+
+    assert_ne!(plain, styled_cells(&hover_buffer, field));
+    assert_eq!(hover_buffer[(field.x, field.y)].bg, SURFACE_HOVER);
+    assert_eq!(hover_buffer[(field.x, field.y + 1)].bg, SURFACE_HOVER);
+}
+
+/// A camada sobreposta é quem recebe o clique: o hover não pode acender o que
+/// ficou atrás dela.
+#[test]
+fn hover_does_not_light_elements_behind_an_overlay() {
+    let mut app = app();
+    let (_, plain_buffer) = render_80x24(&mut app);
+    let button = region_of(&app, &SemanticAction::StartScan);
+    let plain = styled_cells(&plain_buffer, button);
+
+    app.show_help_overlay = true;
+    app.mouse_position = Some((button.x + 1, button.y));
+    let (_, overlay_buffer) = render_80x24(&mut app);
+
+    assert_eq!(styled_cells(&overlay_buffer, button), plain);
 }

@@ -1,4 +1,4 @@
-use crate::tui::chrome::{ACCENT, SURFACE};
+use crate::tui::chrome::{ACCENT, SURFACE, SURFACE_HOVER};
 use crate::tui::commands::command_items;
 use crate::tui::interaction::SemanticAction;
 use crate::tui::state::{AppState, AppStep};
@@ -74,7 +74,15 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new("enter ou esc  fechar")
             .alignment(Alignment::Right)
-            .style(Style::default().fg(ACCENT).bg(SURFACE)),
+            .style(
+                Style::default()
+                    .fg(ACCENT)
+                    .bg(if app.mouse_over_overlay(close_area) {
+                        SURFACE_HOVER
+                    } else {
+                        SURFACE
+                    }),
+            ),
         close_area,
     );
 }
@@ -109,6 +117,9 @@ pub fn render_command_palette(app: &mut AppState, frame: &mut Frame, area: Rect)
     let mut lines = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         let selected = index == app.command_cursor;
+        let row_area = Rect::new(chunks[1].x, chunks[1].y + index as u16, chunks[1].width, 1);
+        let clickable = item.enabled && index < chunks[1].height as usize;
+        let hovered = clickable && app.mouse_over_overlay(row_area);
         let foreground = if !item.enabled {
             Color::DarkGray
         } else if selected {
@@ -116,7 +127,13 @@ pub fn render_command_palette(app: &mut AppState, frame: &mut Frame, area: Rect)
         } else {
             Color::Gray
         };
-        let background = if selected { ACCENT } else { SURFACE };
+        let background = if selected {
+            ACCENT
+        } else if hovered {
+            SURFACE_HOVER
+        } else {
+            SURFACE
+        };
         let prefix = if selected { "> " } else { "  " };
         lines.push(
             Line::from(vec![
@@ -133,11 +150,8 @@ pub fn render_command_palette(app: &mut AppState, frame: &mut Frame, area: Rect)
             ])
             .style(Style::default().bg(background)),
         );
-        if item.enabled && index < chunks[1].height as usize {
-            app.register_hit_region(
-                Rect::new(chunks[1].x, chunks[1].y + index as u16, chunks[1].width, 1),
-                SemanticAction::ExecuteCommand(index),
-            );
+        if clickable {
+            app.register_hit_region(row_area, SemanticAction::ExecuteCommand(index));
         }
     }
     frame.render_widget(
@@ -205,7 +219,15 @@ pub fn render_report_viewer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new("↑↓ rolar · enter ou esc  voltar")
             .alignment(Alignment::Right)
-            .style(Style::default().fg(ACCENT).bg(SURFACE)),
+            .style(
+                Style::default()
+                    .fg(ACCENT)
+                    .bg(if app.mouse_over_overlay(rows[2]) {
+                        SURFACE_HOVER
+                    } else {
+                        SURFACE
+                    }),
+            ),
         rows[2],
     );
 }

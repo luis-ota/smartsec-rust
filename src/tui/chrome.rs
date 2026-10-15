@@ -12,10 +12,14 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 pub const BACKGROUND: Color = Color::Rgb(10, 12, 15);
 pub const SURFACE: Color = Color::Rgb(17, 20, 24);
 pub const SURFACE_ACTIVE: Color = Color::Rgb(28, 34, 39);
+/// Fundo de hover: mais claro que `SURFACE` sem competir com o foco.
+pub const SURFACE_HOVER: Color = Color::Rgb(42, 51, 59);
 pub const BORDER: Color = Color::Rgb(55, 62, 68);
 pub const TEXT: Color = Color::Rgb(224, 229, 232);
 pub const MUTED: Color = Color::Rgb(125, 134, 140);
 pub const ACCENT: Color = Color::Rgb(70, 190, 200);
+/// Realce do botão primário sob o mouse: o mesmo accent, mais claro.
+pub const ACCENT_HOVER: Color = Color::Rgb(132, 230, 240);
 pub const SUCCESS: Color = Color::Rgb(92, 184, 122);
 pub const WARNING: Color = Color::Rgb(215, 174, 87);
 pub const DANGER: Color = Color::Rgb(220, 100, 100);
@@ -113,6 +117,13 @@ fn render_status_bar(app: &mut AppState, frame: &mut Frame, area: Rect, status: 
     const COMMANDS: &str = "ctrl+p comandos";
     let right_width = HELP.width() + 2 + COMMANDS.width() + 1;
     let right_x = area.x + area.width.saturating_sub(right_width as u16);
+    let help_area = Rect::new(right_x, area.y, HELP.width() as u16, 1);
+    let commands_area = Rect::new(
+        right_x + HELP.width() as u16 + 2,
+        area.y,
+        COMMANDS.width() as u16,
+        1,
+    );
     // Coluna de separação: sem ela o status encosta no atalho ("obrigatóriof1 ajuda").
     let status_width = area.width.saturating_sub(right_width as u16 + 4) as usize;
     let status = truncate_width(status, status_width);
@@ -125,30 +136,24 @@ fn render_status_bar(app: &mut AppState, frame: &mut Frame, area: Rect, status: 
         .style(Style::default().bg(SURFACE)),
         area,
     );
+    let shortcut_style = |hovered: bool| {
+        Style::default()
+            .fg(if hovered { ACCENT } else { TEXT })
+            .bg(if hovered { SURFACE_HOVER } else { SURFACE })
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(HELP, Style::default().fg(TEXT)),
+            Span::styled(HELP, shortcut_style(app.mouse_over(help_area))),
             Span::styled("  ", Style::default().fg(MUTED)),
-            Span::styled(COMMANDS, Style::default().fg(TEXT)),
+            Span::styled(COMMANDS, shortcut_style(app.mouse_over(commands_area))),
             Span::raw(" "),
         ]))
         .alignment(Alignment::Right)
         .style(Style::default().bg(SURFACE)),
         area,
     );
-    app.register_hit_region(
-        Rect::new(right_x, area.y, HELP.width() as u16, 1),
-        SemanticAction::OpenHelp,
-    );
-    app.register_hit_region(
-        Rect::new(
-            right_x + HELP.width() as u16 + 2,
-            area.y,
-            COMMANDS.width() as u16,
-            1,
-        ),
-        SemanticAction::OpenCommandPalette,
-    );
+    app.register_hit_region(help_area, SemanticAction::OpenHelp);
+    app.register_hit_region(commands_area, SemanticAction::OpenCommandPalette);
 }
 
 fn status_color(app: &AppState) -> Color {
@@ -174,6 +179,18 @@ pub fn panel<'a>(title: &'a str, focused: bool) -> Block<'a> {
         .style(Style::default().bg(SURFACE))
 }
 
+/// Painel cuja área inteira é clicável: a borda e o título acendem sob o mouse
+/// sem alterar o layout nem o realce de foco do teclado.
+pub fn panel_hover<'a>(title: &'a str, focused: bool, hovered: bool) -> Block<'a> {
+    if hovered && !focused {
+        panel(title, focused)
+            .border_style(Style::default().fg(ACCENT))
+            .title_style(Style::default().fg(ACCENT).bold())
+    } else {
+        panel(title, focused)
+    }
+}
+
 pub fn render_button(
     app: &mut AppState,
     frame: &mut Frame,
@@ -182,12 +199,15 @@ pub fn render_button(
     action: SemanticAction,
     state: ButtonState,
 ) {
+    let hovered = state.enabled && app.mouse_over(area);
     let (foreground, background) = if !state.enabled {
         (MUTED, SURFACE)
     } else if state.primary {
-        (Color::Black, ACCENT)
+        (Color::Black, if hovered { ACCENT_HOVER } else { ACCENT })
     } else if state.focused {
-        (TEXT, SURFACE_ACTIVE)
+        (if hovered { ACCENT } else { TEXT }, SURFACE_ACTIVE)
+    } else if hovered {
+        (ACCENT, SURFACE_HOVER)
     } else {
         (MUTED, SURFACE)
     };

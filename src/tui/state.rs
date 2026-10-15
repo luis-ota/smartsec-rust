@@ -383,6 +383,8 @@ pub struct AppState {
     pub overlay_return_focus: FocusTarget,
     pub didactic_return_focus: FocusTarget,
     pub hit_regions: Vec<HitRegion>,
+    /// Última posição do mouse, usada só no realce de hover; nunca move o foco.
+    pub mouse_position: Option<(u16, u16)>,
     run_receiver: Option<mpsc::Receiver<RunEvent>>,
     run_task: Option<JoinHandle<()>>,
     pub(crate) rag_receiver: Option<mpsc::Receiver<RunEvent>>,
@@ -542,6 +544,7 @@ impl AppState {
             overlay_return_focus: FocusTarget::SplashTarget,
             didactic_return_focus: FocusTarget::SplashTarget,
             hit_regions: Vec::new(),
+            mouse_position: None,
             run_receiver: None,
             run_task: None,
             rag_results: std::collections::BTreeMap::new(),
@@ -569,6 +572,40 @@ impl AppState {
             .rev()
             .find(|region| region.contains(column, row))
             .map(|region| region.action.clone())
+    }
+
+    pub fn set_mouse_position(&mut self, position: Option<(u16, u16)>) {
+        self.mouse_position = position;
+    }
+
+    /// Hover na tela base: desligado com uma camada sobreposta aberta, que
+    /// limpou as regiões clicáveis e passou a ser a única superfície de clique.
+    pub fn mouse_over(&self, area: Rect) -> bool {
+        !self.overlay_on_top() && self.pointer_within(area)
+    }
+
+    /// Hover dentro da camada sobreposta, que recebe o clique enquanto aberta.
+    pub fn mouse_over_overlay(&self, area: Rect) -> bool {
+        self.pointer_within(area)
+    }
+
+    fn overlay_on_top(&self) -> bool {
+        self.show_help_overlay
+            || self.show_command_palette
+            || self.show_report_viewer
+            || self.show_trace_overlay
+    }
+
+    fn pointer_within(&self, area: Rect) -> bool {
+        let Some((column, row)) = self.mouse_position else {
+            return false;
+        };
+        area.width > 0
+            && area.height > 0
+            && column >= area.x
+            && column < area.x.saturating_add(area.width)
+            && row >= area.y
+            && row < area.y.saturating_add(area.height)
     }
 
     pub fn mode(&self) -> ExecutionType {

@@ -89,7 +89,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
 fn render_target(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let focused = app.focus == FocusTarget::SplashTarget;
-    let block = chrome::panel("Alvo", focused);
+    let block = chrome::panel_hover("Alvo", focused, app.mouse_over(area));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let value = if app.config.target_url.is_empty() {
@@ -135,7 +135,11 @@ fn render_modes(app: &mut AppState, frame: &mut Frame, area: Rect) {
     ] {
         let focused = app.focus == focus;
         let selected = app.mode() == mode;
-        let block = chrome::panel(if selected { "Modo selecionado" } else { "Modo" }, focused);
+        let block = chrome::panel_hover(
+            if selected { "Modo selecionado" } else { "Modo" },
+            focused,
+            app.mouse_over(column),
+        );
         let inner = block.inner(column);
         frame.render_widget(block, column);
         frame.render_widget(
@@ -153,7 +157,7 @@ fn render_modes(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
 fn render_model(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let focused = app.focus == FocusTarget::SplashSettings;
-    let block = chrome::panel("Modelo de IA", focused);
+    let block = chrome::panel_hover("Modelo de IA", focused, app.mouse_over(area));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let provider =
