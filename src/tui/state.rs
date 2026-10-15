@@ -1,6 +1,7 @@
 use crate::ai::agent::AIAgent;
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmProviderKind;
+use crate::config::llm_config::{MAX_RETRIES, MAX_TIMEOUT_SECS};
 use crate::config::Configuration;
 use crate::domain::security_tool::SecurityTool;
 use crate::domain::vulnerability::Vulnerability;
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use tokio::task::JoinHandle;
+use unicode_width::UnicodeWidthStr;
 
 /// Capacidade do canal de eventos da execução.
 ///
@@ -1777,32 +1779,141 @@ impl AppState {
             .collect()
     }
 
-    /// Ordem de tabulação: concatenação das colunas; as setas usam o eixo da coluna.
-    pub fn settings_columns(&self) -> [Vec<SettingsField>; 2] {
-        let mut primary = vec![
+    /// Grupos por propósito, já divididos nas duas colunas da tela.
+    ///
+    /// É a única fonte da divisão: o desenho usa os títulos como seções e a
+    /// navegação usa a mesma ordem para a tabulação e para as setas de coluna.
+    pub fn settings_column_groups(&self) -> [Vec<(&'static str, Vec<SettingsField>)>; 2] {
+        let remote = self.settings_connection_is_remote();
+        let mut responde = vec![
             SettingsField::Provider,
             SettingsField::BaseUrl,
             SettingsField::Model,
         ];
-        if self.settings_connection_is_remote() {
-            primary.extend([SettingsField::ApiKey, SettingsField::RemoteConsent]);
+        if remote {
+            responde.push(SettingsField::ApiKey);
         }
-        let mut reliability = vec![
-            SettingsField::Timeout,
-            SettingsField::Retries,
-            SettingsField::FallbackEnabled,
-        ];
-        // Junto dos limites porque decide o escopo de leitura do agente, não o transporte.
-        reliability.push(SettingsField::ProjectDir);
+        let mut limites = Vec::new();
+        if remote {
+            limites.push(SettingsField::RemoteConsent);
+        }
+        limites.extend([SettingsField::Timeout, SettingsField::Retries]);
+        let mut reserva = vec![SettingsField::FallbackEnabled];
         if self.settings_fallback_enabled {
-            reliability.extend([SettingsField::FallbackBaseUrl, SettingsField::FallbackModel]);
+            reserva.extend([SettingsField::FallbackBaseUrl, SettingsField::FallbackModel]);
         }
-        [primary, reliability]
+        // Junto de "quem responde" porque decide o escopo de leitura do agente,
+        // não o transporte.
+        let analisar = vec![SettingsField::ProjectDir];
+        [
+            vec![("Quem responde", responde), ("O que analisar", analisar)],
+            vec![
+                ("Segurança e limites", limites),
+                ("Alternativa local", reserva),
+            ],
+        ]
+    }
+
+    /// Ordem de tabulação: concatenação das colunas; as setas usam o eixo da coluna.
+    pub fn settings_columns(&self) -> [Vec<SettingsField>; 2] {
+        let [left, right] = self.settings_column_groups();
+        let flatten = |groups: Vec<(&'static str, Vec<SettingsField>)>| -> Vec<SettingsField> {
+            groups.into_iter().flat_map(|(_, fields)| fields).collect()
+        };
+        [flatten(left), flatten(right)]
     }
 
     pub fn visible_settings_fields(&self) -> Vec<SettingsField> {
         let [primary, reliability] = self.settings_columns();
         primary.into_iter().chain(reliability).collect()
+    }
+
+    /// Uma linha que responde "o que acontece se eu salvar" no estado do
+    /// rascunho. O modelo só entra quando cabe junto com o resto: em 80
+    /// colunas a segurança (envio remoto, nada sai da máquina) vale mais que
+    /// o nome.
+    ///
+    /// Não chama `settings_candidate`: validar abre o diretório do projeto, e
+    /// o desenho de um quadro não pode tocar o disco.
+    pub fn settings_summary(&self, max_width: usize) -> String {
+        let parts = self.settings_summary_parts();
+        let model = self.settings_effective_model();
+        if !model.trim().is_empty() {
+            let mut with_model = parts.clone();
+            with_model.insert(1, model);
+            let candidate = with_model.join(" · ");
+            if candidate.width() <= max_width {
+                return candidate;
+            }
+        }
+        let mut line = String::new();
+        for part in parts {
+            let candidate = if line.is_empty() {
+                part
+            } else {
+                format!("{line} · {part}")
+            };
+            if !line.is_empty() && candidate.width() > max_width {
+                break;
+            }
+            line = candidate;
+        }
+        line
+    }
+
+    fn settings_summary_parts(&self) -> Vec<String> {
+        if self.settings_effective_base_url().trim().is_empty() {
+            return vec![
+                "IA desligada: a análise usa as regras do SmartSec, sem modelo".to_string(),
+            ];
+        }
+        let mut parts = vec![format!("IA: {}", self.settings_provider().label())];
+        parts.extend(
+            self.settings_draft_problems()
+                .into_iter()
+                .map(str::to_string),
+        );
+        if self.settings_connection_is_remote() {
+            parts.push(
+                match (
+                    self.settings_api_key_touched,
+                    self.settings_input_api_key.trim().is_empty(),
+                ) {
+                    (true, false) => "chave nova digitada".to_string(),
+                    (false, false) => "chave salva".to_string(),
+                    _ => "sem chave".to_string(),
+                },
+            );
+            parts.push(if self.settings_remote_consent {
+                "envio remoto permitido".to_string()
+            } else {
+                "envio remoto bloqueado".to_string()
+            });
+        } else {
+            parts.push("nada sai da máquina".to_string());
+        }
+        if self.settings_fallback_enabled {
+            parts.push("reserva local ligada".to_string());
+        }
+        parts
+    }
+
+    /// Problemas que se leem do próprio rascunho, sem validação no disco.
+    fn settings_draft_problems(&self) -> Vec<&'static str> {
+        let mut problems = Vec::new();
+        let timeout = self.settings_input_timeout.trim().parse::<u64>();
+        if !matches!(timeout, Ok(value) if (1..=MAX_TIMEOUT_SECS).contains(&value)) {
+            problems.push("tempo limite inválido");
+        }
+        let retries = self.settings_input_retries.trim().parse::<u8>();
+        if !matches!(retries, Ok(value) if value <= MAX_RETRIES) {
+            problems.push("tentativas inválidas");
+        }
+        let model = self.settings_effective_model();
+        if model.trim().is_empty() || model.chars().any(char::is_whitespace) {
+            problems.push("modelo inválido");
+        }
+        problems
     }
 
     pub fn focused_settings_field(&self) -> Option<SettingsField> {
@@ -1862,7 +1973,7 @@ impl AppState {
             .count()
     }
 
-    fn settings_effective_base_url(&self) -> String {
+    pub(crate) fn settings_effective_base_url(&self) -> String {
         let draft = self.settings_input_base_url.trim();
         if draft.is_empty() {
             self.settings_provider().default_base_url().to_string()
@@ -1887,7 +1998,7 @@ impl AppState {
             .unwrap_or_else(|| self.config.effective_project_dir().display().to_string())
     }
 
-    fn settings_provider(&self) -> LlmProviderKind {
+    pub(crate) fn settings_provider(&self) -> LlmProviderKind {
         LlmProviderKind::from_label(LlmProviderKind::all_labels()[self.settings_provider_idx])
     }
 
@@ -1927,12 +2038,17 @@ impl AppState {
             .settings_input_timeout
             .trim()
             .parse::<u64>()
-            .map_err(|_| "Informe um tempo limite inteiro entre 1 e 45 segundos".to_string())?;
+            .map_err(|_| {
+                "Tempo limite inválido: informe um número inteiro entre 1 e 45 segundos."
+                    .to_string()
+            })?;
         let retries = self
             .settings_input_retries
             .trim()
             .parse::<u8>()
-            .map_err(|_| "Informe uma quantidade de tentativas entre 0 e 3".to_string())?;
+            .map_err(|_| {
+                "Tentativas inválidas: informe um número inteiro entre 0 e 3.".to_string()
+            })?;
         let mut candidate = self.config.clone();
         candidate.llm.provider = provider;
         candidate.llm.base_url = self.settings_effective_base_url();
@@ -1954,8 +2070,11 @@ impl AppState {
         } else {
             PathBuf::from(&project)
         };
-        crate::code_agent::workspace::Workspace::open(&project_path)
-            .map_err(|error| format!("Diretório do projeto inválido: {error}"))?;
+        crate::code_agent::workspace::Workspace::open(&project_path).map_err(|error| {
+            format!(
+                "Diretório do projeto inválido: {error}; escolha uma pasta existente e legível."
+            )
+        })?;
         candidate.project_dir = Some(project);
         Ok(candidate)
     }

@@ -130,7 +130,7 @@ ser revista junto.
 | Headless `[3/4]` | Diretório analisado, `arquivo:linha`, correção por achado e o motivo quando não há origem |
 | TUI — detalhe do achado | Arquivo, linha, passos numerados; ou "localização não determinada" + motivo |
 | TUI — resumo | Diretório do projeto ao lado do alvo |
-| TUI — configurações | Campo "Projeto analisado", validado pelo mesmo sandbox da fase |
+| TUI — configurações | Campo "Pasta do projeto", validado pelo mesmo sandbox da fase |
 | TUI — rastreabilidade (F2) | Linha REQ16: origem localizada, total de achados e chamadas de ferramenta |
 | Relatório | Seção "Localização no código" com **todos** os achados e o diretório no cabeçalho |
 | Log estruturado | `code_project_dir`, `code_located_count`, `code_tool_calls_count`, `code_tool_calls`, `code_unavailable_reason` |

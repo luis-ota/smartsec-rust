@@ -2686,8 +2686,8 @@ mod tests {
         press(&mut app, KeyCode::Up);
         assert_eq!(
             app.focus,
-            FocusTarget::SettingsField(SettingsField::RemoteConsent),
-            "no topo da coluna a navegação dá a volta"
+            FocusTarget::SettingsField(SettingsField::ProjectDir),
+            "no fim da coluna a navegação dá a volta"
         );
 
         set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Timeout));
@@ -2695,7 +2695,7 @@ mod tests {
         assert_eq!(
             app.focus,
             FocusTarget::SettingsField(SettingsField::Retries),
-            "a coluna de confiabilidade anda por conta própria"
+            "a coluna de segurança e limites anda por conta própria"
         );
     }
 
@@ -2706,14 +2706,18 @@ mod tests {
         let mut app = settings_app();
         render_app(&mut app, 80, 24);
 
-        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::Model));
+        set_focus(&mut app, FocusTarget::SettingsField(SettingsField::BaseUrl));
         press(&mut app, KeyCode::Right);
         assert_eq!(
             app.focus,
-            FocusTarget::SettingsField(SettingsField::FallbackEnabled)
+            FocusTarget::SettingsField(SettingsField::Timeout),
+            "a linha equivalente da coluna vizinha"
         );
         press(&mut app, KeyCode::Left);
-        assert_eq!(app.focus, FocusTarget::SettingsField(SettingsField::Model));
+        assert_eq!(
+            app.focus,
+            FocusTarget::SettingsField(SettingsField::BaseUrl)
+        );
 
         set_focus(
             &mut app,
@@ -2722,7 +2726,7 @@ mod tests {
         press(&mut app, KeyCode::Right);
         assert_eq!(
             app.focus,
-            FocusTarget::SettingsField(SettingsField::ProjectDir),
+            FocusTarget::SettingsField(SettingsField::Provider),
             "sem linha equivalente, a coluna vizinha usa a última disponível"
         );
 
@@ -2733,7 +2737,7 @@ mod tests {
         press(&mut app, KeyCode::Right);
         assert_eq!(
             app.focus,
-            FocusTarget::SettingsField(SettingsField::Model),
+            FocusTarget::SettingsField(SettingsField::ApiKey),
             "a coluna vizinha usa a linha equivalente"
         );
         assert!(
@@ -2757,10 +2761,7 @@ mod tests {
             FocusTarget::SettingsField(SettingsField::FallbackEnabled)
         );
         press(&mut app, KeyCode::Right);
-        assert_eq!(
-            app.focus,
-            FocusTarget::SettingsField(SettingsField::ProjectDir)
-        );
+        assert_eq!(app.focus, FocusTarget::SettingsCancel);
         press(&mut app, KeyCode::Left);
         assert_eq!(
             app.focus,
@@ -2776,7 +2777,7 @@ mod tests {
 
         set_focus(
             &mut app,
-            FocusTarget::SettingsField(SettingsField::ProjectDir),
+            FocusTarget::SettingsField(SettingsField::FallbackEnabled),
         );
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.focus, FocusTarget::SettingsCancel);

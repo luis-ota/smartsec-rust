@@ -24,7 +24,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(block, popup);
 
     let context = if app.show_settings {
-        "Setas movem, enter edita o campo e esc descarta o rascunho."
+        "Campos agrupados por assunto; o rodapé explica o campo em foco."
     } else {
         match app.step {
             AppStep::Splash => "Defina o alvo, o modo de execução e inicie a análise.",
@@ -39,27 +39,52 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
             AppStep::History => "Consulte execuções anteriores e abra o detalhe de cada uma.",
         }
     };
-    let lines = vec![
-        Line::styled(context, Style::default().fg(Color::Gray)),
-        Line::from(""),
-        shortcut("tab / shift+tab", "mover o foco"),
-        shortcut("setas", "navegar ou rolar"),
-        shortcut("enter / espaço", "acionar o item em foco ou abrir o campo"),
-        shortcut("p", "pausar ou retomar a execução"),
-        shortcut("c", "cancelar a execução em andamento"),
-        shortcut("i", "abrir a atividade da IA (ou clique no bloco)"),
-        shortcut("ctrl+u", "limpar o campo de texto em foco"),
-        shortcut("esc", "sair do campo em edição ou voltar"),
-        shortcut("f1", "abrir ajuda em qualquer contexto"),
-        shortcut("f2", "rastreabilidade da Sprint 1"),
-        shortcut("h", "consultar o histórico de execuções"),
-        shortcut("ctrl+p", "abrir a paleta de comandos"),
-        Line::from(""),
-        Line::styled(
-            "O mouse oferece as mesmas ações disponíveis pelo teclado.",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ];
+    let lines = if app.show_settings {
+        vec![
+            Line::styled(context, Style::default().fg(Color::Gray)),
+            Line::from(""),
+            shortcut("setas", "mover na coluna (↑↓) ou trocar de coluna (←→)"),
+            shortcut("enter", "abrir o campo para digitar ou trocar a seleção"),
+            shortcut("espaço", "alternar as opções liga/desliga"),
+            shortcut("ctrl+u", "limpar o campo de texto em foco"),
+            shortcut("esc", "sair do campo em edição ou descartar o rascunho"),
+            shortcut("tab", "percorrer campos, descartar e salvar"),
+            Line::from(""),
+            shortcut("f1", "abrir ajuda em qualquer contexto"),
+            shortcut("ctrl+p", "abrir a paleta de comandos"),
+            Line::from(""),
+            Line::styled(
+                "O resumo no topo diz o que será aplicado ao salvar.",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Line::styled(
+                "O mouse oferece as mesmas ações do teclado.",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]
+    } else {
+        vec![
+            Line::styled(context, Style::default().fg(Color::Gray)),
+            Line::from(""),
+            shortcut("tab / shift+tab", "mover o foco"),
+            shortcut("setas", "navegar ou rolar"),
+            shortcut("enter / espaço", "acionar o item em foco ou abrir o campo"),
+            shortcut("p", "pausar ou retomar a execução"),
+            shortcut("c", "cancelar a execução em andamento"),
+            shortcut("i", "abrir a atividade da IA (ou clique no bloco)"),
+            shortcut("ctrl+u", "limpar o campo de texto em foco"),
+            shortcut("esc", "sair do campo em edição ou voltar"),
+            shortcut("f1", "abrir ajuda em qualquer contexto"),
+            shortcut("f2", "rastreabilidade da Sprint 1"),
+            shortcut("h", "consultar o histórico de execuções"),
+            shortcut("ctrl+p", "abrir a paleta de comandos"),
+            Line::from(""),
+            Line::styled(
+                "O mouse oferece as mesmas ações disponíveis pelo teclado.",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]
+    };
     frame.render_widget(
         Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
         inner,
