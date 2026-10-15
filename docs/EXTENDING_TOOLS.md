@@ -65,12 +65,12 @@ shell é usado: cada item da lista vira um argumento literal do container.
 
 | Ferramenta | Imagem e versão | Runner | Parser |
 |---|---|---|---|
-| Nmap | `docker.io/instrumentisto/nmap:7.95` (tag) | `nmap` | `nmap-xml` |
-| Nuclei | `docker.io/projectdiscovery/nuclei@sha256:2a11…` (digest) | `nuclei` | `nuclei-jsonl` |
+| Nmap | `docker.io/instrumentisto/nmap:7.98@sha256:96f6ed19…` (digest), versão `7.98` | `nmap` | `nmap-xml` |
+| Nuclei | `docker.io/projectdiscovery/nuclei@sha256:582d5546…` (digest) | `nuclei` | `nuclei-jsonl` |
 | Nikto | `docker.io/alpine/nikto:2.2.0@sha256:eb2fe882…` (digest), versão `2.1.6` | `generic` | `nikto-json` |
 | SQLMap | `docker.io/parrotsec/sqlmap:7.3@sha256:31bb35cd…` (digest), versão `1.10.4` | `generic` | `sqlmap-text` |
-| TruffleHog | `docker.io/trufflesecurity/trufflehog@sha256:52e67fef…` (digest), versão `3.97.9` | `repository` | `trufflehog-jsonl` |
-| ZAP | `ghcr.io/zaproxy/zaproxy:2.14.0@sha256:3280adc7…` (digest), versão `2.14.0` | `zap` | `zap-json` |
+| TruffleHog | `docker.io/trufflesecurity/trufflehog@sha256:47a84bc1…` (digest), versão `3.99.2` | `repository` | `trufflehog-jsonl` |
+| ZAP | `ghcr.io/zaproxy/zaproxy:2.16.0@sha256:391f66ef…` (digest), versão `2.16.0` | `zap` | `zap-json` |
 
 ### Nikto
 

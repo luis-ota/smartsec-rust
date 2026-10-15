@@ -480,7 +480,7 @@ mod tests {
             "{}",
             zap.manifest.image
         );
-        assert_eq!(zap.manifest.version, "2.14.0");
+        assert_eq!(zap.manifest.version, "2.16.0");
     }
 
     #[test]
@@ -705,8 +705,8 @@ mod tests {
              name = \"ScannerExemplo\"\n\
              description = \"Scanner de servidores web\"\n\
              category = \"DAST\"\n\
-             image = \"example/scanner:2.14.0\"\n\
-             version = \"2.14.0\"\n\
+             image = \"example/scanner:2.16.0\"\n\
+             version = \"2.16.0\"\n\
              runner = \"generic\"\n\
              parser = \"generic-text\"\n\
              command_template = [\"scanner\", \"-host\", \"{target}\"]\n\
@@ -719,7 +719,7 @@ mod tests {
         let scanner = registry.find("ScannerExemplo").unwrap();
         assert_eq!(scanner.runner, RunnerKind::Generic);
         assert_eq!(scanner.parser, ParserKind::GenericText);
-        assert_eq!(scanner.manifest.version, "2.14.0");
+        assert_eq!(scanner.manifest.version, "2.16.0");
     }
 
     #[test]

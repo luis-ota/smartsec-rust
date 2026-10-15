@@ -291,8 +291,8 @@ mod tests {
             "alpine",
             "alpine:3.20",
             "localhost:5000/nikto:2.5.0",
-            "docker.io/instrumentisto/nmap:7.95",
-            "docker.io/projectdiscovery/nuclei@sha256:2a11faa83464d769a888f1abb9396d5b4d8640619dfc6310086bf5c0d4003481",
+            "docker.io/instrumentisto/nmap:7.98@sha256:96f6ed194519b62421a1a1c57809e65a7f94d2aa1c8c25676f247e5e148c0827",
+            "docker.io/projectdiscovery/nuclei@sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb",
             "example/tool@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         ] {
             let mut manifest = manifest();

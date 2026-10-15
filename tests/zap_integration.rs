@@ -138,7 +138,7 @@ fn zap_is_selectable_in_the_headless_run_and_records_image_and_version() {
 
     let calls = sandbox.calls();
     // A imagem fixada por digest e o comando sem shell chegam ao container.
-    assert!(calls.contains("ghcr.io/zaproxy/zaproxy:2.14.0@sha256:3280adc730131f1f4460ab226b0f85e3e9ab3301ef5a7030f745ac4dd6b6ff87"), "{calls}");
+    assert!(calls.contains("ghcr.io/zaproxy/zaproxy:2.16.0@sha256:391f66efa53b30de40d4a1c6e28146477263552fc828bc7613c9cd11a2949908"), "{calls}");
     assert!(
         calls.contains("zap.sh -Xmx1024m -cmd -autorun /zap/automation/scan.yaml"),
         "{calls}"
@@ -262,10 +262,10 @@ fn zap_findings_reach_the_structured_log_with_url_method_and_reference() {
     assert!(!scan_log.is_empty(), "o log estruturado deve existir");
     // Imagem e versão registradas no log estruturado (RNF09).
     assert!(
-        scan_log.contains("ghcr.io/zaproxy/zaproxy:2.14.0@sha256:3280adc730131f1f4460ab226b0f85e3e9ab3301ef5a7030f745ac4dd6b6ff87"),
+        scan_log.contains("ghcr.io/zaproxy/zaproxy:2.16.0@sha256:391f66efa53b30de40d4a1c6e28146477263552fc828bc7613c9cd11a2949908"),
         "{scan_log}"
     );
-    assert!(scan_log.contains("2.14.0"), "{scan_log}");
+    assert!(scan_log.contains("2.16.0"), "{scan_log}");
     // Evidência mínima: URL, método, referência, risco e confiança.
     assert!(
         scan_log.contains("url: http://169.254.1.2:3000"),

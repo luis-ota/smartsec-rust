@@ -2,8 +2,11 @@ use crate::domain::security_tool::SecurityToolRunner;
 
 pub struct NmapTool;
 
-pub const NMAP_IMAGE: &str = "docker.io/instrumentisto/nmap:7.95";
-pub const NMAP_VERSION: &str = "7.95";
+/// Imagem e versão do Nmap do manifesto embutido, fixadas por digest para a
+/// versão ser auditável no log estruturado (RNF09) sem depender de tag mutável.
+pub const NMAP_IMAGE: &str = "docker.io/instrumentisto/nmap:7.98@sha256:96f6ed194519b62421a1a1c57809e65a7f94d2aa1c8c25676f247e5e148c0827";
+/// Versão do Nmap reportada por `nmap -V` dentro da imagem fixada.
+pub const NMAP_VERSION: &str = "7.98";
 
 fn split_host_port(target: &str) -> (String, Option<String>) {
     let mut t = target.trim().to_string();
@@ -106,6 +109,12 @@ mod tests {
             tool.configure_command("example.test"),
             "nmap -Pn -sT -sV -oX - example.test"
         );
+    }
+
+    #[test]
+    fn pins_the_image_by_digest_and_registers_the_version() {
+        assert!(NMAP_IMAGE.contains("@sha256:"));
+        assert_eq!(NMAP_VERSION, "7.98");
     }
 
     #[tokio::test]

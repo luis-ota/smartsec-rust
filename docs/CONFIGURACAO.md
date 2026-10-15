@@ -178,4 +178,4 @@ caminho informado ao fim da execucao. A evidencia homologada desta mudanca esta 
 Para uma execucao real, a configuracao TOML pode definir `nuclei_templates_path` e
 `nuclei_templates_commit`. O SmartSec rejeita o scan se o diretorio nao for um
 checkout Git no commit esperado. A imagem usada e
-`docker.io/projectdiscovery/nuclei@sha256:2a11faa83464d769a888f1abb9396d5b4d8640619dfc6310086bf5c0d4003481`.
+`docker.io/projectdiscovery/nuclei@sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb`.
