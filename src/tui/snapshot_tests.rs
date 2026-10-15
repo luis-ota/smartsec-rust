@@ -763,10 +763,10 @@ fn settings_help_and_palette_match_80x24_snapshots() {
     assert_snapshot(
         &mut app,
         &[
-            "Configurações de IA",
-            "Provedor",
-            "Conexão principal",
-            "Confiabilidade",
+            "Configurar IA",
+            "Provedor de IA",
+            "Quem responde",
+            "Segurança e limites",
             "Salvar alterações",
         ],
     );
@@ -776,7 +776,13 @@ fn settings_help_and_palette_match_80x24_snapshots() {
     app.focus = FocusTarget::HelpClose;
     assert_snapshot(
         &mut app,
-        &["Ajuda", "f1", "qualquer contexto", "mesmas ações"],
+        &[
+            "Ajuda",
+            "f1",
+            "qualquer contexto",
+            "mesmas ações",
+            "rodapé explica o campo em foco",
+        ],
     );
 
     app.show_help_overlay = false;
@@ -1151,10 +1157,10 @@ fn settings_navigation_announces_editing_and_pending_changes_at_80x24() {
     let snapshot = assert_snapshot(
         &mut app,
         &[
-            "Configurações de IA",
-            "Conexão principal",
-            "Confiabilidade",
-            "Editando URL base",
+            "Configurar IA",
+            "Quem responde",
+            "Segurança e limites",
+            "Editando Endereço do serviço",
             "nada é descartado",
             "▏",
         ],
@@ -1162,7 +1168,7 @@ fn settings_navigation_announces_editing_and_pending_changes_at_80x24() {
 
     let label_row = snapshot
         .lines()
-        .position(|line| line.contains("│URL base"))
+        .position(|line| line.contains("│Endereço do serviço"))
         .expect("o campo em edição precisa estar visível");
     assert!(
         snapshot
@@ -1191,11 +1197,11 @@ fn settings_navigation_announces_editing_and_pending_changes_at_80x24() {
     // o destaque de foco é o que diz onde as teclas vão agir.
     super::event::dispatch_action(&mut app, SemanticAction::MoveRight);
     let (movido, buffer) = render_80x24(&mut app);
-    assert!(movido.contains("Retentativas"), "{movido}");
+    assert!(movido.contains("Tempo limite"), "{movido}");
     let row = app
         .hit_regions
         .iter()
-        .find(|region| region.action == SemanticAction::SelectSettingsField(SettingsField::Retries))
+        .find(|region| region.action == SemanticAction::SelectSettingsField(SettingsField::Timeout))
         .expect("a coluna vizinha precisa de região clicável")
         .area;
     assert_eq!(

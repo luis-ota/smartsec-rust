@@ -80,14 +80,23 @@ existe estado intermediário inválido no disco.
 
 ## Configuracao da IA na TUI
 
-A tela `Configurar IA` separa conexao principal de confiabilidade e mostra
-somente os campos aplicaveis. Provedores remotos exibem chave e consentimento;
-o llama.cpp local os oculta. `Tab` percorre os campos e acoes, `←`/`→` alteram
-selecoes, `Espaco` alterna opcoes e `Ctrl+U` limpa o campo atual. Valores
-invalidos mantem a tela aberta com uma mensagem acionavel. Chaves ficam no
+A tela `Configurar IA` agrupa os campos por proposito — *Quem responde*
+(provedor, endereco, modelo e chave), *Seguranca e limites* (envio remoto, tempo
+limite e tentativas), *Alternativa local* e *O que analisar* (pasta do projeto)
+— e mostra somente os campos aplicaveis: provedores remotos exibem chave e
+consentimento; o llama.cpp local os oculta. O rodape da tela explica o campo em
+foco em linguagem simples, com um exemplo; campos vazios exibem o exemplo em
+cinza e a linha `Se salvar:` resume o efeito do rascunho antes de gravar.
+
+`Tab` percorre os campos e acoes, as setas andam na coluna (`↑`/`↓`) e trocam de
+coluna (`←`/`→`), `Enter` abre o campo para digitar, troca o provedor ou aciona
+a opcao em foco, `Espaco` alterna opcoes liga/desliga, `Esc` sai do campo em
+edicao ou descarta o rascunho e `Ctrl+U` limpa o campo atual. Valores invalidos
+mantem a tela aberta com uma mensagem que diz o que corrigir. Chaves ficam no
 keyring do sistema e nunca sao gravadas no TOML. No Linux o keyring usa o
-Secret Service (por exemplo, gnome-keyring ou KWallet), que precisa estar
-ativo para salvar e ler chaves de provedores remotos.
+Secret Service (por exemplo, gnome-keyring ou KWallet), que precisa estar ativo
+para salvar e ler chaves de provedores remotos. A evidencia visual do desenho
+esta em `docs/evidence/tui-config-ia/`.
 
 ## Retentativas e limite de uso
 

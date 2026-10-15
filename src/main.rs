@@ -1379,7 +1379,7 @@ mod tests {
             .expect_err("o headless precisa recusar a configuração inválida");
 
         assert!(
-            format!("{error:#}").contains("tempo limite"),
+            format!("{error:#}").contains("Tempo limite"),
             "o erro do headless precisa ser o mesmo que a interface mostra"
         );
         let _ = std::fs::remove_file(path);

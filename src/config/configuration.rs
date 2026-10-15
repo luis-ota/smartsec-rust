@@ -276,7 +276,7 @@ mod tests {
         .validation_problems();
 
         assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("credenciais"), "{problems:?}");
+        assert!(problems[0].contains("Credenciais"), "{problems:?}");
     }
 
     /// Uma configuracao valida nao produz aviso nenhum: sem isso, a TUI

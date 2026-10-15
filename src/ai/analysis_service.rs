@@ -815,11 +815,11 @@ mod tests {
         assert!(result
             .failure_reason
             .as_deref()
-            .is_some_and(|reason| reason.contains("consentimento")));
+            .is_some_and(|reason| reason.to_lowercase().contains("consentimento")));
         assert!(agent
             .execution_history
             .iter()
-            .any(|entry| entry.contains("consentimento")));
+            .any(|entry| entry.to_lowercase().contains("consentimento")));
     }
 
     #[test]
