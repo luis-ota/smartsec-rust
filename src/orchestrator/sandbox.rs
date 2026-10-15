@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -855,14 +855,14 @@ impl PodmanExecutor {
             _ => status,
         };
 
-        let (stdout, stdout_lines) = stdout_task
+        let stdout_capture = stdout_task
             .await
             .context("falha na tarefa de captura do stdout")?;
-        let (stderr, stderr_lines) = stderr_task
+        let stderr_capture = stderr_task
             .await
             .context("falha na tarefa de captura do stderr")?;
-        trace.lines.extend(stdout_lines);
-        trace.lines.extend(stderr_lines);
+        trace.lines.extend(stdout_capture.lines);
+        trace.lines.extend(stderr_capture.lines);
         match &status {
             ExecutionStatus::Succeeded => {
                 trace.emit(format!("container {container_id} concluído com sucesso"));
@@ -884,8 +884,8 @@ impl PodmanExecutor {
         }
 
         Ok((
-            String::from_utf8_lossy(&stdout).into_owned(),
-            String::from_utf8_lossy(&stderr).into_owned(),
+            String::from_utf8_lossy(&stdout_capture.bytes).into_owned(),
+            String::from_utf8_lossy(&stderr_capture.bytes).into_owned(),
             status,
             started_at.elapsed(),
         ))
@@ -1063,42 +1063,129 @@ fn output_message(stderr: &[u8]) -> String {
 /// Lê um stream do container linha a linha, preservando os bytes exatos para
 /// auditoria e encaminhando cada linha ao vivo para o `sink` (TUI/headless).
 ///
-/// `read_until` mantém o terminador quando presente, então a saída
-/// reconstruída é byte a byte idêntica à original.
+/// A captura tem teto: uma ferramenta fora de controle (progresso com `\r`,
+/// laço de erros) enchia a memória do processo até o OOM-killer matá-lo. O que
+/// passar do teto é descartado e o truncamento fica marcado no próprio texto.
 async fn read_stream_live<R>(
     stream: R,
     sink: Option<mpsc::UnboundedSender<String>>,
-) -> (Vec<u8>, Vec<String>)
+) -> StreamCapture
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut reader = tokio::io::BufReader::new(stream);
-    let mut bytes = Vec::new();
-    let mut lines = Vec::new();
-    let mut chunk = Vec::new();
+    let mut capture = StreamCapture::default();
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buffer = [0u8; 8192];
     loop {
-        match reader.read_until(b'\n', &mut chunk).await {
+        let read = match reader.read(&mut buffer).await {
             Ok(0) => break,
-            Ok(_) => {
-                bytes.extend_from_slice(&chunk);
-                let lossy = String::from_utf8_lossy(&chunk);
-                let raw_line = lossy.trim_end_matches(['\r', '\n']);
-                // O trace vai ao vivo para a TUI/headless e para o log
-                // estruturado. Sanitizar aqui é obrigatório: o stdout do TruffleHog
-                // carrega o valor do segredo em `Raw`, `RawV2`, `Redacted` e
-                // `SecretParts`, e sem esta etapa ele apareceria em tela.
-                let display = crate::utils::redaction::sanitize_text(raw_line);
-                let line = format!("[{}] {display}", timestamp());
-                if let Some(sink) = &sink {
-                    let _ = sink.send(line.clone());
-                }
-                lines.push(line);
-                chunk.clear();
-            }
+            Ok(read) => read,
             Err(_) => break,
+        };
+        capture.total_seen += read;
+        for &byte in &buffer[..read] {
+            if byte == b'\n' || byte == b'\r' {
+                flush_captured_line(&mut capture, &mut pending, Some(byte), false, sink.as_ref());
+            } else {
+                pending.push(byte);
+                if pending.len() >= MAX_PENDING_LINE_BYTES {
+                    flush_captured_line(&mut capture, &mut pending, None, true, sink.as_ref());
+                    capture.truncated = true;
+                }
+            }
         }
     }
-    (bytes, lines)
+    if !pending.is_empty() {
+        flush_captured_line(&mut capture, &mut pending, None, false, sink.as_ref());
+    }
+    if capture.truncated {
+        let marker = truncation_marker(capture.bytes.len(), capture.total_seen);
+        capture.bytes.extend_from_slice(marker.as_bytes());
+        capture.lines.push(marker.trim().to_string());
+        if let Some(sink) = &sink {
+            let _ = sink.send(marker.trim().to_string());
+        }
+    }
+    capture
+}
+
+/// Tetos da captura de um stream do container.
+///
+/// Medido: uma TUI de 7,9 GB de RAM foi morta pelo OOM-killer com a captura
+/// sem teto de stdout/stderr de uma ferramenta fora de controle.
+const MAX_CAPTURED_STREAM_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PENDING_LINE_BYTES: usize = 16 * 1024;
+const MAX_TRACE_LINES_PER_STREAM: usize = 5_000;
+const MAX_LINE_DISPLAY_CHARS: usize = 2_000;
+
+#[derive(Default)]
+struct StreamCapture {
+    bytes: Vec<u8>,
+    lines: Vec<String>,
+    total_seen: usize,
+    truncated: bool,
+}
+
+fn truncation_marker(kept: usize, total: usize) -> String {
+    format!(
+        "\n[saída truncada: capturados {kept} de {total} bytes lidos; o restante foi descartado para não esgotar a memória]\n"
+    )
+}
+
+/// Fecha a linha pendente: bytes exatos para auditoria, linha formatada para o
+/// trace ao vivo. `partial` marca a linha cortada no teto (não o fim normal do
+/// stream sem terminador, que não é truncamento).
+fn flush_captured_line(
+    capture: &mut StreamCapture,
+    pending: &mut Vec<u8>,
+    terminator: Option<u8>,
+    partial: bool,
+    sink: Option<&mpsc::UnboundedSender<String>>,
+) {
+    let remaining = MAX_CAPTURED_STREAM_BYTES.saturating_sub(capture.bytes.len());
+    if remaining == 0 {
+        capture.truncated = true;
+    } else {
+        let take = pending.len().min(remaining);
+        capture.bytes.extend_from_slice(&pending[..take]);
+        if take < pending.len() {
+            capture.truncated = true;
+        } else if let Some(byte) = terminator {
+            if capture.bytes.len() < MAX_CAPTURED_STREAM_BYTES {
+                capture.bytes.push(byte);
+            } else {
+                capture.truncated = true;
+            }
+        }
+    }
+    if partial {
+        capture.truncated = true;
+    }
+
+    let lossy = String::from_utf8_lossy(pending);
+    let raw = lossy.trim_end_matches(['\r', '\n']);
+    let display =
+        crate::utils::redaction::sanitize_text(&truncate_chars(raw, MAX_LINE_DISPLAY_CHARS));
+    let line = format!("[{}] {display}", timestamp());
+    if let Some(sink) = sink {
+        let _ = sink.send(line.clone());
+    }
+    if capture.lines.len() < MAX_TRACE_LINES_PER_STREAM {
+        capture.lines.push(line);
+    } else {
+        capture.truncated = true;
+    }
+    pending.clear();
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut output: String = value.chars().take(max_chars).collect();
+    output.push('…');
+    output
 }
 
 #[cfg(test)]
@@ -1936,5 +2023,64 @@ mod tests {
             "a recusa do Podman precisa aparecer no trace:\n{trace}"
         );
         assert!(fake.calls().contains("rm --force --ignore container-123"));
+    }
+
+    #[tokio::test]
+    async fn a_small_stream_stays_byte_exact() {
+        let input = b"linha um\nlinha dois\n";
+
+        let capture = read_stream_live(&input[..], None).await;
+
+        assert_eq!(capture.bytes, input);
+        assert_eq!(capture.lines.len(), 2);
+        assert!(!capture.truncated);
+    }
+
+    #[tokio::test]
+    async fn carriage_returns_split_progress_output_into_lines() {
+        let input = b"10%\r50%\r100%\n";
+
+        let capture = read_stream_live(&input[..], None).await;
+
+        assert_eq!(capture.lines.len(), 3, "{:?}", capture.lines);
+        assert!(!capture.truncated);
+    }
+
+    /// Medido em produção: uma linha sem terminador crescia sem teto até o
+    /// OOM-killer matar o processo; agora a linha é fechada no teto e marcada.
+    #[tokio::test]
+    async fn a_huge_line_without_terminator_is_capped() {
+        let input = vec![b'x'; 4 * 1024 * 1024];
+
+        let capture = read_stream_live(&input[..], None).await;
+
+        assert!(capture.truncated);
+        assert!(!capture.lines.is_empty());
+        assert!(
+            capture.bytes.len() <= MAX_CAPTURED_STREAM_BYTES + 256,
+            "bytes={}",
+            capture.bytes.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_over_the_capture_ceiling_is_marked() {
+        let line = b"0123456789abcdef\n";
+        let mut input = Vec::new();
+        for _ in 0..(MAX_CAPTURED_STREAM_BYTES / line.len() + 10) {
+            input.extend_from_slice(line);
+        }
+
+        let capture = read_stream_live(&input[..], None).await;
+
+        assert!(capture.truncated);
+        assert_eq!(capture.total_seen, input.len());
+        assert!(
+            capture.bytes.len() <= MAX_CAPTURED_STREAM_BYTES + 256,
+            "bytes={}",
+            capture.bytes.len()
+        );
+        assert!(String::from_utf8_lossy(&capture.bytes).contains("saída truncada"));
+        assert!(capture.lines.len() <= MAX_TRACE_LINES_PER_STREAM + 1);
     }
 }

@@ -61,6 +61,40 @@ impl ToolExecutionRecord {
     }
 }
 
+/// Tetos do stdout/stderr e do trace guardados por ferramenta no log.
+///
+/// O log estruturado sobrevive ao scan e é lido pelo histórico; guardar a saída
+/// inteira de uma ferramenta verbosa inflava o arquivo e a memória do processo.
+pub const MAX_LOG_STREAM_BYTES: usize = 64 * 1024;
+pub const MAX_LOG_TRACE_LINES: usize = 2_000;
+pub const MAX_LOG_TRACE_LINE_CHARS: usize = 500;
+
+/// Corta um texto no teto, em fronteira de caractere, marcando o truncamento.
+pub fn capped_stream(text: &str) -> String {
+    if text.len() <= MAX_LOG_STREAM_BYTES {
+        return text.to_string();
+    }
+    let end = text
+        .char_indices()
+        .take_while(|(index, _)| *index < MAX_LOG_STREAM_BYTES)
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let mut output = text[..end].to_string();
+    output.push_str("\n[... truncado no log estruturado: o restante foi descartado ...]");
+    output
+}
+
+/// Corta uma linha do trace no teto de caracteres.
+pub fn capped_trace_line(line: &str) -> String {
+    if line.chars().count() <= MAX_LOG_TRACE_LINE_CHARS {
+        return line.to_string();
+    }
+    let mut output: String = line.chars().take(MAX_LOG_TRACE_LINE_CHARS).collect();
+    output.push('…');
+    output
+}
+
 /// Metadados e log estruturado completo de um scan de segurança.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct ScanMetadata {
@@ -1650,5 +1684,31 @@ mod tests {
             Some("scan_1757000000000000000.json")
         );
         assert!(path.starts_with(scans_dir()));
+    }
+
+    #[test]
+    fn a_huge_stream_is_capped_in_the_structured_log() {
+        let huge = "x".repeat(MAX_LOG_STREAM_BYTES * 2);
+
+        let capped = capped_stream(&huge);
+
+        assert!(
+            capped.len() <= MAX_LOG_STREAM_BYTES + 200,
+            "{}",
+            capped.len()
+        );
+        assert!(capped.contains("truncado no log estruturado"));
+        let small = "ok".to_string();
+        assert_eq!(capped_stream(&small), small);
+    }
+
+    #[test]
+    fn a_huge_trace_line_is_capped() {
+        let line = "y".repeat(MAX_LOG_TRACE_LINE_CHARS * 2);
+
+        let capped = capped_trace_line(&line);
+
+        assert!(capped.chars().count() <= MAX_LOG_TRACE_LINE_CHARS + 1);
+        assert_eq!(capped_trace_line("curta"), "curta");
     }
 }
