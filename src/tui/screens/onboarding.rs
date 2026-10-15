@@ -124,7 +124,12 @@ fn render_environment(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: false })
         .line_count(inner.width) as u16;
     lines.push(Line::from(""));
-    lines.push(option_line(app, 0, "Continuar"));
+    lines.push(option_line(
+        app,
+        0,
+        "Continuar",
+        option_hover(app, inner, first_row + 1),
+    ));
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .style(Style::default().bg(SURFACE))
@@ -141,11 +146,21 @@ fn render_provider(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let labels = crate::config::llm_config::LlmProviderKind::all_labels();
     let mut lines = Vec::new();
     for (index, label) in labels.iter().enumerate() {
-        lines.push(option_line(app, index, label));
+        lines.push(option_line(
+            app,
+            index,
+            label,
+            option_hover(app, inner, index as u16),
+        ));
     }
     lines.push(Line::from(""));
-    lines.push(option_line(app, labels.len(), "Continuar com esta escolha"));
     let continue_row = labels.len() as u16 + 1;
+    lines.push(option_line(
+        app,
+        labels.len(),
+        "Continuar com esta escolha",
+        option_hover(app, inner, continue_row),
+    ));
     lines.push(Line::from(""));
     if let Some(environment) = app
         .onboarding
@@ -195,7 +210,12 @@ fn render_credential(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .line_count(inner.width) as u16;
     let mut lines = intro;
     lines.push(Line::from(""));
-    lines.push(option_line(app, 0, "Continuar"));
+    lines.push(option_line(
+        app,
+        0,
+        "Continuar",
+        option_hover(app, inner, first_row + 1),
+    ));
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .style(Style::default().bg(SURFACE))
@@ -220,8 +240,18 @@ fn render_consent(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .line_count(inner.width) as u16;
     let mut lines = intro;
     lines.push(Line::from(""));
-    lines.push(option_line(app, 0, "Aceitar e usar o provedor remoto"));
-    lines.push(option_line(app, 1, "Recusar e usar o modelo local"));
+    lines.push(option_line(
+        app,
+        0,
+        "Aceitar e usar o provedor remoto",
+        option_hover(app, inner, first_row + 1),
+    ));
+    lines.push(option_line(
+        app,
+        1,
+        "Recusar e usar o modelo local",
+        option_hover(app, inner, first_row + 2),
+    ));
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .style(Style::default().bg(SURFACE))
@@ -252,8 +282,18 @@ fn render_connection(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: false })
         .line_count(inner.width) as u16;
     lines.push(Line::from(""));
-    lines.push(option_line(app, 0, "Testar a conexão agora"));
-    lines.push(option_line(app, 1, "Concluir e salvar a configuração"));
+    lines.push(option_line(
+        app,
+        0,
+        "Testar a conexão agora",
+        option_hover(app, inner, first_row + 1),
+    ));
+    lines.push(option_line(
+        app,
+        1,
+        "Concluir e salvar a configuração",
+        option_hover(app, inner, first_row + 2),
+    ));
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .style(Style::default().bg(SURFACE))
@@ -263,7 +303,7 @@ fn render_connection(app: &mut AppState, frame: &mut Frame, area: Rect) {
     register_list(app, inner, first_row + 1, 2);
 }
 
-fn option_line(app: &AppState, index: usize, label: &str) -> Line<'static> {
+fn option_line(app: &AppState, index: usize, label: &str, hovered: bool) -> Line<'static> {
     let selected = app.onboarding_cursor == index;
     let focused = app.focus == FocusTarget::OnboardingList;
     let active = selected && focused;
@@ -279,7 +319,13 @@ fn option_line(app: &AppState, index: usize, label: &str) -> Line<'static> {
                 .bold(),
         ),
     ])
-    .style(Style::default().bg(if active { ACCENT } else { SURFACE }))
+    .style(Style::default().bg(if active {
+        ACCENT
+    } else if hovered {
+        chrome::SURFACE_HOVER
+    } else {
+        SURFACE
+    }))
 }
 
 /// Registra as escolhas a partir da linha em que começam; sem `first_row`,
@@ -293,10 +339,20 @@ fn register_list(app: &mut AppState, inner: Rect, first_row: u16, count: usize) 
 fn register_option(app: &mut AppState, inner: Rect, row: u16, index: usize) {
     if row < inner.height {
         app.register_hit_region(
-            Rect::new(inner.x, inner.y + row, inner.width, 1),
+            option_rect(inner, row),
             SemanticAction::OnboardingActivate(index),
         );
     }
+}
+
+fn option_rect(inner: Rect, row: u16) -> Rect {
+    Rect::new(inner.x, inner.y + row, inner.width, 1)
+}
+
+/// Fora da área visível não existe linha para acender: o registro da região usa
+/// a mesma guarda.
+fn option_hover(app: &AppState, inner: Rect, row: u16) -> bool {
+    row < inner.height && app.mouse_over(option_rect(inner, row))
 }
 
 fn render_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {

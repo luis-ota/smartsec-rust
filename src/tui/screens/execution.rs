@@ -235,7 +235,7 @@ fn render_logs(app: &mut AppState, frame: &mut Frame, area: Rect) {
     } else {
         "Log de saída".to_string()
     };
-    let block = chrome::panel(&title, focused);
+    let block = chrome::panel_hover(&title, focused, app.mouse_over(area));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.log_visible_height = inner.height.max(1) as usize;

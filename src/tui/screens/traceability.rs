@@ -1,5 +1,5 @@
 use crate::orchestrator::decision::DecisionSource;
-use crate::tui::chrome::{self, ACCENT, MUTED, SUCCESS, SURFACE, TEXT};
+use crate::tui::chrome::{self, ACCENT, MUTED, SUCCESS, SURFACE, SURFACE_HOVER, TEXT};
 use crate::tui::interaction::SemanticAction;
 use crate::tui::state::AppState;
 use ratatui::{
@@ -384,7 +384,15 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new("f2 reabre · esc ou enter fecha")
             .alignment(Alignment::Right)
-            .style(Style::default().fg(ACCENT).bg(SURFACE)),
+            .style(
+                Style::default()
+                    .fg(ACCENT)
+                    .bg(if app.mouse_over_overlay(footer) {
+                        SURFACE_HOVER
+                    } else {
+                        SURFACE
+                    }),
+            ),
         footer,
     );
 }
