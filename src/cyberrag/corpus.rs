@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct CodeExample {
@@ -41,9 +42,21 @@ pub struct Corpus {
 }
 
 impl Corpus {
+    /// Corpus embutido, analisado uma única vez por processo.
+    ///
+    /// O TOML é a fonte do índice BM25 e da montagem do prompt: reprocessá-lo a
+    /// cada clique de "Explicar (IA)" custava dezenas de milissegundos.
+    pub fn shared() -> &'static Corpus {
+        static SHARED: OnceLock<Corpus> = OnceLock::new();
+        SHARED.get_or_init(|| {
+            Self::from_toml(include_str!("../../assets/cyberrag/corpus.toml"))
+                .expect("o corpus embutido precisa ser um TOML válido")
+        })
+    }
+
+    /// Cópia própria do corpus embutido.
     pub fn embedded() -> Self {
-        Self::from_toml(include_str!("../../assets/cyberrag/corpus.toml"))
-            .expect("o corpus embutido precisa ser um TOML válido")
+        Self::shared().clone()
     }
 
     pub fn from_path(path: &Path) -> Result<Self> {

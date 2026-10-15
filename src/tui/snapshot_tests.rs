@@ -186,10 +186,10 @@ fn the_paused_execution_state_is_legible_in_80x24() {
     app.orchestrator.pause_execution();
     app.exec_paused = true;
     app.tools[0].status = ToolStatus::Paused;
-    app.exec_logs = vec![
+    app.set_exec_logs(vec![
         "[14:02:11] [Nmap] container abc123 pausado".to_string(),
         "[14:02:12] [Nmap] $ podman pause abc123".to_string(),
-    ];
+    ]);
 
     let snapshot = assert_snapshot(
         &mut app,
@@ -249,7 +249,7 @@ fn execution_states_match_80x24_snapshots() {
         &["IA definindo o plano do Nuclei", "política segura"],
     );
 
-    app.exec_logs = vec!["FALHA: ferramenta indisponível".to_string()];
+    app.set_exec_logs(vec!["FALHA: ferramenta indisponível".to_string()]);
     app.tools[0].status = ToolStatus::Failed;
     assert_snapshot(&mut app, &["FALHA: ferramenta indisponível"]);
 
@@ -980,13 +980,15 @@ fn wrapped_log_lines_expand_the_scroll_limit() {
     let mut app = app();
     app.step = AppStep::Execution;
     app.focus = FocusTarget::ExecutionLogs;
-    app.exec_logs = (0..6)
-        .map(|index| format!("L{index}-INICIO{}{index}FIM", "x".repeat(400)))
-        .collect();
+    app.set_exec_logs(
+        (0..6)
+            .map(|index| format!("L{index}-INICIO{}{index}FIM", "x".repeat(400)))
+            .collect(),
+    );
 
     let (bottom, _) = render_80x24(&mut app);
     assert!(
-        app.log_total_lines > app.exec_logs.len(),
+        app.log_total_lines > app.exec_logs().len(),
         "linhas longas devem ocupar mais de uma linha visual"
     );
     assert!(app.log_max_scroll() > 0, "deve haver conteúdo além da tela");

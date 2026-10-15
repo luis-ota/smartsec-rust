@@ -253,8 +253,8 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let vulnerabilities = app.vulnerabilities();
-    if vulnerabilities.is_empty() {
+    let count = app.vulnerabilities().len();
+    if count == 0 {
         app.result_cursor = 0;
         app.result_scroll = 0;
         frame.render_widget(
@@ -265,8 +265,8 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
         return;
     }
     let visible = inner.height as usize;
-    app.result_cursor = app.result_cursor.min(vulnerabilities.len() - 1);
-    let max_scroll = vulnerabilities.len().saturating_sub(visible);
+    app.result_cursor = app.result_cursor.min(count - 1);
+    let max_scroll = count.saturating_sub(visible);
     app.result_scroll = app.result_scroll.min(max_scroll);
     if app.result_cursor < app.result_scroll {
         app.result_scroll = app.result_cursor;
@@ -274,11 +274,15 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
         app.result_scroll = app.result_cursor.saturating_sub(visible - 1);
     }
 
+    let rows = visible.min(count.saturating_sub(app.result_scroll));
+    let first_row = app.result_scroll;
+    let cursor = app.result_cursor;
+    let vulnerabilities = app.vulnerabilities();
     let mut lines = Vec::new();
-    for row in 0..visible.min(vulnerabilities.len().saturating_sub(app.result_scroll)) {
-        let index = app.result_scroll + row;
-        let item = &vulnerabilities[index];
-        let current = index == app.result_cursor;
+    for row in 0..rows {
+        let index = first_row + row;
+        let item = vulnerabilities[index];
+        let current = index == cursor;
         let active = current && focused;
         lines.push(
             Line::from(vec![
@@ -306,15 +310,19 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
                     }),
             ),
         );
-        app.register_hit_region(
-            Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
-            SemanticAction::OpenVulnerability(index),
-        );
     }
     frame.render_widget(
         Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
         inner,
     );
+    // As regiões entram depois do desenho, na mesma ordem de antes: o vetor de
+    // achados empresta o estado e não convive com o registro mutável.
+    for row in 0..rows {
+        app.register_hit_region(
+            Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            SemanticAction::OpenVulnerability(first_row + row),
+        );
+    }
 }
 
 fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
@@ -443,9 +451,9 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
     let inner = block.inner(rows[0]);
     frame.render_widget(block, rows[0]);
     let vulnerabilities = app.vulnerabilities();
-    // O item é clonado, não emprestado: o vetor de achados é recriado a cada
-    // chamada e as linhas do painel são `Line<'static>`.
-    if let Some(item) = vulnerabilities.get(index).cloned() {
+    // Com a ordem memoizada o vetor devolvido empresta os achados do
+    // orquestrador: nada é clonado aqui além do próprio item aberto.
+    if let Some(item) = vulnerabilities.get(index).copied() {
         let mut lines: Vec<Line<'static>> = vec![
             Line::from(vec![
                 Span::styled(
@@ -507,7 +515,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
             inner.width as usize,
             SUCCESS,
         );
-        append_enrichment(&mut lines, &item, inner.width as usize);
+        append_enrichment(&mut lines, item, inner.width as usize);
         append_rag_explanation(app, index, &mut lines, inner.width as usize);
         let has_scroll = lines.len() > inner.height as usize;
         let indicator_height = u16::from(has_scroll);
