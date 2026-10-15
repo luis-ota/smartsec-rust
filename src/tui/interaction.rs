@@ -37,6 +37,8 @@ pub enum FocusTarget {
     CommandList,
     ReportClose,
     TraceClose,
+    /// Botão de fechar do painel "Atividade da IA".
+    AiTimelineClose,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +89,8 @@ pub enum SemanticAction {
     OpenTraceability,
     OpenCommandPalette,
     ExecuteCommand(usize),
+    /// Abre o painel ao vivo "Atividade da IA" na tela de Execução.
+    OpenAiTimeline,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

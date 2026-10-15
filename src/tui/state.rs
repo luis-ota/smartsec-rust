@@ -5,7 +5,7 @@ use crate::config::Configuration;
 use crate::domain::security_tool::SecurityTool;
 use crate::domain::vulnerability::Vulnerability;
 use crate::orchestrator::control::RunControl;
-use crate::orchestrator::decision::DecisionRecord;
+use crate::orchestrator::decision::{DecisionRecord, DecisionSource};
 use crate::orchestrator::Orchestrator;
 use crate::tools::registry::RunnerKind;
 use crate::tools::ToolManifest;
@@ -120,6 +120,35 @@ pub enum AiActivity {
     Complete,
 }
 
+/// Etapa do pipeline que produziu uma entrada do painel "Atividade da IA".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AiTimelineOrigin {
+    /// Planejamento do Nuclei, antes da varredura.
+    Planning,
+    /// Análise dos achados e resumo final da IA.
+    Ai,
+    /// Agente de código, que localiza a origem dos achados.
+    Code,
+}
+
+impl AiTimelineOrigin {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Planning => "planejamento",
+            Self::Ai => "IA",
+            Self::Code => "código",
+        }
+    }
+}
+
+/// Uma ação da IA com o horário local em que foi observada na TUI.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct AiTimelineEntry {
+    pub time: String,
+    pub origin: AiTimelineOrigin,
+    pub text: String,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsField {
     Provider,
@@ -216,6 +245,10 @@ pub(crate) enum RunEvent {
 
 const CODE_TRAIL_LIMIT: usize = 200;
 
+/// Retenção do painel "Atividade da IA": uma execução longa não pode crescer
+/// sem limite, e as entradas antigas saem primeiro.
+const AI_TIMELINE_LIMIT: usize = 500;
+
 /// Ordem de exibição dos achados, recalculada apenas quando a sequência de
 /// severidades muda.
 ///
@@ -291,6 +324,14 @@ pub struct AppState {
     pub analysis_wait_secs: u64,
     pub ai_activity: AiActivity,
     pub ai_decision: Option<DecisionRecord>,
+    /// Painel ao vivo da atividade da IA, alimentado pelos eventos do pipeline.
+    pub ai_timeline: Vec<AiTimelineEntry>,
+    pub show_ai_timeline: bool,
+    pub ai_timeline_scroll: usize,
+    /// Limite de rolagem medido na última renderização do painel.
+    pub ai_timeline_max_scroll: usize,
+    /// Auto-follow do fim do painel; desligado quando o usuário rola para cima.
+    pub ai_timeline_follow: bool,
     pub result_cursor: usize,
     pub result_scroll: usize,
     pub result_detail_vuln: Option<usize>,
@@ -476,6 +517,11 @@ impl AppState {
             analysis_wait_secs: 0,
             ai_activity: AiActivity::WaitingForEvidence,
             ai_decision: None,
+            ai_timeline: Vec::new(),
+            show_ai_timeline: false,
+            ai_timeline_scroll: 0,
+            ai_timeline_max_scroll: 0,
+            ai_timeline_follow: true,
             result_cursor: 0,
             result_scroll: 0,
             result_detail_vuln: None,
@@ -848,6 +894,7 @@ impl AppState {
             || self.show_command_palette
             || self.show_report_viewer
             || self.show_trace_overlay
+            || self.show_ai_timeline
     }
 
     async fn process_run_events(&mut self) {
@@ -888,9 +935,14 @@ impl AppState {
                 }
                 RunEvent::AiDecisionStarted => {
                     self.ai_activity = AiActivity::PlanningNuclei;
+                    self.push_ai_timeline(
+                        AiTimelineOrigin::Planning,
+                        "planejando o uso do Nuclei…",
+                    );
                 }
                 RunEvent::AiDecisionFinished(decision) => {
                     self.ai_activity = AiActivity::PlanReady;
+                    self.push_ai_timeline(AiTimelineOrigin::Planning, decision_summary(&decision));
                     self.ai_decision = Some(decision);
                 }
                 RunEvent::ToolFinished { index, execution } => {
@@ -936,6 +988,10 @@ impl AppState {
                     self.analysis_wait_secs = elapsed_secs;
                     if elapsed_secs % 10 == 0 {
                         self.push_exec_log(format!("[ia] análise em andamento… ({elapsed_secs}s)"));
+                        self.push_ai_timeline(
+                            AiTimelineOrigin::Ai,
+                            format!("análise em andamento ({elapsed_secs}s)"),
+                        );
                     }
                 }
                 RunEvent::CodeAgent(event) => self.push_code_agent(event),
@@ -971,6 +1027,7 @@ impl AppState {
                     for detail in &agent_history {
                         let detail = crate::utils::redaction::sanitize_text(detail);
                         self.push_exec_log(format!("[ia] {detail}"));
+                        self.push_ai_timeline(AiTimelineOrigin::Ai, detail.clone());
                         // Ligação com o serviço de análise (issue #23): toda
                         // entrada de `agent.execution_history` vira ocorrência.
                         self.record_run_issue(RunIssueScope::Ai, detail);
@@ -1264,6 +1321,11 @@ impl AppState {
         self.analysis_wait_secs = 0;
         self.ai_activity = AiActivity::WaitingForEvidence;
         self.ai_decision = None;
+        self.ai_timeline.clear();
+        self.ai_timeline_scroll = 0;
+        self.ai_timeline_max_scroll = 0;
+        self.ai_timeline_follow = true;
+        self.show_ai_timeline = false;
         self.log_drop_counter.store(0, Ordering::Relaxed);
 
         let selected: Vec<_> = self
@@ -1493,6 +1555,10 @@ impl AppState {
                     "[ia/codigo] achado #{} → {tool}({arguments})",
                     finding_index + 1
                 ));
+                self.push_ai_timeline(
+                    AiTimelineOrigin::Code,
+                    format!("ferramenta {tool} no achado #{}", finding_index + 1),
+                );
             }
             Event::ToolCompleted(record) => {
                 self.code_agent_current = None;
@@ -1500,6 +1566,10 @@ impl AppState {
                     "[ia/codigo] {} {} · {}",
                     record.tool, record.outcome, record.summary
                 ));
+                self.push_ai_timeline(
+                    AiTimelineOrigin::Code,
+                    format!("{} {} · {}", record.tool, record.outcome, record.summary),
+                );
             }
             Event::FindingFinished {
                 finding_index,
@@ -1515,6 +1585,18 @@ impl AppState {
                     "[ia/codigo] achado #{} {desfecho} em {tool_calls} chamada(s)",
                     finding_index + 1
                 ));
+                self.push_ai_timeline(
+                    AiTimelineOrigin::Code,
+                    format!(
+                        "achado #{} concluído ({})",
+                        finding_index + 1,
+                        if *located {
+                            "localizado"
+                        } else {
+                            "não localizado"
+                        }
+                    ),
+                );
             }
             Event::Finished {
                 located,
@@ -1538,6 +1620,24 @@ impl AppState {
             self.code_agent_trail.drain(..excess);
         }
         self.code_agent_trail.push(event);
+    }
+
+    /// Registra uma ação da IA no painel ao vivo, com o horário local do evento.
+    /// Saídas de ferramentas de varredura e enriquecimento CVE/NVD não entram aqui.
+    pub fn push_ai_timeline(&mut self, origin: AiTimelineOrigin, text: impl Into<String>) {
+        self.ai_timeline.push(AiTimelineEntry {
+            time: chrono::Local::now().format("%H:%M:%S").to_string(),
+            origin,
+            text: text.into(),
+        });
+        let overflow = self.ai_timeline.len().saturating_sub(AI_TIMELINE_LIMIT);
+        if overflow == 0 {
+            return;
+        }
+        self.ai_timeline.drain(..overflow);
+        if !self.ai_timeline_follow {
+            self.ai_timeline_scroll = self.ai_timeline_scroll.saturating_sub(overflow);
+        }
     }
 
     pub fn code_agent_rows(
@@ -2148,6 +2248,20 @@ fn severity_rank(severity: crate::domain::Severity) -> u8 {
     }
 }
 
+/// Resumo legível de uma decisão do Nuclei para o painel da IA: quem decidiu,
+/// o motivo e quantos argumentos foram registrados no `DecisionRecord`.
+fn decision_summary(record: &DecisionRecord) -> String {
+    let author = match record.source {
+        DecisionSource::Ai => "a IA decidiu",
+        DecisionSource::Fallback => "a política local decidiu",
+    };
+    format!(
+        "plano do Nuclei definido: {author} · motivo: {} · {} argumento(s)",
+        record.justification,
+        record.parameters.len()
+    )
+}
+
 /// Conta as linhas visuais de entradas que saíram do log, usando a mesma
 /// quebra do `Paragraph` aplicada na renderização. Sem isso, o ajuste do
 /// offset no descarte misturaria unidades lógicas e visuais.
@@ -2540,6 +2654,158 @@ mod tests {
         )
         .await;
         assert_eq!(app.ai_activity, AiActivity::GeneratingGuidance);
+    }
+
+    /// A timeline da IA recebe só a atuação da IA, na ordem dos eventos, com a
+    /// origem de cada etapa e o horário local de cada ação.
+    #[tokio::test]
+    async fn ai_timeline_records_the_ai_events_in_order_with_the_right_origin() {
+        use crate::code_agent::agent::ToolCallRecord;
+        use crate::code_agent::progress::CodeAgentEvent;
+
+        let mut app = app();
+        app.step = AppStep::Execution;
+        let (sender, receiver) = run_channel();
+        app.run_receiver = Some(receiver);
+
+        feed(&mut app, &sender, RunEvent::AiDecisionStarted).await;
+        let decision = crate::orchestrator::decision::decide_nuclei_plan(
+            "http://target.local",
+            None,
+            None,
+            "modelo-local",
+        );
+        feed(
+            &mut app,
+            &sender,
+            RunEvent::AiDecisionFinished(decision.clone()),
+        )
+        .await;
+        feed(
+            &mut app,
+            &sender,
+            RunEvent::AnalysisProgress { elapsed_secs: 10 },
+        )
+        .await;
+        feed(
+            &mut app,
+            &sender,
+            RunEvent::CodeAgent(CodeAgentEvent::ToolInvoked {
+                finding_index: 0,
+                iteration: 0,
+                tool: "read_file".to_string(),
+                arguments: r#"{"path":"src/app.py"}"#.to_string(),
+            }),
+        )
+        .await;
+        feed(
+            &mut app,
+            &sender,
+            RunEvent::CodeAgent(CodeAgentEvent::ToolCompleted(ToolCallRecord {
+                finding_index: 0,
+                iteration: 0,
+                tool: "read_file".to_string(),
+                arguments: r#"{"path":"src/app.py"}"#.to_string(),
+                outcome: "ok".to_string(),
+                summary: "4 | raise ValueError".to_string(),
+            })),
+        )
+        .await;
+        feed(
+            &mut app,
+            &sender,
+            RunEvent::CodeAgent(CodeAgentEvent::FindingFinished {
+                finding_index: 0,
+                located: true,
+                tool_calls: 1,
+            }),
+        )
+        .await;
+        feed(
+            &mut app,
+            &sender,
+            RunEvent::Completed {
+                orchestrator: Box::new(orchestrator_with(
+                    Vec::new(),
+                    vec!["A LLM principal falhou; usando o modelo local"],
+                )),
+                audit_log: Ok(PathBuf::from("/tmp/scan.json")),
+            },
+        )
+        .await;
+
+        let origins: Vec<AiTimelineOrigin> =
+            app.ai_timeline.iter().map(|entry| entry.origin).collect();
+        assert_eq!(
+            origins,
+            vec![
+                AiTimelineOrigin::Planning,
+                AiTimelineOrigin::Planning,
+                AiTimelineOrigin::Ai,
+                AiTimelineOrigin::Code,
+                AiTimelineOrigin::Code,
+                AiTimelineOrigin::Code,
+                AiTimelineOrigin::Ai,
+            ],
+            "cada evento entra com a origem da etapa que o produziu"
+        );
+
+        let texts: Vec<&str> = app
+            .ai_timeline
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert_eq!(texts[0], "planejando o uso do Nuclei…");
+        assert!(
+            texts[1].contains("plano do Nuclei definido"),
+            "{}",
+            texts[1]
+        );
+        assert!(texts[1].contains(&decision.justification), "{}", texts[1]);
+        assert!(
+            texts[1].contains(&format!("{} argumento(s)", decision.parameters.len())),
+            "{}",
+            texts[1]
+        );
+        assert_eq!(texts[2], "análise em andamento (10s)");
+        assert_eq!(texts[3], "ferramenta read_file no achado #1");
+        assert_eq!(texts[4], "read_file ok · 4 | raise ValueError");
+        assert_eq!(texts[5], "achado #1 concluído (localizado)");
+        assert_eq!(texts[6], "A LLM principal falhou; usando o modelo local");
+
+        assert!(
+            app.ai_timeline.iter().all(|entry| {
+                let bytes = entry.time.as_bytes();
+                entry.time.len() == 8 && bytes[2] == b':' && bytes[5] == b':'
+            }),
+            "todo evento carrega o horário local no formato HH:MM:SS"
+        );
+    }
+
+    #[test]
+    fn ai_timeline_keeps_the_end_by_default_and_respects_manual_scroll() {
+        let mut app = app();
+        for index in 0..AI_TIMELINE_LIMIT {
+            app.push_ai_timeline(AiTimelineOrigin::Ai, format!("evento {index}"));
+        }
+        assert!(app.ai_timeline_follow, "por padrão o painel segue o fim");
+        assert_eq!(app.ai_timeline.len(), AI_TIMELINE_LIMIT);
+
+        app.ai_timeline_follow = false;
+        app.ai_timeline_scroll = 7;
+        for _ in 0..3 {
+            app.push_ai_timeline(AiTimelineOrigin::Ai, "mais um evento");
+        }
+        assert_eq!(
+            app.ai_timeline.len(),
+            AI_TIMELINE_LIMIT,
+            "retenção limitada"
+        );
+        assert_eq!(
+            app.ai_timeline_scroll, 4,
+            "o descarte do topo desconta o offset manual"
+        );
+        assert!(!app.ai_timeline_follow);
     }
 
     fn rag_result(approved: bool) -> crate::cyberrag::service::ExplanationResult {
