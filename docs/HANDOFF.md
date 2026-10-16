@@ -1,165 +1,228 @@
-# Handoff — smartsec-rust, PR #105
+# Handoff — smartsec-rust, estado pós-v0.2.2 (sessão de 15–16/10/2026)
 
-Branch `feat/auditoria-codigo-ia` → `main`. Tudo commitado e pushed. PR #105 aberto e MERGEABLE.
+Sessão encerrada com **tudo mergeado**: zero PRs abertos, `main` em `99c19b7`,
+release **v0.2.2 publicada e instalada**. CI/CD está **desligado de propósito**
+(cota de Actions). Este documento é para a próxima IA: leia inteiro antes de
+editar, valide o estado ponta a ponta e proponha melhorias com evidência.
 
-## Onde o trabalho está
+Leitura obrigatória antes de mexer: `AGENTS.md`, `TCC_SPEC.md`,
+`docs/CONFIGURACAO.md`, `docs/cyberrag.md`, `docs/INSTALACAO.md`.
+(`docs/PROMPT-CONTINUACAO.md` está **desatualizado** — descreve a branch antiga
+`feat/auditoria-codigo-ia`; ignore-o.)
 
-Rodando na máquina **`luis-arch`** (Tailscale, `100.85.152.39`), acessível da
-máquina de origem por `ssh luis-arch` com chave — sem senha. O repositório
-local de lá é `~/dev/tcc/smartsec-rust` (sem o `bobera` no caminho), na branch
-`feat/auditoria-codigo-ia`, em `1b28f3d`.
+## 1. Onde o trabalho está
 
-Para retomar de lá:
+- Máquina **`luis-arch`** (Tailscale `100.85.152.39`, `ssh luis-arch`), repo em
+  `~/dev/tcc/smartsec-rust`, working tree limpo na `main`.
+- `main` = `99c19b7` (merge do #125). Tags publicadas: `v0.2.0`, `v0.2.1`,
+  `v0.2.2`.
+- Binário instalado: `~/.local/bin/smartsec` → **`smartsec 0.2.2`** (instalador
+  `curl | sh` conferiu checksum e templates). É o que o usuário roda.
+- Zero PRs abertos. Issues abertas: **#27** (S2, protocolo de validação),
+  **#29–#34** (Sprint 3), **#104** (SQLi sobre o parser Python), **#108** (o
+  agente de código cita ponto que não é o do achado).
+- CI/CD **desligado**: `SmartSec CI` e `SmartSec Release` estão
+  `disabled_manually` (cota de Actions ~90% usada; reseta **01/11/2026**).
+  Reative só pelo tempo de um run de release (ver §6). O workflow "Copilot" só
+  desabilita em Settings → Copilot.
+
+## 2. O que foi feito nesta sessão (tudo mergeado)
+
+- **#105** — correção do tool calling da IA (A1–A3): com a NIM o modelo não
+  chamava ferramenta nenhuma; a correção força `tool_choice:"required"` até a
+  1ª ferramenta, com nudge (teto 2) e prompt endurecido. CI verde, E2E real
+  3/3 runs.
+- **#106** — limpeza cirúrgica de comentários em `src/` (regra das 2 linhas).
+- **#107** — micro-fix: fase duplicada no headless + typo.
+- **#110/#111/#112** — **CyberRAG** (Tarefa B): corpus + BM25 + ontologia;
+  serviço com embeddings + trilha/`ScanMetadata`; botão **"Explicar (IA)"** no
+  detalhe do achado. Validação **simbólica determinística** (não é o juiz-LLM
+  do artigo), sob demanda. Créditos em `docs/cyberrag.md`. E2E com NIM: 2/3
+  aprovados + 1 recusa honesta por timeout.
+- **#113/#115** — **instalador `curl | sh`**: bootstrap `install.sh` publicado
+  como asset; `reqwest` com rustls (binário sem libssl); runners `ubuntu-22.04`
+  (x86_64) e `ubuntu-22.04-arm` (aarch64 nativo, glibc 2.35).
+- **#114** — navegação de configuração na TUI.
+- **#116** — desempenho dos hot paths.
+- **#117** — **fix do OOM** da execução: tetos de captura no sandbox (2 MB por
+  stream, linha sem terminador fechada no teto, `\r` como terminador, 5.000
+  linhas de trace, 64 KB de log por ferramenta) + parser do Nuclei tolerante a
+  ruído não-JSON + mensagem clara quando os templates não são um clone git.
+- **#118** — hover do mouse em botões/linhas/campos.
+- **#119** — pré-seleção de ferramentas por perfil do projeto, com motivo por
+  linha.
+- **#120** — painel **"Atividade da IA"** na Execução (linha do tempo ao vivo;
+  tecla `i`).
+- **#121** — guarda de versão no workflow de release (binário × tag iguais).
+- **#122** — **"Configurar IA"** redesenhada: grupos, ajuda do campo em foco,
+  exemplos em cinza, resumo "Se salvar: ...".
+- **#123** — **fix do teto de linha**: o teto de 16 KB cortava o JSON do Nikto
+  (21 KB numa linha única) e a ferramenta falhava; o teto da linha agora é o do
+  stream (2 MB). Prova: Nikto `OK`, 21.592 bytes, **169 achados** no Juice Shop.
+- **#124** — **versões mais recentes** (digests re-verificados por pull real):
+  Nmap **7.98** (+ pin por digest), Nuclei **v3.11.1**, TruffleHog **3.99.2**,
+  ZAP **2.16.0**. Nikto e SQLMap mantidos (sem versão mais nova empacotada).
+  Pin dos templates do Nuclei mantido (`b98e6097...`).
+- **#125** — bump para **0.2.2** e release: guarda de versão passou, 5 assets
+  publicados (`install.sh`, `SHA256SUMS`, 2 tar.gz, .deb), run de ~8 min.
+
+## 3. Estado validado
+
+- **760 testes** `cargo test --bin smartsec` (2 ignorados) na main — última
+  medição. Suítes de integração (30 testes): `headless_signals`,
+  `headless_exit_codes`, `history_cli`, `code_agent_integration`, `report_cli`.
+- `cargo fmt --check` e `cargo clippy --all-targets -D warnings` limpos na
+  última rodada completa.
+- Releases vivas: `v0.2.0`, `v0.2.1`, `v0.2.2` (5 assets cada). One-liner para
+  amigos: `curl -fsSL https://github.com/luis-ota/smartsec-rust/releases/latest/download/install.sh | sh`.
+- Evidências visuais da TUI em `docs/evidence/tui-*` (PNGs das telas novas).
+
+## 4. Ambiente de validação já montado (não commitado)
+
+**Alvo demo.** OWASP Juice Shop no podman, container `juice-shop` (host:
+`http://127.0.0.1:3000`). Os scanners rodam em container rootless e alcançam o
+host por **`http://169.254.1.2:3000`** (link-local do gateway). Fonte em
+`~/dev/juice-shop`. Após reboot: `podman start juice-shop`.
+
+**Config global** `~/.config/smartsec/config.toml` (backup `.bak` ao lado):
+
+```toml
+target_url = "http://169.254.1.2:3000"
+project_dir = "/home/luis/dev/juice-shop"
+active_tools = ["Nmap", "Nuclei", "Nikto"]
+provider = "NvidiaNim"
+model = "nvidia/nemotron-3-super-120b-a12b"
+remote_consent = true
+```
+
+Para ver os **motivos da pré-seleção** de ferramentas na TUI, `active_tools`
+precisa estar **vazio** (lista explícita desliga a recomendação).
+
+**Templates do Nuclei.** `~/nuclei-templates` é um **clone git** no commit
+pinado `b98e6097cb84e73e7a480436062d685a8f898824` — precisa ser clone (o
+SmartSec valida); zip não serve. Backup do antigo:
+`~/nuclei-templates.zip-bak-20261015`.
+
+**TOMLs de teste** em `/tmp` (recriar se o /tmp for limpo): `ss-demo.toml`,
+`ss-nim.toml`, `ss-sem-ia.toml`, `ss-nuclei.toml`, `ss-nikto.toml`.
+
+**Keyring.** Segredos no `Default_keyring` (não `login.keyring`), com a chave
+ativa em `service smartsec username llm-api-key`. **Na última verificação
+estava travado** (o `secret-tool lookup` ficou pendurado aguardando o diálogo
+do gcr) — sem destravar, a IA fica determinística (não é bug do SmartSec).
+Destravar: rodar num terminal **gráfico**
 
 ```bash
-ssh luis-arch
-cd ~/dev/tcc/smartsec-rust
+secret-tool lookup service smartsec username llm-api-key   # dispara o diálogo do gcr
 ```
 
-A máquina de origem é `/home/luis/dev/bobera/tcc/smartsec-rust`; os dois
-cópios estão na mesma branch e no mesmo commit, então qualquer um serve.
+PAM/lightdm só destrava o login keyring; logout de verdade:
+`loginctl terminate-session "$XDG_SESSION_ID"`.
 
-O que já está pronto lá: chaves no keyring (NIM gravada e lida com sucesso),
-`cargo 1.97.1`, `podman 6.1.3`, `secret-tool`, alvo de teste em
-`~/dev/app-vuln` rodando na porta 3001, TOML em `/tmp/ss-nim.toml` e
-`/tmp/ss-sem-ia.toml`, e os 640 testes unitários verdes.
+## 5. Roteiro de validação ponta a ponta
 
-O caminho do repositório e o IP do alvo são **daquela máquina**. Numa terceira
-máquina, `git clone` e refaça o alvo.
+0. **Preflight**: `podman ps | grep juice-shop` (senão `podman start
+   juice-shop`); destravar o keyring (acima) se for validar IA.
 
-## Regras do projeto (leia antes de editar)
-
-`AGENTS.md` na raiz. As duas que mais quebram:
-
-- **Comentário: no máximo 2 linhas, só para o *por que* não óbvio.** O usuário reclamou duas vezes nesta sessão por comentários enormes. Comentário que repete o código é ruído. Se um comportamento é verificável, escreve teste, não comentário.
-- **Nenhum teste toca `~/.config/smartsec/`, keyring real ou rede real.** Já causou 2 incidentes. Para testar log/trilha, use `orchestrator.scan_metadata()` (monta o `ScanMetadata` sem gravar) ou um `temp_dir()` próprio.
-
-## Estado atual
-
-640 testes unitários verdes, `cargo fmt --check` limpo, `cargo clippy
---all-targets -D warnings` com 0 avisos — **validado nas duas máquinas**.
-
-Commits (do mais recente para o mais antigo):
-- `1b28f3d` — handoff apontando para `luis-arch` e o ambiente montado lá
-- `35db5d2` — trilha de auditoria da IA + IA local fora do padrão + lista de provedores reordenada + `scan_metadata`
-- `e127c89` — IA local desligada por padrão
-- `5083e65` — corrige o `--help` (faltavam `--max-critical-findings`, "ferramenta desconhecida", "comando desconhecido")
-- `4fa59b1` — desliga a regra de SQLi (100% FP medido) → issue #104
-- `39b7a35` — assistente de configuração + corrige help duplicado
-- `afd2d1e` — corrige duas regras da auditoria de código
-
-## O que está pronto
-
-**IA opcional.** `LlmConfig::default()` nasce sem provedor local. `is_configured()` devolve falso quando o endpoint é vazio e `validate()` retorna `Ok` nesse caso — sem IA o scan funciona com a análise determinística local. O CI pegou o problema: 5 testes do Nikto quebravam com `Erro: Nenhuma IA configurada`, porque `build_config` exigia provedor e os scanners não dependem dele.
-
-**Lista de provedores.** `all_labels()` = `["Personalizado", "OpenAI", "NVIDIA NIM", "llama.cpp"]`. API primeiro, servidor local por último. `LlmProviderKind::index()` deriva a posição da lista — substitui dois `match` manuais em `src/tui/state.rs` (linhas ~331 e ~1457) que dessincronizavam ao reordenar.
-
-**Trilha de auditoria da IA** (`src/code_agent/audit_trail.rs`, novo). Cada ação da IA vira uma linha JSON escrita e descarregada no instante, em `~/.config/smartsec/agent-trails/<scan_id>.jsonl`. Existe porque o log estruturado só é gravado no fim: fase interrompida não deixava registro nenhum. `smartsec trace <SCAN_ID>` imprime; o `ScanMetadata` ganhou `agent_trail_path` apontando para ela. Trilha e log compartilham o `scan_id` do orquestrador.
-
-O repasse disco↔TUI é uma tarefa que lê o mesmo canal que a TUI lê (`analyze_code` em `pipeline.rs`), então os dois não divergem. Best effort: diretório não gravável cai para `temp_dir()` em vez de derrubar o scan.
-
-Dois caminhos da fase **não registravam nada** e um teste pegou os dois: recusa por consentimento e diretório de projeto ilegível. Ambos gravam `CodeAgentEvent::Finished` agora.
-
-## O bloqueio real do E2E — não é a IA
-
-**Isto é o que ninguém resolveu ainda e vale mais que qualquer outra tarefa.**
-
-`correlate_and_enrich_findings` roda **antes** da fase de IA (`src/main.rs` ~linha 732) e consulta a NVD **em série**: `MIN_INTERVAL_SEM_CHAVE` = 6 s entre requisições + `REQUEST_TIMEOUT` = 10 s cada (`src/orchestrator/nvd.rs` linhas 50–62). Com N CVEs são N × 16 s de espera, e sem rede cada uma vira os 10 s inteiros. Sem cache (`~/.config/smartsec/nvd-cache` nasce vazio) o primeiro scan paga tudo.
-
-Nenhum scan chegou à fase de IA em ~6 tentativas. O sintoma é sempre o mesmo: para logo depois de `[1/4] Executando ferramentas`, processo `State: R (running)` com 9 threads, sem conexão de rede ativa. Não é o modelo, não é a NIM.
-
-O que já confirmei da fase de IA por outro caminho: `nvidia/nemotron-3-super-120b-a12b` responde tool calling em 1,5 s via curl. `meta/llama-3.3-70b-instruct`, `qwen/qwen2.5-coder-32b-instruct` e `meta/llama-3.1-8b-instruct` estão **fora de linha** (HTTP 410). Dos 15 `:free` do OpenRouter só `nvidia/nemotron-3-super-120b-a12b:free` faz tool calling.
-
-## Chaves
-
-Os valores **não** ficam neste arquivo — a regra do repositório barra
-qualquer segredo em commit, e com razão. Na máquina anterior estavam no
-keyring do usuário, serviço `smartsec`, com estes nomes de usuário:
-
-```
-groq-api-key
-openrouter-api-key
-nvidia-nim-api-key
-llm-api-key           (a ativa; aponta para a chave da NIM)
-```
-
-**Na `luis-arch` a chave da NIM já está gravada** e foi lida com sucesso de lá.
-Groq e OpenRouter **não** — se forem necessárias, peça os valores ao usuário.
-Numa máquina nova os valores precisam ser pedidos de novo: não há como
-recuperá-los deste repositório, por propósito. Para gravar:
-
-```bash
-printf '%s' "$CHAVE" | secret-tool store \
-  --label='NVIDIA NIM API key' service smartsec username nvidia-nim-api-key
-secret-tool lookup service smartsec username nvidia-nim-api-key   # confere
-```
-
-`secret-tool` vem do `libsecret` — na Arch: `pacman -S libsecret`. Sem um
-keyring do sistema (D-Bus de sessão) o `secret-tool` falha; nesse caso use a
-variável de ambiente que o projeto lê, ou rode num ambiente com sessão
-gráfica.
-
-## Ambiente de teste
-
-Está montado em `luis-arch`, não commitado:
-
-**Alvo.** `~/dev/app-vuln/` com `app.py` (HTTP na 3001, SQLi concatenada em
-`db.execute(...)`) e `db.py` (`DB_PASSWORD = "Sup3rS3nh4!"`). Para subir:
-`cd ~/dev/app-vuln && setsid --fork python3 app.py </dev/null`.
-
-O endereço na config é `http://192.168.1.58:3001` — o IP da máquina na LAN,
-**não** o gateway. Scanear exige que o container rootless alcance o host, e o
-caminho muda conforme a rede. Numa máquina nova descubra com `ip -4 addr`.
-
-Na máquina de origem o mesmo alvo usava `169.254.1.2`, que é um endereço de
-link-local. A diferença é a prova de que o número não pode ser assumido de uma
-máquina para outra.
-
-**TOML.** `/tmp/ss-nim.toml` (NIM com `remote_consent = true`) e
-`/tmp/ss-sem-ia.toml` (mesmo alvo, provedor vazio — para provar que o scan
-funciona sem IA). `provider` aceita minúsculo e variações de separador
-(`"personalizado"`).
-
-**Ferramentas** em `luis-arch`: `cargo 1.97.1`, `podman 6.1.3`, `secret-tool`.
-`podman` é obrigatório — os scanners rodam em container rootless.
-
-## Ambiente de execução
-
-Alguns problemas da máquina anterior **não são do projeto** e não valsem na
-nova: o servidor reiniciava e matava processos longos a cada ~5 min (por isso
-as execuções longas eram lançadas com `setsid --fork nohup ... </dev/null` e
-acompanhadas por log), e o `/tmp` às vezes era limpo por outro agente. Se a
-máquina nova for estável, ignore isso e rode direto.
-
-## Comandos
+1. **Build e testes** (máquina tem 7,9 GB de RAM — sempre serializado):
 
 ```bash
 flock .git/smartsec-build.lock -c 'cargo build -j 1 --release'
 cargo fmt --check
 flock .git/smartsec-build.lock -c 'cargo clippy --all-targets -j 1 -- -D warnings'
 flock .git/smartsec-build.lock -c 'cargo test -j 1 --bin smartsec'
+flock .git/smartsec-build.lock -c 'cargo test -j 1 --test headless_signals --test headless_exit_codes --test history_cli --test code_agent_integration --test report_cli'
 ```
 
-**NUNCA** `cargo test` sem `--bin`: a suíte de integração executa o binário real contra Ollama e trava a máquina. Binário chama-se `smartsec`.
+2. **Headless contra o demo** (esperado: relatório em `/tmp/ss-demo-saida`):
 
-`pkill -f <padrão>` mata o próprio shell se o padrão casar a própria linha — use classe de caractere (`ss-prox[y]`) ou mate por PID.
+```bash
+smartsec scan --target http://169.254.1.2:3000 --config /tmp/ss-demo.toml --output-dir /tmp/ss-demo-saida
+# prova do fix do teto de linha (esperado: OK, ~21,5 KB, ~169 achados):
+smartsec tool Nikto --target http://169.254.1.2:3000 --config /tmp/ss-nikto.toml
+smartsec history           # lista execuções
+smartsec trace <SCAN_ID>   # ações da IA na execução
+```
 
-## Próximos passos, em ordem
+3. **TUI** (`smartsec` sem argumentos). Checklist:
+   - **Configurar IA**: grupos, ajuda do campo em foco, exemplos em cinza,
+     linha "Se salvar: ..." (`chave salva` quando o keyring estiver destravado);
+   - **Ferramentas**: motivo da pré-seleção por linha (com `active_tools = []`);
+   - **Hover**: botões, linhas e campos acendem com o mouse;
+   - **Execução**: tecla `i` (ou clique no bloco de IA) abre o painel
+     **Atividade da IA** ao vivo; `esc` fecha;
+   - **Nikto/ZAP rodando os ~2 min** sem estourar a memória (antes o OOM matava
+     a TUI com 9,6 GB); Nuclei conclui com achados;
+   - **"Explicar (IA)"** no detalhe de um achado (RAG + ontologia; precisa de
+     keyring destravado + consentimento, ambos configurados).
 
-1. **Investigar e corrigir o custo do enriquecimento NVD antes da IA.** Opções: teto de tempo total para o enriquecimento, consulta paralela dentro do intervalo publicado, ou mover a fase para depois da IA. Com um teste que prove que o scan com CVEs fecha em tempo aceitável.
-2. Fechar o E2E da fase de IA com a NIM e confirmar relatório + `smartsec trace` com ações reais.
-3. Verificar os 2 jobs do CI do PR #105.
-4. Mergear #105 e fechar as issues de Sprint 2. Só Sprint 3 fica aberta (#104, SQLi sobre `ast`, FP como critério de merge).
+4. **Instalador** (quando quiser provar o fluxo de fábrica):
 
-## O que não fazer de novo
+```bash
+curl -fsSL https://github.com/luis-ota/smartsec-rust/releases/latest/download/install.sh | sh
+smartsec --version   # esperado: smartsec 0.2.2
+```
 
-Rodar só `--bin smartsec` deixou o `--help` sem cobertura e o CI pegou três lacunas minhas. As suítes de integração que não tocam scanner (`tests/headless_signals.rs`, `tests/headless_exit_codes.rs`, `tests/history_cli.rs`, `tests/code_agent_integration.rs`, `tests/report_cli.rs`) leem o help e precisam rodar.
+## 6. Como publicar uma release (só quando necessário)
 
-`tests/nikto_integration.rs` roda o binário real — foi ela que pegou a mudança de "IA obrigatória".
+Cada run custa ~8 min de Actions — com a cota a ~90%, reative o workflow só
+pelo run e desligue depois. A **guarda de versão** exige binário == tag:
 
-Os worktrees `.worktrees/audit-ast` e `.worktrees/review-77b` são locais da
-máquina anterior e **não vêm no clone** (`.worktrees/` está no
-`.git/info/exclude`). Confirmei que nenhum tem trabalho perdido:
-`audit-ast` aponta para `afd2d1e`, sem commit próprio, e `review-77b` aponta
-para `e36be1d`, que já está em branches no remoto. Se a máquina nova precisar
-deles, `git worktree add .worktrees/<nome> <ref>`.
+```bash
+# 1) PR de bump (Cargo.toml + Cargo.lock; cargo check sincroniza o lock) → merge
+gh workflow enable "SmartSec Release"
+git fetch origin main && git tag v0.2.3 <merge-sha> && git push origin v0.2.3
+# 2) aguardar ~8 min (x86_64 + aarch64 em paralelo; a guarda confere a versão)
+gh run list --workflow "SmartSec Release" --limit 1
+gh release view v0.2.3          # 5 assets esperados
+gh workflow disable "SmartSec Release"
+# 3) atualizar a máquina:
+curl -fsSL https://github.com/luis-ota/smartsec-rust/releases/latest/download/install.sh | sh
+```
+
+## 7. Pendências e follow-ups
+
+- **Keyring travado** bloqueia a validação da IA (ação do usuário, §4).
+- **Feature pedida e NÃO iniciada**: expandir as ocorrências detalhadas
+  (`run_issues`) e **copiar textos** (logs, evidências, explicações) para o
+  clipboard.
+- **NVD, opção (a)** (proposta, sem decisão): esperar só em cache miss —
+  medição: 10 CVEs levaram 54 s; com cache quente, ~0,02 s.
+- **Candidatos a issue**: `smartsec.example.toml` cita
+  `docker.io/zaproxy/zap:2.14.0` (404 hoje — atualizar para 2.16.0); SQLMap
+  upstream 1.10.10 sem imagem oficial; aviso de deprecação do Node 20 nas
+  actions de artefato; `docs/PROMPT-CONTINUACAO.md` desatualizado.
+- **#108**: localização errada citada pelo agente de código (follow-up).
+- **Worktrees** em `.worktrees/` (config-ia, hover-mouse, ia-log,
+  limpeza-comentarios, perf-upgrade, tool-preselect, tui-upgrade, versoes):
+  trabalho 100% mergeado; podem ser removidos com `git worktree remove`.
+
+## 8. Regras e armadilhas que mais quebram
+
+- `AGENTS.md` manda; issue primeiro, branch por tarefa (`feat/issue-N-...`),
+  PR com `Closes #N`, nunca push na `main`.
+- **Comentário: no máximo 2 linhas, só o *por que* não óbvio.** Comportamento
+  verificável vira teste, não comentário.
+- **NUNCA** `cargo test` sem `--bin smartsec` (a suíte de integração completa
+  executa o binário real e trava a máquina). Sempre `flock
+  .git/smartsec-build.lock` e `-j 1` (máquina de 7,9 GB).
+- `pkill -f <padrão>` mata o próprio shell se o padrão casar a própria linha —
+  use classe de caractere (`ss-prox[y]`) ou mate por PID.
+- Segredos nunca em commit/log/relatório; mascarar achados do TruffleHog; não
+  enviar logs para LLM remoto sem consentimento.
+- Strings de interface/log/relatório em **pt-BR**; identificadores de código em
+  inglês. Dados demo/mock só opt-in e rotulados.
+- Subagentes: não rodar dois no mesmo worktree; sessões órfãs duplicadas já
+  aconteceram — cancele as repetidas antes de relançar.
+
+## 9. Como propor melhorias
+
+- Mudança fora do escopo da issue: **abra issue antes** de codar; não misture
+  refatoração/estilo com feature.
+- Todo PR com testes (incluindo erros, timeout, cancelamento e entrada
+  inválida quando aplicável) e **evidência reproduzível** no corpo (comandos +
+  resultado) para mudanças de TUI/CLI/pipeline/relatório.
+- Se mudar contrato público (findings, CLI, config, exit codes, logs),
+  atualize `TCC_SPEC.md`, testes e a matriz de rastreabilidade no mesmo PR.
+- Issues de validação preservam dados brutos e distinguem antes/depois.
+- Não feche issue com workaround sem abrir follow-up.
