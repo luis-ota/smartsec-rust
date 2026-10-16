@@ -1,5 +1,8 @@
 # Prompt de continuação — smartsec-rust + CyberRAG
 
+> **Obsoleto.** Descreve a branch antiga `feat/auditoria-codigo-ia`, já mergeada.
+> O documento de passagem atual é [`docs/HANDOFF.md`](HANDOFF.md).
+
 Você está continuando o trabalho num repositório já avançado. **Leia tudo antes de editar qualquer coisa.**
 
 ---
