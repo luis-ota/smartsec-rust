@@ -575,8 +575,7 @@ impl PodmanExecutor {
             create_args.push("--volume".to_owned());
             create_args.push(output.mount_spec());
         }
-        create_args.push(image.to_owned());
-        create_args.extend(command.iter().cloned());
+        create_args.extend(image_and_command(image, command));
         trace.emit(format!("$ podman {}", create_args.join(" ")));
         let mut create_command = self.podman_command();
         create_command.args(&create_args);
@@ -1050,6 +1049,18 @@ fn collect_artifact(
     }
 }
 
+/// Sem `--entrypoint`, o executável vira argumento do `ENTRYPOINT` da imagem
+/// (`testssl.sh testssl.sh …` aborta); a forma JSON impede o Podman de reinterpretá-lo.
+fn image_and_command(image: &str, command: &[String]) -> Vec<String> {
+    let Some((executable, arguments)) = command.split_first() else {
+        return vec![image.to_owned()];
+    };
+    let entrypoint = serde_json::to_string(&[executable]).unwrap_or_default();
+    let mut args = vec!["--entrypoint".to_owned(), entrypoint, image.to_owned()];
+    args.extend(arguments.iter().cloned());
+    args
+}
+
 fn output_message(stderr: &[u8]) -> String {
     let message = String::from_utf8_lossy(stderr);
     let message = message.trim();
@@ -1196,6 +1207,36 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::path::Path;
     use tmpfs::FilesystemProbe;
+
+    #[test]
+    fn the_first_command_item_replaces_the_image_entrypoint() {
+        let command = ["testssl.sh", "--quiet", "https://alvo"].map(str::to_owned);
+
+        assert_eq!(
+            image_and_command("ghcr.io/testssl/testssl.sh:3.2", &command),
+            [
+                "--entrypoint",
+                r#"["testssl.sh"]"#,
+                "ghcr.io/testssl/testssl.sh:3.2",
+                "--quiet",
+                "https://alvo"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_command_keeps_the_image_defaults() {
+        assert_eq!(image_and_command("scanner", &[]), ["scanner"]);
+    }
+
+    #[test]
+    fn an_entrypoint_that_looks_like_json_stays_a_single_literal() {
+        let command = [r#"["sh","-c","id"]"#.to_owned()];
+
+        let args = image_and_command("scanner", &command);
+
+        assert_eq!(args[1], r#"["[\"sh\",\"-c\",\"id\"]"]"#);
+    }
 
     /// Fonte de filesystem com tipo fixo, para exercitar a verificação de `tmpfs`
     /// sem depender da máquina de teste.
@@ -1366,7 +1407,7 @@ mod tests {
         assert!(calls.contains("--cap-drop all"));
         assert!(calls.contains("--read-only"));
         assert!(calls.contains("--tmpfs /root/.config:rw,noexec,nosuid,nodev,size=16m"));
-        assert!(calls.contains("example/scanner:1 scan target"));
+        assert!(calls.contains(r#"--entrypoint ["scan"] example/scanner:1 target"#));
         assert!(calls.contains("rm --force --ignore container-123"));
     }
 
@@ -1474,6 +1515,7 @@ mod tests {
         assert!(trace.contains("$ podman info --format"));
         assert!(trace.contains("podman rootless verificado"));
         assert!(trace.contains("$ podman create --name smartsec-"));
+        assert!(trace.contains(r#"--entrypoint ["scan"] example/scanner:1"#));
         assert!(trace.contains("Trying to pull example/scanner:1..."));
         assert!(trace.contains("container-123"));
         assert!(trace.contains("criado a partir da imagem 'example/scanner:1'"));

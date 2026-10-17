@@ -139,8 +139,9 @@ fn zap_is_selectable_in_the_headless_run_and_records_image_and_version() {
     let calls = sandbox.calls();
     // A imagem fixada por digest e o comando sem shell chegam ao container.
     assert!(calls.contains("ghcr.io/zaproxy/zaproxy:2.16.0@sha256:391f66efa53b30de40d4a1c6e28146477263552fc828bc7613c9cd11a2949908"), "{calls}");
+    assert!(calls.contains("--entrypoint [\"zap.sh\"]"), "{calls}");
     assert!(
-        calls.contains("zap.sh -Xmx1024m -cmd -autorun /zap/automation/scan.yaml"),
+        calls.contains("-Xmx1024m -cmd -autorun /zap/automation/scan.yaml"),
         "{calls}"
     );
     // O plano de automação é montado em somente leitura.

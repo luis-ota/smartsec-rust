@@ -32,7 +32,7 @@ Todos os campos são obrigatórios, exceto `enabled` (padrão `true`).
 | `version` | string | Versão da ferramenta, gravada no log estruturado (RNF09). |
 | `runner` | string | Runner registrado que executa a ferramenta. |
 | `parser` | string | Parser registrado que interpreta a saída. |
-| `command_template` | lista de strings | Comando do container; nenhum item pode ser vazio, o primeiro item é o executável (não pode começar com `-`) e ao menos um argumento deve conter o marcador `{target}`. |
+| `command_template` | lista de strings | Comando do container; nenhum item pode ser vazio, o primeiro item é o executável, passado ao Podman como `--entrypoint` e por isso substitui o `ENTRYPOINT` da imagem (não pode começar com `-`) e ao menos um argumento deve conter o marcador `{target}`. |
 | `output_format` | string | Formato da saída, validado contra o parser: `xml` para `nmap-xml`, `jsonl` para `nuclei-jsonl` e `trufflehog-jsonl`, `json` para `nikto-json` e `zap-json`, `text` para `sqlmap-text` e `generic-text`. |
 | `enabled` | bool | Opcional. `false` mantém a ferramenta fora do catálogo. |
 
@@ -213,8 +213,9 @@ comando e o parser, todos medidos em container e documentados em
 - **Não há flag de limitação de profundidade.** `--max-depth=1` e `--max-depth=2`
   suprimem achados reais de forma reprodutível sobre um repositório de 2
   commits. O escopo é limitado pelo alvo explícito e pelo mount somente leitura.
-- **O subcomando `git` abre a lista de argumentos.** Repetir `trufflehog` como
-  primeiro item quebra a execução com `expected command but got "trufflehog"`.
+- **O binário `trufflehog` abre a lista de argumentos, seguido do subcomando
+  `git`.** O executor o passa como `--entrypoint`, então o `/etc/entrypoint.sh`
+  da imagem (que redivide o último argumento por espaço) não é usado.
 
 O parser `trufflehog-jsonl` preserva detector, arquivo, linha, commit e
 verificação, e reduz o prefixo de montagem (`/alvo/`) para que a evidência
@@ -306,9 +307,9 @@ do alcance (TOCTOU que exige escrita concorrente no `TMPDIR`); e kernels sem
 Duas particularidades da imagem condicionam o comando e só foram descobertas
 executando:
 
-- a imagem declara `ENTRYPOINT []` e `CMD ["bash"]`, então `podman create
-  IMAGEM zap.sh …` executa `/zap/zap.sh` pelo `PATH`. O `zap.sh` da 2.14 não
-  tem atalhos `-quickstart`/`-baseline`/`-full`;
+- a imagem declara `ENTRYPOINT []` e `CMD ["bash"]`; o executor passa
+  `--entrypoint ["zap.sh"]`, resolvido pelo `PATH` para `/zap/zap.sh`. O
+  `zap.sh` não tem atalhos `-quickstart`/`-baseline`/`-full`;
 - o `zap.sh` **ignora `JAVA_OPTS`**: ele calcula `-Xmx` a partir do
   `/proc/meminfo` do host e imprimiria `-Xmx3942m` numa máquina de 15 Gi. A
   única forma de limitar o heap é `-Xmx<N>m` como argumento único, e `-cmd` é

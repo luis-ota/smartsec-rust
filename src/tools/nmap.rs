@@ -39,7 +39,7 @@ impl SecurityToolRunner for NmapTool {
     }
 
     fn configure_command(&self, target: &str) -> String {
-        format!("nmap {}", Self::container_arguments(target).join(" "))
+        Self::container_arguments(target).join(" ")
     }
 
     async fn parse_output(&self, target: &str) -> Result<String, anyhow::Error> {
@@ -64,6 +64,7 @@ impl NmapTool {
     pub fn container_arguments(target: &str) -> Vec<String> {
         let (host, port) = split_host_port(target);
         let mut arguments = vec![
+            "nmap".to_owned(),
             "-Pn".to_owned(),
             "-sT".to_owned(),
             "-sV".to_owned(),
@@ -89,6 +90,7 @@ mod tests {
         assert_eq!(
             arguments,
             [
+                "nmap",
                 "-Pn",
                 "-sT",
                 "-sV",

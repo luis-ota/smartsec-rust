@@ -22,18 +22,13 @@ pub const REMOTE_URI_PREFIXES: &[&str] = &["https://", "http://"];
 
 /// Argumentos do container para a varredura de um repositório.
 ///
-/// A imagem declara `ENTRYPOINT ["trufflehog"]` e o executor monta
-/// `podman create … IMAGEM <argumentos>`; cada item é um argumento literal:
-/// nenhum shell é usado.
+/// O executor usa o primeiro item como `--entrypoint`, então o binário
+/// `trufflehog` é chamado direto, sem o `/etc/entrypoint.sh` da imagem (que
+/// redivide o último argumento por espaço); nenhum shell é usado.
 ///
 /// `container_repo_path` é o ponto de montagem do repositório local: quando não
 /// está vazio, o alvo vira `file://<mount>` e nenhum caminho do host atravessa o
 /// comando; quando está vazio, `target` é um repositório remoto já autorizado.
-///
-/// O subcomando `git` abre a lista porque o `command_template` do manifesto exige
-/// que o primeiro item seja o executável e não comece com `-`. Repetir
-/// `trufflehog` **não** funciona: o CLI rejeita com `expected command but got
-/// "trufflehog"` e exit 1, medido; as flags globais são aceitas depois dele.
 ///
 /// Cada flag existe por um motivo medido em container:
 ///
@@ -68,6 +63,7 @@ pub fn container_arguments(target: &str, container_repo_path: &str) -> Vec<Strin
         format!("file://{container_repo_path}")
     };
     vec![
+        "trufflehog".to_string(),
         "git".to_string(),
         "--no-update".to_string(),
         "--no-color".to_string(),
@@ -91,6 +87,7 @@ mod tests {
         assert_eq!(
             arguments,
             [
+                "trufflehog",
                 "git",
                 "--no-update",
                 "--no-color",
