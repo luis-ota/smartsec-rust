@@ -111,6 +111,7 @@ impl NucleiTool {
             None => host,
         };
         let mut args = vec![
+            "nuclei".to_owned(),
             "-u".to_owned(),
             target_arg,
             "-jsonl".to_owned(),
@@ -140,6 +141,7 @@ mod tests {
         assert_eq!(
             arguments,
             [
+                "nuclei",
                 "-u",
                 "example.test:8443",
                 "-jsonl",
@@ -166,6 +168,7 @@ mod tests {
             timeout_seconds: 9,
         };
         let arguments = NucleiTool::container_arguments_with_plan("10.0.0.1", &plan);
+        assert_eq!(arguments.first().map(String::as_str), Some("nuclei"));
         assert!(arguments.windows(2).any(|pair| pair == ["-c", "7"]));
         assert!(arguments.windows(2).any(|pair| pair == ["-timeout", "9"]));
         assert!(arguments.iter().any(|arg| arg.contains("network/")));
