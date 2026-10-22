@@ -1,4 +1,5 @@
 use crate::config::execution_type::ExecutionType;
+use crate::domain::Severity;
 use crate::tui::state::SettingsField;
 use ratatui::layout::Rect;
 
@@ -66,6 +67,7 @@ pub enum SemanticAction {
     ResumeRun,
     CancelRun,
     OpenVulnerability(usize),
+    FilterSeverity(Severity),
     ExportMarkdown,
     ShowDidactic,
     /// Explicação assistida (RAG) do achado aberto no detalhe.

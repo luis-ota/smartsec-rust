@@ -1,5 +1,6 @@
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmProviderKind;
+use crate::domain::Severity;
 use crate::tui::commands::command_items;
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::{AppState, AppStep, RunEvent, SettingsField};
@@ -26,6 +27,13 @@ pub fn handle_events(app: &mut AppState) -> std::io::Result<bool> {
 }
 
 fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
+    if matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        app.mouse_capture = !app.mouse_capture;
+        return false;
+    }
+
     if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
         && key.modifiers.contains(KeyModifiers::CONTROL)
     {
@@ -277,6 +285,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::ResumeRun => resume_execution(app),
         SemanticAction::CancelRun => cancel_execution(app),
         SemanticAction::OpenVulnerability(index) => open_vulnerability(app, index),
+        SemanticAction::FilterSeverity(severity) => filter_severity(app, severity),
         SemanticAction::ExportMarkdown => export_markdown(app),
         SemanticAction::ShowDidactic => {
             app.didactic_return_focus = app.focus;
@@ -767,17 +776,22 @@ fn ensure_tool_visible(app: &mut AppState) {
 }
 
 fn move_result_cursor(app: &mut AppState, down: bool) {
-    let count = app.vulnerabilities().len();
-    if count == 0 {
+    let visible = app.visible_vulnerability_indices();
+    if visible.is_empty() {
         app.result_cursor = 0;
         app.result_scroll = 0;
         return;
     }
-    if down {
-        app.result_cursor = (app.result_cursor + 1).min(count - 1);
+    let position = visible
+        .iter()
+        .position(|index| *index == app.result_cursor)
+        .unwrap_or(0);
+    let next = if down {
+        (position + 1).min(visible.len() - 1)
     } else {
-        app.result_cursor = app.result_cursor.saturating_sub(1);
-    }
+        position.saturating_sub(1)
+    };
+    app.result_cursor = visible[next];
 }
 
 fn open_vulnerability(app: &mut AppState, index: usize) {
@@ -788,6 +802,20 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
         app.detail_max_scroll = 0;
         app.focus = FocusTarget::ResultsDetail;
     }
+}
+
+fn filter_severity(app: &mut AppState, severity: Severity) {
+    app.severity_filter = if app.severity_filter == Some(severity) {
+        None
+    } else {
+        Some(severity)
+    };
+    app.result_cursor = app
+        .visible_vulnerability_indices()
+        .first()
+        .copied()
+        .unwrap_or(0);
+    app.result_scroll = 0;
 }
 
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
@@ -1089,6 +1117,9 @@ fn export_markdown(app: &mut AppState) {
 fn new_scan(app: &mut AppState) {
     app.step = AppStep::Splash;
     app.result_detail_vuln = None;
+    app.severity_filter = None;
+    app.result_cursor = 0;
+    app.result_scroll = 0;
     app.detail_scroll = 0;
     app.detail_max_scroll = 0;
     app.show_didactic = false;
@@ -2855,5 +2886,17 @@ mod tests {
 
         assert!(!handle_resize(&mut app));
         assert_eq!(app.mouse_position, None);
+    }
+
+    #[test]
+    fn ctrl_t_toggles_mouse_capture() {
+        let mut app = app();
+        let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+
+        assert!(app.mouse_capture);
+        assert!(!handle_key(&mut app, key));
+        assert!(!app.mouse_capture);
+        assert!(!handle_key(&mut app, key));
+        assert!(app.mouse_capture);
     }
 }

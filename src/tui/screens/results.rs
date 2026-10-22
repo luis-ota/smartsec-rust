@@ -13,6 +13,7 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let vulnerabilities = app.vulnerabilities();
@@ -89,7 +90,7 @@ fn audit_label(path: Option<&std::path::PathBuf>, pending: &str) -> String {
     )
 }
 
-fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
+fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let block = chrome::panel("Resumo", false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -105,20 +106,36 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
     let medium = counts(Severity::Medium);
     let low = counts(Severity::Low);
     let info = counts(Severity::Info);
+    let filter = app.severity_filter;
     let severities = [
         Line::from(vec![
-            metric("críticas", critical, DANGER),
+            metric(
+                "críticas",
+                critical,
+                DANGER,
+                filter == Some(Severity::Critical),
+            ),
             Span::raw("   "),
-            metric("altas", high, Color::Rgb(220, 130, 90)),
+            metric(
+                "altas",
+                high,
+                Color::Rgb(220, 130, 90),
+                filter == Some(Severity::High),
+            ),
             Span::raw("   "),
-            metric("médias", medium, WARNING),
+            metric("médias", medium, WARNING, filter == Some(Severity::Medium)),
         ]),
         Line::from(vec![
-            metric("baixas", low, ACCENT),
+            metric("baixas", low, ACCENT, filter == Some(Severity::Low)),
             Span::raw("   "),
-            metric("informativas", info, MUTED),
+            metric("informativas", info, MUTED, filter == Some(Severity::Info)),
         ]),
     ];
+    let critical_width = format!("{critical} críticas").width();
+    let high_width = format!("{high} altas").width();
+    let medium_width = format!("{medium} médias").width();
+    let low_width = format!("{low} baixas").width();
+    let info_width = format!("{info} informativas").width();
     // A linha da IA traz o resumo real devolvido pelo agente; o texto completo
     // permanece no relatório Markdown e no log de auditoria.
     let ai = Line::from(vec![
@@ -128,6 +145,7 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(TEXT),
         ),
     ]);
+    let mut severity_line_indices = Vec::new();
     let lines = if app.has_run_issues() {
         let mut lines = Vec::new();
         for issue in app
@@ -158,7 +176,9 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
                 Style::default().fg(MUTED),
             ));
         }
+        severity_line_indices.push(lines.len());
         lines.push(severities[0].clone());
+        severity_line_indices.push(lines.len());
         lines.push(severities[1].clone());
         // Com ocorrências, o caminho da auditoria continua acessível no
         // relatório, no log estruturado e na tela de rastreabilidade (f2).
@@ -179,6 +199,7 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
         // "alvo  " ocupa 7 colunas e "  código " ocupa 9; o que sobra divide-se
         // entre os dois paths, com folga para a borda direita.
         let path_budget = ((inner.width as usize).saturating_sub(18)) / 2;
+        severity_line_indices.extend([0, 1]);
         vec![
             severities[0].clone(),
             severities[1].clone(),
@@ -207,6 +228,28 @@ fn render_summary(app: &AppState, frame: &mut Frame, area: Rect) {
             ),
         ]
     };
+    if severity_line_indices.len() == 2 {
+        let y1 = inner.y + severity_line_indices[0] as u16;
+        let y2 = inner.y + severity_line_indices[1] as u16;
+        let high_x = inner.x + critical_width as u16 + 3;
+        let medium_x = high_x + high_width as u16 + 3;
+        let info_x = inner.x + low_width as u16 + 3;
+        for (rect, severity) in [
+            (
+                Rect::new(inner.x, y1, critical_width as u16, 1),
+                Severity::Critical,
+            ),
+            (Rect::new(high_x, y1, high_width as u16, 1), Severity::High),
+            (
+                Rect::new(medium_x, y1, medium_width as u16, 1),
+                Severity::Medium,
+            ),
+            (Rect::new(inner.x, y2, low_width as u16, 1), Severity::Low),
+            (Rect::new(info_x, y2, info_width as u16, 1), Severity::Info),
+        ] {
+            app.register_hit_region(rect, SemanticAction::FilterSeverity(severity));
+        }
+    }
     let mut lines = lines;
     if let Some(warning) = &app.enrichment_warning {
         // A indisponibilidade da NVD é um aviso, não uma falha da varredura:
@@ -226,10 +269,15 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or(text)
 }
 
-fn metric(label: &str, value: usize, color: Color) -> Span<'_> {
+fn metric(label: &str, value: usize, color: Color, active: bool) -> Span<'_> {
+    let style = Style::default().fg(color).bold();
     Span::styled(
         format!("{value} {label}"),
-        Style::default().fg(color).bold(),
+        if active {
+            style.bg(SURFACE_ACTIVE).underlined()
+        } else {
+            style
+        },
     )
 }
 
@@ -237,15 +285,26 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let focused = app.focus == FocusTarget::ResultsList;
     // REQ15: o painel anuncia que os críticos estão no topo, para que a
     // ordenação seja visível e não apenas implícita.
-    let critical = app
-        .vulnerabilities()
-        .iter()
-        .filter(|item| item.severity == Severity::Critical)
-        .count();
-    let title = if critical > 0 {
-        format!("Achados · {critical} crítico(s) no topo")
+    let visible_indices = app.visible_vulnerability_indices();
+    let total = app.vulnerabilities().len();
+    let title = if let Some(filter) = app.severity_filter {
+        format!(
+            "Achados · {} de {} · {}",
+            visible_indices.len(),
+            total,
+            severity_label(filter)
+        )
     } else {
-        "Achados".to_string()
+        let critical = app
+            .vulnerabilities()
+            .iter()
+            .filter(|item| item.severity == Severity::Critical)
+            .count();
+        if critical > 0 {
+            format!("Achados · {critical} crítico(s) no topo")
+        } else {
+            "Achados".to_string()
+        }
     };
     let block = chrome::panel(&title, focused);
     let inner = block.inner(area);
@@ -253,38 +312,48 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let count = app.vulnerabilities().len();
-    if count == 0 {
+    if visible_indices.is_empty() {
         app.result_cursor = 0;
         app.result_scroll = 0;
+        let message = if app.severity_filter.is_some() {
+            "Nenhum achado com a severidade selecionada. Clique na severidade de novo para limpar o filtro."
+        } else {
+            "Nenhuma vulnerabilidade para revisar."
+        };
         frame.render_widget(
-            Paragraph::new("Nenhuma vulnerabilidade para revisar.")
-                .style(Style::default().fg(MUTED).bg(SURFACE)),
+            Paragraph::new(message).style(Style::default().fg(MUTED).bg(SURFACE)),
             inner,
         );
         return;
     }
+    if !visible_indices.contains(&app.result_cursor) {
+        app.result_cursor = visible_indices[0];
+    }
+    let cursor_position = visible_indices
+        .iter()
+        .position(|index| *index == app.result_cursor)
+        .unwrap_or(0);
+    let count = visible_indices.len();
     let visible = inner.height as usize;
-    app.result_cursor = app.result_cursor.min(count - 1);
     let max_scroll = count.saturating_sub(visible);
     app.result_scroll = app.result_scroll.min(max_scroll);
-    if app.result_cursor < app.result_scroll {
-        app.result_scroll = app.result_cursor;
-    } else if app.result_cursor >= app.result_scroll.saturating_add(visible) {
-        app.result_scroll = app.result_cursor.saturating_sub(visible - 1);
+    if cursor_position < app.result_scroll {
+        app.result_scroll = cursor_position;
+    } else if cursor_position >= app.result_scroll.saturating_add(visible) {
+        app.result_scroll = cursor_position.saturating_sub(visible - 1);
     }
 
     let rows = visible.min(count.saturating_sub(app.result_scroll));
     let first_row = app.result_scroll;
     let cursor = app.result_cursor;
-    let vulnerabilities = app.vulnerabilities();
+    let all = app.vulnerabilities();
     let row_areas: Vec<Rect> = (0..rows)
         .map(|row| Rect::new(inner.x, inner.y + row as u16, inner.width, 1))
         .collect();
     let mut lines = Vec::new();
     for (row, row_area) in row_areas.iter().enumerate() {
-        let index = first_row + row;
-        let item = vulnerabilities[index];
+        let index = visible_indices[first_row + row];
+        let item = all[index];
         let current = index == cursor;
         let active = current && focused;
         let hovered = app.mouse_over(*row_area);
@@ -330,7 +399,7 @@ fn render_list(app: &mut AppState, frame: &mut Frame, area: Rect) {
     for (row, row_area) in row_areas.iter().enumerate() {
         app.register_hit_region(
             *row_area,
-            SemanticAction::OpenVulnerability(first_row + row),
+            SemanticAction::OpenVulnerability(visible_indices[first_row + row]),
         );
     }
 }
@@ -913,6 +982,42 @@ mod tests {
         let screen = draw(&mut app, 80, 24);
 
         assert!(screen.contains("localização não determinada"), "{screen}");
+    }
+
+    #[test]
+    fn clicking_a_severity_filters_the_list_and_clicking_again_clears_it() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        let mut high = finding("Alta 1");
+        high.severity = Severity::High;
+        let mut info = finding("Informativa");
+        info.severity = Severity::Info;
+        let mut high2 = finding("Alta 2");
+        high2.severity = Severity::High;
+        app.orchestrator.findings.extend([high, info, high2]);
+        app.step = AppStep::Results;
+
+        let screen = draw(&mut app, 80, 24);
+        assert!(screen.contains("Achados"), "{screen}");
+
+        crate::tui::event::dispatch_action(
+            &mut app,
+            SemanticAction::FilterSeverity(Severity::Info),
+        );
+        assert_eq!(app.severity_filter, Some(Severity::Info));
+        assert_eq!(app.visible_vulnerability_indices().len(), 1);
+        let screen = draw(&mut app, 80, 24);
+        assert!(screen.contains("1 de 3"), "{screen}");
+        assert!(screen.contains("INFORM."), "{screen}");
+        assert!(!screen.contains("Alta 1"), "{screen}");
+
+        crate::tui::event::dispatch_action(
+            &mut app,
+            SemanticAction::FilterSeverity(Severity::Info),
+        );
+        assert_eq!(app.severity_filter, None);
+        assert_eq!(app.visible_vulnerability_indices().len(), 3);
+        let screen = draw(&mut app, 80, 24);
+        assert!(screen.contains("Alta 1"), "{screen}");
     }
 
     /// O resumo exibe o diretório do projeto ao lado do alvo, para que o

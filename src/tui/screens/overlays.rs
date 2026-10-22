@@ -52,6 +52,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
             Line::from(""),
             shortcut("f1", "abrir ajuda em qualquer contexto"),
             shortcut("ctrl+p", "abrir a paleta de comandos"),
+            shortcut("ctrl+t", "liberar o mouse para selecionar e copiar"),
             Line::from(""),
             Line::styled(
                 "O resumo no topo diz o que será aplicado ao salvar.",
@@ -78,6 +79,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
             shortcut("f2", "rastreabilidade da Sprint 1"),
             shortcut("h", "consultar o histórico de execuções"),
             shortcut("ctrl+p", "abrir a paleta de comandos"),
+            shortcut("ctrl+t", "liberar o mouse para selecionar e copiar"),
             Line::from(""),
             Line::styled(
                 "O mouse oferece as mesmas ações disponíveis pelo teclado.",
@@ -263,7 +265,11 @@ pub fn render_report_viewer(app: &mut AppState, frame: &mut Frame, area: Rect) {
 pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
     use ratatui::widgets::Wrap;
     app.hit_regions.clear();
-    let popup = centered_fixed(area, 76, 20);
+    let popup = centered_fixed(
+        area,
+        area.width.saturating_sub(4).clamp(60, 110),
+        area.height.saturating_sub(2).clamp(12, 24),
+    );
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -277,6 +283,7 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(5),
         Constraint::Length(1),
     ])
     .split(inner);
@@ -340,12 +347,26 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
         );
     }
 
-    app.register_hit_region(rows[2], SemanticAction::Back);
+    let detail = app
+        .ai_timeline
+        .get(app.ai_timeline_scroll)
+        .or_else(|| app.ai_timeline.last())
+        .map(|entry| format!("{} {} — {}", entry.time, entry.origin.label(), entry.text))
+        .unwrap_or_else(|| "nenhuma ação registrada ainda".to_string());
+    let detail_block = Paragraph::new(vec![
+        Line::styled("Detalhe da ação", Style::default().fg(ACCENT).bold()),
+        Line::from(detail),
+    ])
+    .wrap(Wrap { trim: false })
+    .style(Style::default().fg(TEXT).bg(SURFACE));
+    frame.render_widget(detail_block, rows[2]);
+
+    app.register_hit_region(rows[3], SemanticAction::Back);
     frame.render_widget(
-        Paragraph::new("↑↓ rolar · enter ou esc  fechar")
+        Paragraph::new("↑↓ seleciona · enter ou esc  fechar")
             .alignment(Alignment::Right)
             .style(Style::default().fg(ACCENT).bg(SURFACE)),
-        rows[2],
+        rows[3],
     );
 }
 

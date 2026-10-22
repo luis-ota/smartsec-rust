@@ -188,8 +188,9 @@ desenvolvimento. Como o CI valida e documentado em
 | F1        | Abrir ajuda               |
 | Ctrl+P    | Abrir paleta de comandos  |
 | Ctrl+U    | Limpar o campo atual na configuracao |
+| Ctrl+T    | Liberar o mouse para selecionar/copiar texto no terminal |
 | H         | Abrir o historico de execucoes |
-| Mouse     | Clicar botoes, selecionar ferramentas, rolar listas |
+| Mouse     | Clicar botoes, selecionar ferramentas, rolar listas e filtrar severidade |
 
 ## Licenca
 

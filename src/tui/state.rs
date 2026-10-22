@@ -288,6 +288,8 @@ pub struct AppState {
     pub step: AppStep,
     pub screen_area: Rect,
     pub should_quit: bool,
+    /// `false` libera o mouse para a seleção nativa do terminal.
+    pub mouse_capture: bool,
     pub tick: u64,
     pub spinner_idx: usize,
     pub tools: Vec<ToolItem>,
@@ -336,6 +338,7 @@ pub struct AppState {
     pub ai_timeline_follow: bool,
     pub result_cursor: usize,
     pub result_scroll: usize,
+    pub severity_filter: Option<crate::domain::Severity>,
     pub result_detail_vuln: Option<usize>,
     /// Explicação RAG por achado, exibida no detalhe (issue #109).
     pub rag_results: std::collections::BTreeMap<usize, crate::cyberrag::service::ExplanationResult>,
@@ -494,6 +497,7 @@ impl AppState {
             step: AppStep::Splash,
             screen_area: Rect::default(),
             should_quit: false,
+            mouse_capture: true,
             tick: 0,
             spinner_idx: 0,
             tools,
@@ -526,6 +530,7 @@ impl AppState {
             ai_timeline_follow: true,
             result_cursor: 0,
             result_scroll: 0,
+            severity_filter: None,
             result_detail_vuln: None,
             detail_scroll: 0,
             detail_max_scroll: 0,
@@ -692,6 +697,20 @@ impl AppState {
             .indices
             .iter()
             .map(|index| &findings[*index])
+            .collect()
+    }
+
+    /// Índices visíveis, na mesma ordem de `vulnerabilities()`.
+    pub fn visible_vulnerability_indices(&self) -> Vec<usize> {
+        let filter = self.severity_filter;
+        self.vulnerabilities()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, item)| match filter {
+                Some(severity) => item.severity == severity,
+                None => true,
+            })
+            .map(|(index, _)| index)
             .collect()
     }
 
@@ -2025,12 +2044,7 @@ impl AppState {
             .or(self.config_warning.as_deref())
     }
 
-    /// Tenta ler a chave do keyring de novo ao abrir `Configurar IA`.
-    ///
-    /// O operador pode ter desbloqueado o cofre depois de abrir a TUI; sem esta
-    /// releitura, a única saída era reiniciar a ferramenta. Quando a leitura
-    /// falha, o motivo real (cofre bloqueado, por exemplo) substitui a mensagem
-    /// genérica de credenciais.
+    /// Relê a chave ao abrir Configurar IA; o cofre pode ter sido desbloqueado.
     pub(crate) fn reload_api_key_from_keyring(&mut self) {
         if !self.config.llm.api_key.trim().is_empty() || !self.config.llm.is_remote() {
             return;

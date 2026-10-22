@@ -386,10 +386,19 @@ impl CommandLineInterface {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
         app: &mut tui::state::AppState,
     ) -> Result<()> {
+        let mut mouse_capture = true;
         loop {
             terminal.draw(|f| tui::render(app, f))?;
 
             let should_quit = tui::event::handle_events(app)?;
+            if app.mouse_capture != mouse_capture {
+                if app.mouse_capture {
+                    execute!(terminal.backend_mut(), EnableMouseCapture)?;
+                } else {
+                    execute!(terminal.backend_mut(), DisableMouseCapture)?;
+                }
+                mouse_capture = app.mouse_capture;
+            }
             if should_quit || app.should_quit {
                 app.shutdown_run().await;
                 return Ok(());
