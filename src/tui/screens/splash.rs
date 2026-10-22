@@ -16,6 +16,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let status = app
         .run_error
         .clone()
+        .or_else(|| app.history_error.clone())
         .or_else(|| app.config_warning.clone())
         .unwrap_or_else(|| "Pronto para configurar a análise".to_string());
     let shell = chrome::render_shell(app, frame, area, "Nova análise", &status);
@@ -31,12 +32,17 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         shell.content
     };
     let page = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(content);
-    let form = Layout::vertical([Constraint::Length(15)])
-        .flex(Flex::Center)
-        .split(page[0])[0];
-    let rows = Layout::vertical([
-        Constraint::Length(3),
+    let body = Layout::vertical([
+        Constraint::Min(13),
         Constraint::Length(1),
+        Constraint::Length(5),
+    ])
+    .split(page[0]);
+    let form = Layout::vertical([Constraint::Length(13)])
+        .flex(Flex::Center)
+        .split(body[0])[0];
+    let rows = Layout::vertical([
+        Constraint::Length(2),
         Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(3),
@@ -58,9 +64,10 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         rows[0],
     );
 
-    render_target(app, frame, rows[2]);
-    render_modes(app, frame, rows[4]);
-    render_model(app, frame, rows[6]);
+    render_target(app, frame, rows[1]);
+    render_modes(app, frame, rows[3]);
+    render_model(app, frame, rows[5]);
+    render_recent_scans(app, frame, body[2]);
 
     let buttons = Layout::horizontal([
         Constraint::Min(1),
@@ -176,4 +183,72 @@ fn render_model(app: &mut AppState, frame: &mut Frame, area: Rect) {
         inner,
     );
     app.register_hit_region(area, SemanticAction::OpenSettings);
+}
+
+const RECENT_LIMIT: usize = 3;
+
+fn render_recent_scans(app: &mut AppState, frame: &mut Frame, area: Rect) {
+    let focused = app.focus == FocusTarget::SplashRecent;
+    let block = chrome::panel_hover("Execuções recentes", focused, app.mouse_over(area));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let recent = app.recent_scan_indices();
+    if recent.is_empty() {
+        let message = if app.history.directory_exists {
+            "Nenhuma execução com achados registrada."
+        } else {
+            "Histórico ainda não criado."
+        };
+        frame.render_widget(
+            Paragraph::new(message).style(Style::default().fg(MUTED).bg(SURFACE)),
+            inner,
+        );
+        return;
+    }
+    app.register_hit_region(area, SemanticAction::SetFocus(FocusTarget::SplashRecent));
+    let count = RECENT_LIMIT.min(inner.height as usize).min(recent.len());
+    if app.splash_recent_cursor >= count {
+        app.splash_recent_cursor = count.saturating_sub(1);
+    }
+    for (position, global_index) in recent.iter().take(count).enumerate() {
+        let record = app.history.records[*global_index].clone();
+        let row = Rect::new(inner.x, inner.y + position as u16, inner.width, 1);
+        let selected = position == app.splash_recent_cursor;
+        let hovered = app.mouse_over(row);
+        let date = record
+            .completed_at
+            .get(..10)
+            .unwrap_or(record.completed_at.as_str());
+        let target =
+            chrome::truncate_width(&record.target_url, inner.width.saturating_sub(36) as usize);
+        let counts = &record.severity_counts;
+        let line = format!(
+            "{} {date}  {target}  {} ach.  C{} A{} M{} B{} I{}",
+            if selected { ">" } else { " " },
+            record.findings_count,
+            counts.critical,
+            counts.high,
+            counts.medium,
+            counts.low,
+            counts.info
+        );
+        let style = Style::default()
+            .fg(if selected { Color::Black } else { TEXT })
+            .bg(if selected {
+                ACCENT
+            } else if hovered {
+                chrome::SURFACE_HOVER
+            } else {
+                SURFACE
+            })
+            .bold();
+        frame.render_widget(
+            Paragraph::new(chrome::truncate_width(&line, inner.width as usize)).style(style),
+            row,
+        );
+        app.register_hit_region(row, SemanticAction::OpenRecentScan(*global_index));
+    }
 }

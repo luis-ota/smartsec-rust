@@ -1,4 +1,6 @@
-use crate::tui::chrome::{ACCENT, MUTED, SUCCESS, SURFACE, SURFACE_HOVER, TEXT, WARNING};
+use crate::tui::chrome::{
+    ACCENT, MUTED, SUCCESS, SURFACE, SURFACE_ACTIVE, SURFACE_HOVER, TEXT, WARNING,
+};
 use crate::tui::commands::command_items;
 use crate::tui::interaction::SemanticAction;
 use crate::tui::state::{AiTimelineOrigin, AppState, AppStep};
@@ -303,6 +305,11 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
     } else {
         app.ai_timeline_scroll.min(app.ai_timeline_max_scroll)
     };
+    let detail_index = if app.ai_timeline_follow {
+        app.ai_timeline.len().saturating_sub(1)
+    } else {
+        app.ai_timeline_scroll
+    };
     if app.ai_timeline.is_empty() {
         frame.render_widget(
             Paragraph::new(
@@ -314,31 +321,48 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
             rows[1],
         );
     } else {
+        let first = app.ai_timeline_scroll;
         let body: Vec<Line> = app
             .ai_timeline
             .iter()
-            .skip(app.ai_timeline_scroll)
+            .skip(first)
             .take(visible)
-            .map(|entry| {
+            .enumerate()
+            .map(|(offset, entry)| {
+                let index = first + offset;
+                let selected = index == detail_index;
                 let origin_color = match entry.origin {
                     AiTimelineOrigin::Planning => ACCENT,
                     AiTimelineOrigin::Ai => SUCCESS,
                     AiTimelineOrigin::Code => WARNING,
                 };
-                Line::from(vec![
-                    Span::styled(format!("{} ", entry.time), Style::default().fg(MUTED)),
+                let row_style = if selected {
+                    Style::default().bg(SURFACE_ACTIVE)
+                } else {
+                    Style::default().bg(SURFACE)
+                };
+                let mut line = Line::from(vec![
+                    Span::styled(
+                        if selected { "> " } else { "  " },
+                        row_style.fg(ACCENT).bold(),
+                    ),
+                    Span::styled(format!("{} ", entry.time), row_style.fg(MUTED)),
                     Span::styled(
                         format!("{:<12} ", entry.origin.label()),
-                        Style::default().fg(origin_color).bold(),
+                        row_style.fg(origin_color).bold(),
                     ),
                     Span::styled(
                         crate::tui::chrome::truncate_width(
                             &entry.text,
-                            rows[1].width.saturating_sub(22) as usize,
+                            rows[1].width.saturating_sub(24) as usize,
                         ),
-                        Style::default().fg(TEXT),
+                        row_style.fg(TEXT),
                     ),
-                ])
+                ]);
+                if selected {
+                    line = line.style(row_style.bold());
+                }
+                line
             })
             .collect();
         frame.render_widget(
@@ -347,11 +371,6 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
         );
     }
 
-    let detail_index = if app.ai_timeline_follow {
-        app.ai_timeline.len().saturating_sub(1)
-    } else {
-        app.ai_timeline_scroll
-    };
     let detail = app
         .ai_timeline
         .get(detail_index)

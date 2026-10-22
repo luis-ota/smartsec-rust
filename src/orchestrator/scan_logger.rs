@@ -1140,6 +1140,7 @@ mod tests {
         let approved = ExplanationResult {
             finding_index: 0,
             text: "Explicação".to_string(),
+            conceito: "injecao_sql".to_string(),
             example: None,
             claims: vec![OntologyClaim {
                 sujeito: "injecao_sql".to_string(),

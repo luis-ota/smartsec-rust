@@ -394,6 +394,7 @@ mod tests {
             &crate::cyberrag::service::ExplanationResult {
                 finding_index: 2,
                 text: "Explicação".to_string(),
+                conceito: "injecao_sql".to_string(),
                 example: None,
                 claims: Vec::new(),
                 verdict: crate::cyberrag::ontology::OntologyVerdict {

@@ -375,6 +375,7 @@ impl CommandLineInterface {
         if let Some(metadata) = replay {
             app.load_replayed_scan(metadata)?;
         }
+        app.request_history_refresh();
         // O aviso de configuração entra antes de qualquer execução e só sai
         // quando o operador salva uma configuração válida pela própria tela.
         app.set_config_warning(Some(config_problems.join(" · ")));
@@ -407,6 +408,9 @@ impl CommandLineInterface {
     ) -> Result<()> {
         let mut mouse_capture = true;
         loop {
+            if app.step == tui::state::AppStep::Splash {
+                app.refresh_history_if_pending();
+            }
             terminal.draw(|f| tui::render(app, f))?;
 
             let should_quit = tui::event::handle_events(app)?;

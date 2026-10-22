@@ -250,6 +250,29 @@ impl Ontology {
             .collect()
     }
 
+    pub fn resolve_entity_id(&self, value: &str) -> Option<&str> {
+        self.entity_by_label
+            .get(&normalize_label(value))
+            .map(String::as_str)
+    }
+
+    pub fn resolve_relation_id(&self, value: &str) -> Option<&str> {
+        self.relation_by_label
+            .get(&normalize_label(value))
+            .map(String::as_str)
+    }
+
+    pub fn triples_for_subject(&self, subject: &str) -> Vec<(String, String, String)> {
+        let Some(subject) = self.resolve_entity_id(subject) else {
+            return Vec::new();
+        };
+        self.triples
+            .iter()
+            .filter(|(triple_subject, _, _)| triple_subject == subject)
+            .cloned()
+            .collect()
+    }
+
     pub fn triples_of(&self, relation: &str) -> Vec<(&str, &str)> {
         self.triples
             .iter()

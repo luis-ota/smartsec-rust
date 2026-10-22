@@ -323,6 +323,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::OpenHelp => open_help(app),
         SemanticAction::OpenHistory => app.open_history(),
         SemanticAction::OpenHistoryRecord(index) => app.open_history_record(index),
+        SemanticAction::OpenRecentScan(index) => open_recent_scan(app, index),
         SemanticAction::OpenReportViewer => open_report_viewer(app),
         SemanticAction::OpenTraceability => open_traceability(app),
         SemanticAction::OpenCommandPalette => open_command_palette(app),
@@ -430,13 +431,19 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
         return vec![FocusTarget::DidacticContent, FocusTarget::DidacticBack];
     }
     match app.step {
-        AppStep::Splash => vec![
-            FocusTarget::SplashTarget,
-            FocusTarget::SplashAuto,
-            FocusTarget::SplashAssisted,
-            FocusTarget::SplashSettings,
-            FocusTarget::SplashStart,
-        ],
+        AppStep::Splash => {
+            let mut order = vec![
+                FocusTarget::SplashTarget,
+                FocusTarget::SplashAuto,
+                FocusTarget::SplashAssisted,
+                FocusTarget::SplashSettings,
+            ];
+            if !app.history.records.is_empty() {
+                order.push(FocusTarget::SplashRecent);
+            }
+            order.push(FocusTarget::SplashStart);
+            order
+        }
         AppStep::ToolSelect => vec![
             FocusTarget::ToolList,
             FocusTarget::ToolBack,
@@ -494,6 +501,7 @@ fn move_vertical(app: &mut AppState, down: bool) {
         return;
     }
     match app.focus {
+        FocusTarget::SplashRecent => move_recent_cursor(app, down),
         FocusTarget::ToolList => move_tool_cursor(app, down),
         FocusTarget::ResultsList if app.result_detail_vuln.is_none() => {
             move_result_cursor(app, down)
@@ -589,6 +597,14 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::SplashAuto => SemanticAction::SetMode(ExecutionType::Auto),
         FocusTarget::SplashAssisted => SemanticAction::SetMode(ExecutionType::Assisted),
         FocusTarget::SplashSettings => SemanticAction::OpenSettings,
+        FocusTarget::SplashRecent => {
+            let global = app
+                .recent_scan_indices()
+                .get(app.splash_recent_cursor)
+                .copied()
+                .unwrap_or(0);
+            SemanticAction::OpenRecentScan(global)
+        }
         FocusTarget::ToolList => SemanticAction::ToggleTool(app.tool_cursor),
         FocusTarget::ToolBack
         | FocusTarget::AnalysisCancel
@@ -685,6 +701,7 @@ fn go_back(app: &mut AppState) -> bool {
     }
     if app.result_detail_vuln.is_some() {
         app.result_detail_vuln = None;
+        app.detail_code_preview = None;
         app.detail_scroll = 0;
         app.detail_max_scroll = 0;
         app.focus = FocusTarget::ResultsList;
@@ -775,6 +792,34 @@ fn ensure_tool_visible(app: &mut AppState) {
     }
 }
 
+fn move_recent_cursor(app: &mut AppState, down: bool) {
+    let count = app.recent_scan_indices().len();
+    if count == 0 {
+        app.splash_recent_cursor = 0;
+        return;
+    }
+    app.splash_recent_cursor = if down {
+        (app.splash_recent_cursor + 1).min(count - 1)
+    } else {
+        app.splash_recent_cursor.saturating_sub(1)
+    };
+}
+
+fn open_recent_scan(app: &mut AppState, index: usize) {
+    if let Some(position) = app
+        .recent_scan_indices()
+        .iter()
+        .position(|global| *global == index)
+    {
+        app.splash_recent_cursor = position;
+    }
+    if let Err(error) = app.replay_history_record(index) {
+        app.history_error = Some(format!(
+            "Não foi possível abrir a execução do histórico: {error:#}"
+        ));
+    }
+}
+
 fn move_result_cursor(app: &mut AppState, down: bool) {
     let visible = app.visible_vulnerability_indices();
     if visible.is_empty() {
@@ -800,6 +845,7 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
         app.result_detail_vuln = Some(index);
         app.detail_scroll = 0;
         app.detail_max_scroll = 0;
+        app.load_detail_preview(index);
         app.focus = FocusTarget::ResultsDetail;
     }
 }
@@ -1121,6 +1167,8 @@ fn new_scan(app: &mut AppState) {
     app.result_cursor = 0;
     app.result_scroll = 0;
     app.run_started_at = None;
+    app.detail_code_preview = None;
+    app.results_project_dir = None;
     app.detail_scroll = 0;
     app.detail_max_scroll = 0;
     app.show_didactic = false;
@@ -1131,6 +1179,7 @@ fn new_scan(app: &mut AppState) {
     app.report_content = String::new();
     app.report_scroll = 0;
     app.report_max_scroll = 0;
+    app.history_refresh_pending = true;
     app.focus = FocusTarget::SplashTarget;
 }
 

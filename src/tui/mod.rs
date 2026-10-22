@@ -1,4 +1,5 @@
 pub mod chrome;
+pub mod code_preview;
 pub mod commands;
 pub mod event;
 pub mod interaction;

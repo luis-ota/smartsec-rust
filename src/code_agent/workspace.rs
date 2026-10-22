@@ -133,6 +133,18 @@ impl Workspace {
         requested: &str,
         max_bytes: Option<usize>,
     ) -> Result<String, WorkspaceError> {
+        Ok(sanitize_text(&self.read_text_raw(requested, max_bytes)?))
+    }
+
+    /// Leitura crua para a prévia local da TUI.
+    ///
+    /// Mantém a política de caminho/tamanho de `read_text`, mas sem a
+    /// sanitização conservadora que apagaria linhas inteiras de código.
+    pub(crate) fn read_text_raw(
+        &self,
+        requested: &str,
+        max_bytes: Option<usize>,
+    ) -> Result<String, WorkspaceError> {
         let max_bytes = max_bytes
             .filter(|value| *value > 0)
             .unwrap_or(self.max_file_bytes);
@@ -149,7 +161,7 @@ impl Workspace {
             .read_to_end(&mut buffer)
             .map_err(|error| map_io(requested, error))?;
         let (text, _) = truncate_bytes(&buffer, max_bytes, metadata.len());
-        Ok(sanitize_text(&text))
+        Ok(text)
     }
 
     /// Lista as entradas de um diretório em ordem determinística, marcando

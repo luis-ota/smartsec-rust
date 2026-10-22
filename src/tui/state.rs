@@ -342,6 +342,10 @@ pub struct AppState {
     pub result_scroll: usize,
     pub severity_filter: Option<crate::domain::Severity>,
     pub result_detail_vuln: Option<usize>,
+    pub detail_code_preview: Option<crate::tui::code_preview::CodePreview>,
+    /// Raiz usada para ler a prévia; separada do config para o replay não
+    /// misturar o projeto atual com o projeto do scan aberto.
+    pub results_project_dir: Option<PathBuf>,
     /// Explicação RAG por achado, exibida no detalhe (issue #109).
     pub rag_results: std::collections::BTreeMap<usize, crate::cyberrag::service::ExplanationResult>,
     /// Achado com explicação em andamento.
@@ -400,6 +404,8 @@ pub struct AppState {
     pub audit_log_path: Option<PathBuf>,
     pub history: crate::orchestrator::scan_logger::ScanHistory,
     pub history_dir: PathBuf,
+    pub splash_recent_cursor: usize,
+    pub(crate) history_refresh_pending: bool,
     pub history_cursor: usize,
     pub history_scroll: usize,
     pub history_detail: Option<crate::orchestrator::scan_logger::ScanMetadata>,
@@ -535,6 +541,8 @@ impl AppState {
             result_scroll: 0,
             severity_filter: None,
             result_detail_vuln: None,
+            detail_code_preview: None,
+            results_project_dir: None,
             detail_scroll: 0,
             detail_max_scroll: 0,
             md_exported: false,
@@ -577,6 +585,8 @@ impl AppState {
             audit_log_path: None,
             history: crate::orchestrator::scan_logger::ScanHistory::default(),
             history_dir: crate::orchestrator::scan_logger::scans_dir(),
+            splash_recent_cursor: 0,
+            history_refresh_pending: false,
             history_cursor: 0,
             history_scroll: 0,
             history_detail: None,
@@ -703,6 +713,25 @@ impl AppState {
             .collect()
     }
 
+    /// Carrega a prévia do código do achado aberto, uma vez por abertura.
+    pub fn load_detail_preview(&mut self, index: usize) {
+        self.detail_code_preview = None;
+        let Some((file, line)) = self
+            .vulnerabilities()
+            .get(index)
+            .and_then(|finding| finding.code_location.as_ref())
+            .map(|location| (location.file.clone(), location.line))
+        else {
+            return;
+        };
+        let Some(root) = self.results_project_dir.clone() else {
+            return;
+        };
+        self.detail_code_preview = Some(crate::tui::code_preview::CodePreview::load(
+            index, &root, &file, line,
+        ));
+    }
+
     /// Carrega um scan concluído direto na tela de resultados.
     pub fn load_replayed_scan(
         &mut self,
@@ -719,6 +748,9 @@ impl AppState {
         if !metadata.code_project_dir.is_empty() {
             self.config.project_dir = Some(metadata.code_project_dir.clone());
         }
+        self.results_project_dir = (!metadata.code_project_dir.is_empty())
+            .then(|| PathBuf::from(&metadata.code_project_dir));
+        self.detail_code_preview = None;
         self.config.active_tools = metadata
             .tools_executed
             .iter()
@@ -1171,6 +1203,7 @@ impl AppState {
                     // A análise terminou: os resultados já podem ser revisados.
                     self.step = AppStep::Results;
                     self.focus = FocusTarget::ResultsList;
+                    self.history_refresh_pending = true;
                     completed = true;
                 }
             }
@@ -1405,6 +1438,8 @@ impl AppState {
         self.exec_current = 0;
         self.exec_tick = 0;
         self.run_started_at = Some(std::time::Instant::now());
+        self.results_project_dir = Some(self.config.effective_project_dir());
+        self.detail_code_preview = None;
         self.clear_exec_logs();
         self.log_scroll = 0;
         self.log_follow = true;
@@ -2410,7 +2445,52 @@ impl AppState {
         self.history_cursor = self
             .history_cursor
             .min(self.history.records.len().saturating_sub(1));
+        self.splash_recent_cursor = self
+            .splash_recent_cursor
+            .min(self.recent_scan_indices().len().saturating_sub(1));
         self.history_scroll = 0;
+        self.history_refresh_pending = false;
+    }
+
+    /// Índices das execuções que valem a pena mostrar no início.
+    ///
+    /// A suíte grava logs de teste com alvo `[REDACTED]`; eles não são
+    /// execuções reais e não podem esconder o histórico útil.
+    pub fn recent_scan_indices(&self) -> Vec<usize> {
+        self.history
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.target_url != "[REDACTED]" && record.findings_count > 0)
+            .map(|(index, _)| index)
+            .take(3)
+            .collect()
+    }
+
+    pub fn request_history_refresh(&mut self) {
+        self.history_refresh_pending = true;
+    }
+
+    pub fn refresh_history_if_pending(&mut self) {
+        if self.history_refresh_pending {
+            self.load_history();
+        }
+    }
+
+    /// Abre os resultados de um registro já listado no histórico.
+    pub fn replay_history_record(&mut self, index: usize) -> anyhow::Result<()> {
+        let record =
+            self.history.records.get(index).cloned().ok_or_else(|| {
+                anyhow::anyhow!("A execução selecionada não está mais disponível.")
+            })?;
+        let metadata =
+            crate::orchestrator::scan_logger::load_scan_log_from_file(&record.file_path)?;
+        self.load_replayed_scan(metadata)?;
+        self.audit_log_path = Some(record.file_path.clone());
+        self.history_cursor = index;
+        self.history_detail = None;
+        self.history_error = None;
+        Ok(())
     }
 
     /// Abre o histórico a partir da tela atual, preservando a tela de retorno.
@@ -3128,6 +3208,7 @@ mod tests {
             } else {
                 String::new()
             },
+            conceito: "injecao_sql".to_string(),
             example: None,
             claims: Vec::new(),
             verdict: crate::cyberrag::ontology::OntologyVerdict {

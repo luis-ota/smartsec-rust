@@ -582,15 +582,13 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
         // real do scanner e nunca deve exibir credencial ou corpo de requisição.
         let evidence = crate::utils::redaction::sanitize_text(&item.evidence);
         append_wrapped(&mut lines, &evidence, inner.width as usize, ACCENT);
-        lines.push(Line::from(""));
         // A origem no código (#76) vem depois da evidência: a evidência prova o
         // que o scanner viu; a localização aponta onde corrigir.
         append_code_location(
             app,
             &mut lines,
-            item.code_location
-                .as_ref()
-                .map(|found| (found.file.clone(), found.line)),
+            item.code_location.as_ref(),
+            app.detail_code_preview.as_ref(),
             item.code_remediation.clone(),
             inner.width as usize,
         );
@@ -772,6 +770,17 @@ fn append_rag_explanation(
         );
         return;
     };
+    if !result.conceito.is_empty() {
+        push_wrapped_owned(
+            lines,
+            format!(
+                "conceito {} · {} / {} · contexto {}",
+                result.conceito, result.provider, result.model, result.retrieval_mode
+            ),
+            width,
+            MUTED,
+        );
+    }
     if !result.approved() {
         push_wrapped_owned(
             lines,
@@ -782,9 +791,11 @@ fn append_rag_explanation(
         if let Some(reason) = result.failure_reason.as_deref() {
             push_wrapped_owned(lines, reason.to_string(), width, MUTED);
         }
+        append_rag_claims(lines, result, width);
         return;
     }
     push_wrapped_owned(lines, result.text.clone(), width, MUTED);
+    append_rag_claims(lines, result, width);
     if let Some(example) = result.example.as_ref() {
         let language = example
             .linguagem
@@ -820,6 +831,45 @@ fn append_rag_explanation(
     );
 }
 
+fn append_rag_claims(
+    lines: &mut Vec<Line<'static>>,
+    result: &crate::cyberrag::service::ExplanationResult,
+    width: usize,
+) {
+    if result.claims.is_empty() && result.verdict.rejeitadas.is_empty() {
+        return;
+    }
+    lines.push(Line::styled(
+        "Fundamentação (triplas da ontologia)",
+        Style::default().fg(TEXT).bold(),
+    ));
+    for claim in &result.claims {
+        push_wrapped_owned(
+            lines,
+            format!(
+                "  • {} → {} → {}",
+                claim.sujeito, claim.relacao, claim.objeto
+            ),
+            width,
+            MUTED,
+        );
+    }
+    for rejection in &result.verdict.rejeitadas {
+        push_wrapped_owned(
+            lines,
+            format!(
+                "  ✗ {} → {} → {}: {}",
+                rejection.claim.sujeito,
+                rejection.claim.relacao,
+                rejection.claim.objeto,
+                rejection.motivo
+            ),
+            width,
+            WARNING,
+        );
+    }
+}
+
 /// Mostra a origem no código e os passos de correção de um achado.
 ///
 /// A ausência de origem é explícita, nunca substituída por um caminho ou linha
@@ -827,7 +877,8 @@ fn append_rag_explanation(
 fn append_code_location(
     app: &AppState,
     lines: &mut Vec<Line<'static>>,
-    location: Option<(String, usize)>,
+    location: Option<&crate::domain::vulnerability::CodeLocation>,
+    preview: Option<&crate::tui::code_preview::CodePreview>,
     remediation: Vec<String>,
     width: usize,
 ) {
@@ -838,15 +889,19 @@ fn append_code_location(
         Style::default().fg(TEXT).bold(),
     ));
     match location {
-        Some((file, line)) => {
+        Some(location) => {
             lines.push(Line::from(vec![
                 Span::styled("arquivo  ", Style::default().fg(MUTED)),
                 Span::styled(
-                    chrome::truncate_width(&file, width.saturating_sub(9)),
+                    chrome::truncate_width(&location.file, width.saturating_sub(9)),
                     Style::default().fg(ACCENT).bold(),
                 ),
-                Span::styled(format!("  linha {line}"), Style::default().fg(TEXT)),
+                Span::styled(
+                    format!("  linha {}", location.line),
+                    Style::default().fg(TEXT),
+                ),
             ]));
+            append_code_block(lines, preview, location, width);
             if !remediation.is_empty() {
                 lines.push(Line::styled(
                     "Correção sugerida",
@@ -886,6 +941,80 @@ fn append_code_location(
         }
     }
     lines.push(Line::from(""));
+}
+
+fn append_code_block(
+    lines: &mut Vec<Line<'static>>,
+    preview: Option<&crate::tui::code_preview::CodePreview>,
+    location: &crate::domain::vulnerability::CodeLocation,
+    width: usize,
+) {
+    let preview =
+        preview.filter(|preview| preview.file == location.file && preview.line == location.line);
+    if let Some(preview) = preview {
+        match &preview.state {
+            crate::tui::code_preview::PreviewState::Ready {
+                lines: code_lines,
+                truncated,
+                ..
+            } => {
+                if *truncated {
+                    push_wrapped_owned(
+                        lines,
+                        "prévia truncada no limite do arquivo".to_string(),
+                        width,
+                        WARNING,
+                    );
+                }
+                for code_line in code_lines {
+                    let gutter = format!("{:>4} │ ", code_line.number);
+                    let text = chrome::truncate_width(
+                        &code_line.text,
+                        width.saturating_sub(gutter.width()),
+                    );
+                    let style = if code_line.is_target {
+                        Style::default()
+                            .fg(DANGER)
+                            .bg(Color::Rgb(55, 22, 22))
+                            .bold()
+                    } else {
+                        Style::default().fg(MUTED)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(if code_line.is_target { ">" } else { " " }, style),
+                        Span::styled(gutter, Style::default().fg(MUTED)),
+                        Span::styled(text, style),
+                    ]));
+                }
+            }
+            crate::tui::code_preview::PreviewState::Unavailable { reason } => {
+                push_wrapped_owned(
+                    lines,
+                    format!("prévia indisponível: {reason}"),
+                    width,
+                    WARNING,
+                );
+                append_logged_snippet(lines, location, width);
+            }
+        }
+        return;
+    }
+    append_logged_snippet(lines, location, width);
+}
+
+fn append_logged_snippet(
+    lines: &mut Vec<Line<'static>>,
+    location: &crate::domain::vulnerability::CodeLocation,
+    width: usize,
+) {
+    if location.snippet.trim().is_empty() {
+        return;
+    }
+    lines.push(Line::styled(
+        "trecho registrado no log",
+        Style::default().fg(MUTED),
+    ));
+    push_wrapped_owned(lines, location.snippet.trim().to_string(), width, MUTED);
 }
 
 fn append_wrapped(lines: &mut Vec<Line<'static>>, value: &str, width: usize, color: Color) {
@@ -977,6 +1106,40 @@ mod tests {
         assert!(screen.contains("linha 4"), "{screen}");
         assert!(screen.contains("Correção sugerida"), "{screen}");
         assert!(screen.contains("Valide o usuário"), "{screen}");
+    }
+
+    #[test]
+    fn the_detail_shows_the_code_window_with_the_target_line() {
+        let root =
+            std::env::temp_dir().join(format!("smartsec-preview-results-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/app.py"),
+            "def login(user):\n    if not user:\n        raise ValueError('falha')\n    return user\n",
+        )
+        .unwrap();
+
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        let mut item = finding("Falha no login");
+        item.code_location = Some(CodeLocation {
+            file: "src/app.py".to_string(),
+            line: 3,
+            snippet: "raise ValueError('falha')".to_string(),
+        });
+        app.orchestrator.findings.push(item);
+        app.step = AppStep::Results;
+        app.focus = crate::tui::interaction::FocusTarget::ResultsList;
+        app.results_project_dir = Some(root.clone());
+
+        crate::tui::event::dispatch_action(&mut app, SemanticAction::OpenVulnerability(0));
+
+        let screen = draw(&mut app, 80, 24);
+        assert!(screen.contains("raise ValueError"), "{screen}");
+        assert!(screen.contains(">"), "{screen}");
+        assert!(app.detail_code_preview.is_some());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Sem origem, a TUI diz isso e mostra o motivo — nunca um caminho ou uma

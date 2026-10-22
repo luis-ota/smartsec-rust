@@ -202,6 +202,69 @@ fn normalize_key(value: &str) -> String {
     value.to_ascii_lowercase().replace(['_', ' '], "-")
 }
 
+/// Sanitiza uma linha de código para a prévia local da TUI.
+///
+/// Preserva recuo, sintaxe e nomes de variáveis; mascara apenas valores de
+/// chaves sensíveis e credenciais em URLs. Não é usado em logs nem no prompt.
+pub fn sanitize_code_line(value: &str) -> String {
+    let clean: String = value
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\t')
+        .collect::<String>()
+        .replace('\t', "    ");
+    let mut output = String::with_capacity(clean.len());
+    let mut rest = clean.as_str();
+    while !rest.is_empty() {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (token, tail) = rest.split_at(end);
+        let (prefix, candidate, suffix) = split_url_token(token);
+        if candidate.starts_with("http://") || candidate.starts_with("https://") {
+            output.push_str(prefix);
+            output.push_str(&sanitize_url(candidate));
+            output.push_str(suffix);
+        } else {
+            output.push_str(token);
+        }
+        let whitespace_end = tail
+            .find(|character: char| !character.is_whitespace())
+            .unwrap_or(tail.len());
+        output.push_str(&tail[..whitespace_end]);
+        rest = &tail[whitespace_end..];
+    }
+    mask_code_assignment(&output)
+}
+
+fn mask_code_assignment(line: &str) -> String {
+    let Some(separator) = line.find(['=', ':']) else {
+        return line.to_string();
+    };
+    let identifier = line[..separator]
+        .trim_end()
+        .rsplit(|character: char| {
+            !(character.is_alphanumeric() || character == '_' || character == '-')
+        })
+        .next()
+        .unwrap_or("");
+    if !is_sensitive_key(identifier) {
+        return line.to_string();
+    }
+    let after = &line[separator + 1..];
+    let value_start = after.len() - after.trim_start().len();
+    let value = &after[value_start..];
+    let prefix_end = separator + 1 + value_start;
+    if let Some(quote @ ('"' | '\'')) = value.chars().next() {
+        if let Some(close) = value[1..].rfind(quote) {
+            return format!(
+                "{}[REDACTED]{}{}",
+                &line[..prefix_end + quote.len_utf8()],
+                quote,
+                &value[close + 2..]
+            );
+        }
+    }
+    format!("{}[REDACTED]", &line[..prefix_end])
+}
+
 fn is_sensitive_key(key: &str) -> bool {
     let key = normalize_key(key);
     SENSITIVE_KEYS
@@ -298,5 +361,21 @@ mod tests {
             "[REDACTED]"
         );
         assert_eq!(sanitize_text("resultado seguro"), "resultado seguro");
+    }
+
+    #[test]
+    fn code_preview_keeps_indentation_and_hides_only_values() {
+        assert_eq!(
+            sanitize_code_line("    let password = \"segredo\";"),
+            "    let password = \"[REDACTED]\";"
+        );
+        assert_eq!(
+            sanitize_code_line("    let request = client.get(url);"),
+            "    let request = client.get(url);"
+        );
+        assert_eq!(
+            sanitize_code_line("    let url = \"http://user:pass@host/p?token=segredo\";"),
+            "    let url = \"http://host/p\";"
+        );
     }
 }

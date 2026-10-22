@@ -1,4 +1,4 @@
-use super::chrome::{ACCENT, ACCENT_HOVER, DANGER, SURFACE, SURFACE_HOVER};
+use super::chrome::{ACCENT, ACCENT_HOVER, DANGER, SURFACE, SURFACE_ACTIVE, SURFACE_HOVER};
 use super::interaction::{FocusTarget, SemanticAction};
 use super::state::{
     AiTimelineEntry, AiTimelineOrigin, AnalysisPhase, AppState, AppStep, RunIssueScope,
@@ -148,9 +148,43 @@ fn splash_matches_80x24_snapshot() {
             "SMARTSEC",
             "Alvo",
             "Modo selecionado",
+            "Execuções recentes",
             "Iniciar",
         ],
     );
+}
+
+#[test]
+fn splash_lists_recent_executions_and_opens_results() {
+    let dir = seed_history("splash_recent", 3);
+    let mut app = app();
+    app.history_dir = dir.clone();
+    app.load_history();
+
+    let snapshot = assert_snapshot(
+        &mut app,
+        &["Execuções recentes", "http://alvo2.local", "2 ach."],
+    );
+    assert!(
+        app.hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::OpenRecentScan(0)),
+        "a linha da execução recente precisa ser clicável\n{snapshot}"
+    );
+
+    app.focus = FocusTarget::SplashRecent;
+    app.splash_recent_cursor = 0;
+    crate::tui::event::dispatch_action(&mut app, SemanticAction::OpenRecentScan(0));
+
+    assert_eq!(app.step, AppStep::Results);
+    assert!(
+        app.config.target_url.starts_with("http://alvo2.local"),
+        "{}",
+        app.config.target_url
+    );
+    assert_eq!(app.orchestrator.findings.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -437,6 +471,7 @@ fn rag_result(approved: bool) -> crate::cyberrag::service::ExplanationResult {
         } else {
             String::new()
         },
+        conceito: "injecao_sql".to_string(),
         example: approved.then(|| crate::cyberrag::service::RetrievedExample {
             id: "injecao_sql".to_string(),
             titulo: "Injeção de SQL".to_string(),
@@ -832,11 +867,16 @@ fn seed_history(label: &str, count: usize) -> std::path::PathBuf {
             medium_count: 0,
             low_count: 0,
             info_count: 1,
-            findings: vec![serde_json::json!({
-                "title": "Versão desatualizada",
-                "severity": "High",
-                "tool": "Nmap",
-            })],
+            findings: vec![serde_json::to_value(Vulnerability {
+                title: "Versão desatualizada".to_string(),
+                severity: Severity::High,
+                tool: "Nmap".to_string(),
+                target: format!("http://alvo{index}.local"),
+                evidence: "nmap porta=22/tcp serviço=ssh".to_string(),
+                detected_at: "2026-09-06T10:01:00Z".to_string(),
+                ..Default::default()
+            })
+            .expect("achado do seed")],
             agent_analysis: "A superfície web expõe serviços antigos.".to_string(),
             enrichment: Default::default(),
             decisions: Vec::new(),
@@ -1305,4 +1345,41 @@ fn hover_does_not_light_elements_behind_an_overlay() {
     let (_, overlay_buffer) = render_80x24(&mut app);
 
     assert_eq!(styled_cells(&overlay_buffer, button), plain);
+}
+
+#[test]
+fn the_ai_timeline_highlights_the_action_shown_in_the_detail() {
+    let mut app = app();
+    app.step = AppStep::Execution;
+    app.ai_timeline = vec![
+        AiTimelineEntry {
+            time: "14:02:10".to_string(),
+            origin: AiTimelineOrigin::Ai,
+            text: "primeira ação".to_string(),
+        },
+        AiTimelineEntry {
+            time: "14:02:11".to_string(),
+            origin: AiTimelineOrigin::Code,
+            text: "ferramenta search_code no achado #1".to_string(),
+        },
+    ];
+    app.show_ai_timeline = true;
+    app.focus = FocusTarget::AiTimelineClose;
+
+    let (snapshot, buffer) = render_80x24(&mut app);
+    let row = snapshot
+        .lines()
+        .position(|line| line.contains("ferramenta search_code"))
+        .expect("a última ação precisa aparecer");
+    assert!(
+        (0..80).any(|column| buffer[(column, row as u16)].bg == SURFACE_ACTIVE),
+        "a linha da ação detalhada precisa ficar destacada\n{snapshot}"
+    );
+    assert!(
+        snapshot
+            .lines()
+            .nth(row)
+            .is_some_and(|line| line.contains("> 14:02:11")),
+        "a linha selecionada precisa de um marcador\n{snapshot}"
+    );
 }
