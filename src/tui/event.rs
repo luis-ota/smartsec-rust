@@ -348,7 +348,13 @@ fn start_rag_explanation(app: &mut AppState) {
     let Some(index) = app.result_detail_vuln else {
         return;
     };
-    if app.rag_pending.is_some() {
+    // A explicação da IA é lida na tela "Em linguagem direta"; o detalhe fica
+    // só com a evidência e a correção no código.
+    app.didactic_return_focus = FocusTarget::ResultsDetail;
+    app.show_didactic = true;
+    app.didactic_scroll = 0;
+    app.focus = FocusTarget::DidacticContent;
+    if app.rag_results.contains_key(&index) || app.rag_pending.is_some() {
         return;
     }
     let Some(finding) = app.orchestrator.findings.get(index).cloned() else {
@@ -428,7 +434,14 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
         return order;
     }
     if app.show_didactic {
-        return vec![FocusTarget::DidacticContent, FocusTarget::DidacticBack];
+        let mut order = vec![FocusTarget::DidacticContent];
+        if let Some(index) = app.result_detail_vuln {
+            if app.rag_pending.is_none() && !app.rag_results.contains_key(&index) {
+                order.push(FocusTarget::DidacticExplain);
+            }
+        }
+        order.push(FocusTarget::DidacticBack);
+        return order;
     }
     match app.step {
         AppStep::Splash => {
@@ -460,14 +473,12 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
                 FocusTarget::ResultsDetail,
                 FocusTarget::ResultsBack,
                 FocusTarget::ResultsExplain,
-                FocusTarget::ResultsDidactic,
             ]
         }
         AppStep::Results => vec![
             FocusTarget::ResultsList,
             FocusTarget::ResultsNewScan,
             FocusTarget::ResultsExport,
-            FocusTarget::ResultsDidactic,
         ],
         AppStep::History => {
             if app.history_detail.is_some() {
@@ -625,7 +636,7 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::ResultsNewScan => SemanticAction::NewScan,
         FocusTarget::ResultsExport => SemanticAction::ExportMarkdown,
         FocusTarget::ResultsExplain => SemanticAction::ExplainFinding,
-        FocusTarget::ResultsDidactic => SemanticAction::ShowDidactic,
+        FocusTarget::DidacticExplain => SemanticAction::ExplainFinding,
         FocusTarget::SettingsField(field) => {
             activate_settings_field(app, field);
             return;

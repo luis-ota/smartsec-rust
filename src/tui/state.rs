@@ -748,8 +748,11 @@ impl AppState {
         if !metadata.code_project_dir.is_empty() {
             self.config.project_dir = Some(metadata.code_project_dir.clone());
         }
-        self.results_project_dir = (!metadata.code_project_dir.is_empty())
-            .then(|| PathBuf::from(&metadata.code_project_dir));
+        self.results_project_dir = if metadata.code_project_dir.is_empty() {
+            self.config.project_dir.clone().map(PathBuf::from)
+        } else {
+            Some(PathBuf::from(&metadata.code_project_dir))
+        };
         self.detail_code_preview = None;
         self.config.active_tools = metadata
             .tools_executed
@@ -757,6 +760,12 @@ impl AppState {
             .map(|tool| tool.tool_name.clone())
             .collect();
         self.orchestrator.findings = findings;
+        self.rag_results.clear();
+        self.rag_pending = None;
+        for mut result in metadata.rag_explanations {
+            restore_rag_example(&mut result);
+            self.rag_results.insert(result.finding_index, result);
+        }
         self.orchestrator.decision_history = metadata.decisions.clone();
         self.orchestrator.enrichment = metadata.enrichment.clone();
         self.orchestrator.last_log =
@@ -2570,6 +2579,25 @@ fn selected_from_active_tools(active_tools: &[String], name: &str) -> bool {
 
 /// Ordem de leitura dos achados: a severidade do scanner é autoritativa
 /// (TCC_SPEC.md, seção 7) e a tela apenas a ordena para destacar os críticos.
+fn restore_rag_example(result: &mut crate::cyberrag::service::ExplanationResult) {
+    let Some(example) = result.example.as_mut() else {
+        return;
+    };
+    let Some(entry) = crate::cyberrag::corpus::Corpus::shared().get(&example.id) else {
+        return;
+    };
+    let code = entry
+        .exemplos
+        .iter()
+        .find(|candidate| Some(candidate.linguagem.as_str()) == example.linguagem.as_deref())
+        .or_else(|| entry.exemplos.first());
+    example.titulo = entry.titulo.clone();
+    example.padrao_seguro = entry.padrao_seguro.clone();
+    example.linguagem = code.map(|candidate| candidate.linguagem.clone());
+    example.vulneravel = code.map(|candidate| candidate.vulneravel.trim().to_string());
+    example.corrigido = code.map(|candidate| candidate.corrigido.trim().to_string());
+}
+
 fn format_elapsed(total_secs: u64) -> String {
     let hours = total_secs / 3600;
     let minutes = (total_secs % 3600) / 60;
@@ -3161,7 +3189,8 @@ mod tests {
                 "medium_count": 0,
                 "low_count": 0,
                 "findings": [serde_json::to_value(&finding).unwrap()],
-                "agent_analysis": "resumo da IA"
+                "agent_analysis": "resumo da IA",
+                "rag_explanations": [serde_json::to_value(rag_result(true)).unwrap()]
             }))
             .expect("log de replay válido");
 
@@ -3172,6 +3201,12 @@ mod tests {
         assert_eq!(app.orchestrator.findings.len(), 1);
         assert_eq!(app.config.target_url, "http://alvo.local");
         assert_eq!(app.agent.last_analysis, "resumo da IA");
+        assert_eq!(app.rag_results.len(), 1);
+        assert!(app
+            .rag_results
+            .values()
+            .next()
+            .is_some_and(|r| r.approved()));
     }
 
     #[test]

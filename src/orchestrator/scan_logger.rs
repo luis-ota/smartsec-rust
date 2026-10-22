@@ -178,6 +178,9 @@ pub struct ScanMetadata {
     pub rag_failure_reason: Option<String>,
     #[serde(default)]
     pub rag_explanations_count: usize,
+    /// Explicações completas, para reabrir sem gastar tokens de novo.
+    #[serde(default)]
+    pub rag_explanations: Vec<crate::cyberrag::service::ExplanationResult>,
 }
 
 /// Contagem de achados por severidade usada na listagem do histórico.
@@ -350,6 +353,7 @@ impl ScanMetadata {
             rag_ontology_verdict: String::new(),
             rag_failure_reason: None,
             rag_explanations_count: 0,
+            rag_explanations: Vec::new(),
         }
     }
 
@@ -387,6 +391,7 @@ impl ScanMetadata {
         result: &crate::cyberrag::service::ExplanationResult,
     ) -> Self {
         self.rag_explanations_count += 1;
+        self.rag_explanations.push(result.clone());
         self.rag_ontology_verdict =
             crate::utils::redaction::sanitize_diagnostic(&result.verdict_summary());
         self.rag_failure_reason = result
@@ -505,6 +510,7 @@ impl ScanMetadata {
                 .as_deref()
                 .map(crate::utils::redaction::sanitize_diagnostic),
             rag_explanations_count: self.rag_explanations_count,
+            rag_explanations: self.rag_explanations.clone(),
         }
     }
 }
@@ -1184,6 +1190,7 @@ mod tests {
         // Cada explicação é registrada; o veredito do log é o da mais recente.
         let metadata = metadata.with_rag_explanation(&refused);
         assert_eq!(metadata.rag_explanations_count, 1);
+        assert_eq!(metadata.rag_explanations.len(), 1);
         assert!(
             metadata.rag_ontology_verdict.contains("reprovada"),
             "{}",

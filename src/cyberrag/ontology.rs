@@ -7,7 +7,7 @@
 //! ontologia é autoral — nada copiado do repo de referência (sem licença).
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -53,20 +53,20 @@ struct OntologyFile {
     triplas: Vec<OntologyTriple>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OntologyClaim {
     pub sujeito: String,
     pub relacao: String,
     pub objeto: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimRejection {
     pub claim: OntologyClaim,
     pub motivo: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OntologyVerdict {
     /// Só aprova com ≥1 afirmação e nenhuma rejeição.
     pub aprovado: bool,

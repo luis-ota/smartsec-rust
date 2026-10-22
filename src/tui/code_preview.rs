@@ -1,4 +1,4 @@
-//! Prévia local do código ao redor de um achado.
+//! Prévia local do código ao redor de um achado, com realce de sintaxe.
 //!
 //! A leitura passa pelo mesmo sandbox do agente (`Workspace`), mas usa a versão
 //! crua: a sanitização de logs apagaria a linha inteira ao ver `request` ou
@@ -6,10 +6,19 @@
 
 use crate::code_agent::workspace::{Workspace, WorkspaceError};
 use crate::utils::redaction::sanitize_code_line;
+use ratatui::style::Color;
 use std::path::{Path, PathBuf};
 
-pub const PREVIEW_CONTEXT: usize = 1;
+pub const PREVIEW_CONTEXT: usize = 2;
+pub const PREVIEW_MAX_LINES: usize = 24;
 pub const PREVIEW_MAX_LINE_CHARS: usize = 400;
+
+const KEYWORD: Color = Color::Rgb(198, 120, 221);
+const STRING: Color = Color::Rgb(152, 195, 121);
+const COMMENT: Color = Color::Rgb(106, 153, 85);
+const NUMBER: Color = Color::Rgb(209, 154, 102);
+const FUNCTION: Color = Color::Rgb(97, 175, 239);
+const TEXT: Color = Color::Rgb(220, 223, 228);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodePreview {
@@ -17,6 +26,7 @@ pub struct CodePreview {
     pub file: String,
     pub line: usize,
     pub root: PathBuf,
+    pub language: CodeLanguage,
     pub state: PreviewState,
 }
 
@@ -25,6 +35,7 @@ pub enum PreviewState {
     Ready {
         first: usize,
         lines: Vec<PreviewLine>,
+        total_lines: usize,
         truncated: bool,
     },
     Unavailable {
@@ -47,6 +58,7 @@ impl CodePreview {
             file: file.to_string(),
             line,
             root: root.to_path_buf(),
+            language: CodeLanguage::from_path(file),
             state,
         }
     }
@@ -71,14 +83,22 @@ impl CodePreview {
         if all_lines.is_empty() {
             return unavailable("arquivo vazio");
         }
-        if line > all_lines.len() {
+        let total_lines = all_lines.len();
+        if line > total_lines {
             return unavailable(format!(
-                "linha {line} não existe no arquivo ({} linhas)",
-                all_lines.len()
+                "linha {line} não existe no arquivo ({total_lines} linhas)"
             ));
         }
         let first = line.saturating_sub(PREVIEW_CONTEXT).max(1);
-        let last = (line + PREVIEW_CONTEXT).min(all_lines.len());
+        let mut last = (line + PREVIEW_CONTEXT).min(total_lines);
+        // Duas linhas acima preservam o alvo visível; abaixo, expande até o fim
+        // do bloco (linha em branco) para mostrar a função inteira.
+        while last < total_lines
+            && last - first + 1 < PREVIEW_MAX_LINES
+            && !all_lines[last].trim().is_empty()
+        {
+            last += 1;
+        }
         let lines = (first..=last)
             .map(|number| PreviewLine {
                 number,
@@ -92,6 +112,7 @@ impl CodePreview {
         PreviewState::Ready {
             first,
             lines,
+            total_lines,
             truncated: text.len() >= crate::code_agent::DEFAULT_MAX_FILE_BYTES,
         }
     }
@@ -134,6 +155,176 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     output
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeLanguage {
+    Python,
+    JavaScript,
+    Php,
+    Java,
+    Rust,
+    Text,
+}
+
+impl CodeLanguage {
+    pub fn from_path(path: &str) -> Self {
+        let extension = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        match extension.as_str() {
+            "py" => Self::Python,
+            "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" => Self::JavaScript,
+            "php" => Self::Php,
+            "java" => Self::Java,
+            "rs" => Self::Rust,
+            _ => Self::Text,
+        }
+    }
+
+    pub fn from_label(label: &str) -> Self {
+        match label.to_lowercase().as_str() {
+            "python" | "py" => Self::Python,
+            "javascript" | "js" | "typescript" | "ts" | "tsx" | "jsx" => Self::JavaScript,
+            "php" => Self::Php,
+            "java" => Self::Java,
+            "rust" | "rs" => Self::Rust,
+            _ => Self::Text,
+        }
+    }
+
+    fn is_keyword(self, word: &str) -> bool {
+        const COMMON: &[&str] = &[
+            "if", "else", "for", "while", "return", "true", "false", "null", "new", "class",
+            "import", "from", "export", "async", "await", "this", "try", "except", "finally",
+        ];
+        const PYTHON: &[&str] = &[
+            "def", "elif", "None", "True", "False", "raise", "with", "as", "in", "is", "not",
+            "and", "or", "lambda", "pass", "yield",
+        ];
+        const JS: &[&str] = &[
+            "const",
+            "let",
+            "var",
+            "function",
+            "undefined",
+            "typeof",
+            "instanceof",
+            "switch",
+            "case",
+            "break",
+            "continue",
+            "of",
+            "=>",
+        ];
+        const RUST: &[&str] = &[
+            "fn", "let", "mut", "pub", "use", "struct", "enum", "impl", "match", "mod", "crate",
+            "self", "Self", "Some", "Ok", "Err", "where", "trait",
+        ];
+        const PHP: &[&str] = &[
+            "echo",
+            "function",
+            "foreach",
+            "isset",
+            "empty",
+            "namespace",
+            "require",
+            "include",
+        ];
+        const JAVA: &[&str] = &[
+            "public",
+            "private",
+            "protected",
+            "static",
+            "final",
+            "void",
+            "extends",
+            "implements",
+            "interface",
+            "package",
+            "throws",
+            "throw",
+        ];
+        COMMON.contains(&word)
+            || match self {
+                Self::Python => PYTHON.contains(&word),
+                Self::JavaScript => JS.contains(&word),
+                Self::Rust => RUST.contains(&word),
+                Self::Php => PHP.contains(&word),
+                Self::Java => JAVA.contains(&word),
+                Self::Text => false,
+            }
+    }
+}
+
+/// Realce simples de uma linha: comentário, string, número, palavra-chave e
+/// chamada de função. Não é um parser; cobre a leitura de código na TUI.
+pub fn highlight_line(line: &str, language: CodeLanguage) -> Vec<(String, Color)> {
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < line.len() {
+        let rest = &line[index..];
+        let first = rest.chars().next().expect("resto não vazio");
+        let comment = match language {
+            CodeLanguage::Python => rest.starts_with('#'),
+            CodeLanguage::Text => false,
+            _ => rest.starts_with("//") || rest.starts_with("/*"),
+        };
+        if comment {
+            spans.push((rest.to_string(), COMMENT));
+            break;
+        }
+        if first == '"' || first == '\'' || first == '`' {
+            let end = rest[1..]
+                .find(first)
+                .map(|offset| offset + 1 + first.len_utf8())
+                .unwrap_or(rest.len());
+            spans.push((rest[..end].to_string(), STRING));
+            index += end;
+            continue;
+        }
+        if first.is_ascii_digit() {
+            let end = rest
+                .char_indices()
+                .find(|(_, character)| {
+                    !(character.is_ascii_alphanumeric() || *character == '.' || *character == '_')
+                })
+                .map(|(offset, _)| offset)
+                .unwrap_or(rest.len());
+            spans.push((rest[..end].to_string(), NUMBER));
+            index += end;
+            continue;
+        }
+        if first.is_alphanumeric() || first == '_' || first == '$' {
+            let end = rest
+                .char_indices()
+                .find(|(_, character)| {
+                    !(character.is_alphanumeric() || *character == '_' || *character == '$')
+                })
+                .map(|(offset, _)| offset)
+                .unwrap_or(rest.len());
+            let word = &rest[..end];
+            let after = rest[end..].trim_start();
+            let color = if language.is_keyword(word) {
+                KEYWORD
+            } else if after.starts_with('(') {
+                FUNCTION
+            } else {
+                TEXT
+            };
+            spans.push((word.to_string(), color));
+            index += end;
+            continue;
+        }
+        spans.push((first.to_string(), TEXT));
+        index += first.len_utf8();
+    }
+    if spans.is_empty() {
+        spans.push((String::new(), TEXT));
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_a_three_line_window_and_marks_the_target() {
+    fn loads_a_window_and_marks_the_target() {
         let root = project("window");
         fs::write(
             root.join("src/app.py"),
@@ -158,11 +349,17 @@ mod tests {
 
         let preview = CodePreview::load(0, &root, "src/app.py", 3);
 
-        let PreviewState::Ready { first, lines, .. } = preview.state else {
+        let PreviewState::Ready {
+            first,
+            lines,
+            total_lines,
+            ..
+        } = preview.state
+        else {
             panic!("preview deveria estar pronto: {preview:?}");
         };
-        assert_eq!(first, 2);
-        assert_eq!(lines.len(), 3);
+        assert_eq!(first, 1);
+        assert_eq!(total_lines, 4);
         assert!(lines.iter().any(|line| line.number == 3 && line.is_target));
         assert!(lines
             .iter()
@@ -189,5 +386,22 @@ mod tests {
             panic!("traversal não deveria carregar");
         };
         assert!(reason.contains("fora"), "{reason}");
+    }
+
+    #[test]
+    fn syntax_highlight_distinguishes_keyword_string_and_comment() {
+        let spans = highlight_line(
+            "const token = \"segredo\"; // nota",
+            CodeLanguage::JavaScript,
+        );
+        assert!(spans
+            .iter()
+            .any(|(text, color)| text == "const" && *color == KEYWORD));
+        assert!(spans
+            .iter()
+            .any(|(text, color)| text == "\"segredo\"" && *color == STRING));
+        assert!(spans
+            .iter()
+            .any(|(text, color)| text.starts_with("//") && *color == COMMENT));
     }
 }

@@ -419,13 +419,10 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         Constraint::Length(13),
         Constraint::Min(1),
         Constraint::Length(17),
-        Constraint::Length(1),
-        Constraint::Length(12),
     ])
     .split(area);
     let new_focused = app.focus == FocusTarget::ResultsNewScan;
     let export_focused = app.focus == FocusTarget::ResultsExport;
-    let didactic_focused = app.focus == FocusTarget::ResultsDidactic;
     chrome::render_button(
         app,
         frame,
@@ -461,14 +458,6 @@ fn render_overview_actions(app: &mut AppState, frame: &mut Frame, area: Rect) {
         export_label,
         export_action,
         chrome::ButtonState::primary(export_focused),
-    );
-    chrome::render_button(
-        app,
-        frame,
-        columns[4],
-        "Explicação",
-        SemanticAction::ShowDidactic,
-        chrome::ButtonState::secondary(didactic_focused),
     );
 }
 
@@ -528,8 +517,13 @@ fn append_enrichment(
 /// Quebra um texto **possuído** em linhas do terminal para `Line<'static>`:
 /// o texto precisa ser propriedade do `Line`, não apontar para o `Vulnerability`.
 fn push_wrapped_owned<'a>(lines: &mut Vec<Line<'a>>, value: String, width: usize, color: Color) {
-    for line in wrap_text(&value, width.max(1)) {
-        lines.push(Line::styled(line, Style::default().fg(color)));
+    for (index, paragraph) in value.split("\n\n").enumerate() {
+        if index > 0 {
+            lines.push(Line::from(""));
+        }
+        for line in wrap_text(paragraph, width.max(1)) {
+            lines.push(Line::styled(line, Style::default().fg(color)));
+        }
     }
 }
 
@@ -573,17 +567,8 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
                 ),
             ]),
             Line::from(""),
-            Line::styled("Descrição", Style::default().fg(TEXT).bold()),
         ];
-        append_wrapped(&mut lines, &item.description, inner.width as usize, MUTED);
-        lines.push(Line::from(""));
-        lines.push(Line::styled("Evidência", Style::default().fg(TEXT).bold()));
-        // A evidência é sanitizada na exibição: é o campo que carrega o trecho
-        // real do scanner e nunca deve exibir credencial ou corpo de requisição.
-        let evidence = crate::utils::redaction::sanitize_text(&item.evidence);
-        append_wrapped(&mut lines, &evidence, inner.width as usize, ACCENT);
-        // A origem no código (#76) vem depois da evidência: a evidência prova o
-        // que o scanner viu; a localização aponta onde corrigir.
+        // O código vem primeiro: é o que o operador precisa ver para corrigir.
         append_code_location(
             app,
             &mut lines,
@@ -592,10 +577,17 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
             item.code_remediation.clone(),
             inner.width as usize,
         );
-        lines.push(Line::styled(
-            "Recomendação",
-            Style::default().fg(TEXT).bold(),
-        ));
+        lines.push(Line::from(""));
+        lines.push(section_rule("Descrição", inner.width as usize));
+        append_wrapped(&mut lines, &item.description, inner.width as usize, MUTED);
+        lines.push(Line::from(""));
+        lines.push(section_rule("Evidência", inner.width as usize));
+        // A evidência é sanitizada na exibição: é o campo que carrega o trecho
+        // real do scanner e nunca deve exibir credencial ou corpo de requisição.
+        let evidence = crate::utils::redaction::sanitize_text(&item.evidence);
+        append_wrapped(&mut lines, &evidence, inner.width as usize, ACCENT);
+        lines.push(Line::from(""));
+        lines.push(section_rule("Recomendação", inner.width as usize));
         append_wrapped(
             &mut lines,
             &item.recommendation,
@@ -603,7 +595,6 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
             SUCCESS,
         );
         append_enrichment(&mut lines, item, inner.width as usize);
-        append_rag_explanation(app, index, &mut lines, inner.width as usize);
         let has_scroll = lines.len() > inner.height as usize;
         let indicator_height = u16::from(has_scroll);
         let viewport = Rect::new(
@@ -656,7 +647,7 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
     let actions = Layout::horizontal([
         Constraint::Length(10),
         Constraint::Min(1),
-        Constraint::Length(13),
+        Constraint::Length(16),
     ])
     .split(rows[1]);
     chrome::render_button(
@@ -670,18 +661,10 @@ fn render_detail(app: &mut AppState, frame: &mut Frame, area: Rect, index: usize
     chrome::render_button(
         app,
         frame,
-        actions[1],
+        actions[2],
         "Explicar (IA)",
         SemanticAction::ExplainFinding,
-        chrome::ButtonState::secondary(app.focus == FocusTarget::ResultsExplain),
-    );
-    chrome::render_button(
-        app,
-        frame,
-        actions[2],
-        "Explicação",
-        SemanticAction::ShowDidactic,
-        chrome::ButtonState::primary(app.focus == FocusTarget::ResultsDidactic),
+        chrome::ButtonState::primary(app.focus == FocusTarget::ResultsExplain),
     );
 }
 
@@ -700,7 +683,24 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 Style::default().fg(TEXT).bold(),
             ));
             lines.push(Line::from(""));
-            append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
+            if app.rag_pending == Some(index) {
+                lines.push(section_rule("Explicação da IA", inner.width as usize));
+                push_wrapped_owned(
+                    &mut lines,
+                    "gerando explicação em linguagem direta…".to_string(),
+                    inner.width as usize,
+                    MUTED,
+                );
+            } else if let Some(result) = app.rag_results.get(&index) {
+                append_rag_explanation(app, index, &mut lines, inner.width as usize);
+                if !result.approved() && !item.didactic.trim().is_empty() {
+                    lines.push(Line::from(""));
+                    lines.push(section_rule("Resumo determinístico", inner.width as usize));
+                    append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
+                }
+            } else {
+                append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
+            }
         }
     } else if vulnerabilities.is_empty() {
         lines.push(Line::styled(
@@ -733,7 +733,18 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         rows[0],
         SemanticAction::SetFocus(FocusTarget::DidacticContent),
     );
-    let actions = Layout::horizontal([Constraint::Length(10), Constraint::Min(1)]).split(rows[1]);
+    let pending = app
+        .result_detail_vuln
+        .is_some_and(|index| app.rag_pending == Some(index));
+    let has_result = app
+        .result_detail_vuln
+        .is_some_and(|index| app.rag_results.contains_key(&index));
+    let actions = Layout::horizontal([
+        Constraint::Length(10),
+        Constraint::Min(1),
+        Constraint::Length(18),
+    ])
+    .split(rows[1]);
     chrome::render_button(
         app,
         frame,
@@ -741,6 +752,20 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         "Voltar",
         SemanticAction::Back,
         chrome::ButtonState::secondary(app.focus == FocusTarget::DidacticBack),
+    );
+    let ai_label = if pending {
+        "Gerando…"
+    } else {
+        "Explicar (IA)"
+    };
+    chrome::render_button(
+        app,
+        frame,
+        actions[2],
+        ai_label,
+        SemanticAction::ExplainFinding,
+        chrome::ButtonState::primary(app.focus == FocusTarget::DidacticExplain)
+            .enabled(!pending && !has_result),
     );
 }
 
@@ -753,10 +778,7 @@ fn append_rag_explanation(
     width: usize,
 ) {
     lines.push(Line::from(""));
-    lines.push(Line::styled(
-        "Explicação assistida (RAG)",
-        Style::default().fg(TEXT).bold(),
-    ));
+    lines.push(section_rule("Explicação da IA", width));
     if app.rag_pending == Some(index) {
         push_wrapped_owned(lines, "gerando explicação…".to_string(), width, MUTED);
         return;
@@ -780,6 +802,7 @@ fn append_rag_explanation(
             width,
             MUTED,
         );
+        lines.push(Line::from(""));
     }
     if !result.approved() {
         push_wrapped_owned(
@@ -801,21 +824,29 @@ fn append_rag_explanation(
             .linguagem
             .clone()
             .unwrap_or_else(|| "código".to_string());
-        push_wrapped_owned(
-            lines,
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
             format!("exemplo do corpus: {} ({language})", example.titulo),
+            Style::default().fg(ACCENT).bold(),
+        ));
+        append_example_block(
+            lines,
+            "vulnerável",
+            example.vulneravel.as_deref(),
+            &language,
             width,
-            ACCENT,
+            DANGER,
         );
-        for (label, code) in [
-            ("vulnerável", example.vulneravel.as_deref()),
-            ("corrigido", example.corrigido.as_deref()),
-        ] {
-            let Some(code) = code else { continue };
-            for line in code.lines() {
-                push_wrapped_owned(lines, format!("  {label}: {line}"), width, MUTED);
-            }
-        }
+        lines.push(Line::from(""));
+        append_example_block(
+            lines,
+            "corrigido",
+            example.corrigido.as_deref(),
+            &language,
+            width,
+            SUCCESS,
+        );
+        lines.push(Line::from(""));
         push_wrapped_owned(
             lines,
             format!("padrão seguro: {}", example.padrao_seguro),
@@ -823,12 +854,56 @@ fn append_rag_explanation(
             SUCCESS,
         );
     }
+    lines.push(Line::from(""));
     push_wrapped_owned(
         lines,
         format!("veredito: {}", result.verdict_summary()),
         width,
         SUCCESS,
     );
+}
+
+fn append_example_block(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    code: Option<&str>,
+    language: &str,
+    width: usize,
+    color: Color,
+) {
+    let Some(code) = code else {
+        return;
+    };
+    let language = crate::tui::code_preview::CodeLanguage::from_label(language);
+    let background = if color == DANGER {
+        Color::Rgb(35, 18, 20)
+    } else {
+        Color::Rgb(18, 30, 20)
+    };
+    let base = Style::default().bg(background);
+    lines.push(Line::styled(format!("┌─ {label}"), base.fg(color).bold()));
+    for (index, line_text) in code.lines().enumerate() {
+        let gutter = format!("{:>4} │ ", index + 1);
+        let mut remaining = width.saturating_sub(gutter.width());
+        let mut spans = vec![Span::styled(gutter, base.fg(MUTED))];
+        for (text, token_color) in crate::tui::code_preview::highlight_line(line_text, language) {
+            if remaining == 0 {
+                break;
+            }
+            let clipped = text.width() > remaining;
+            let piece = chrome::truncate_width(&text, remaining);
+            remaining = remaining.saturating_sub(piece.width());
+            spans.push(Span::styled(piece, base.fg(token_color)));
+            if clipped {
+                break;
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::styled(
+        format!("└{}", "─".repeat(width.saturating_sub(1))),
+        base.fg(color),
+    ));
 }
 
 fn append_rag_claims(
@@ -874,6 +949,16 @@ fn append_rag_claims(
 ///
 /// A ausência de origem é explícita, nunca substituída por um caminho ou linha
 /// inventados.
+fn section_rule(title: &str, width: usize) -> Line<'static> {
+    let label = format!(" {title} ");
+    let rule_width = width.saturating_sub(label.width() + 1).max(2);
+    Line::from(vec![
+        Span::styled("─", Style::default().fg(SURFACE_ACTIVE)),
+        Span::styled(label, Style::default().fg(TEXT).bold()),
+        Span::styled("─".repeat(rule_width), Style::default().fg(SURFACE_ACTIVE)),
+    ])
+}
+
 fn append_code_location(
     app: &AppState,
     lines: &mut Vec<Line<'static>>,
@@ -884,29 +969,36 @@ fn append_code_location(
 ) {
     // As linhas são `Line<'static>`: as strings são clonadas, não emprestadas do
     // vetor de achados, recriado a cada quadro.
-    lines.push(Line::styled(
-        "Localização no código",
-        Style::default().fg(TEXT).bold(),
-    ));
+    lines.push(section_rule("Localização no código", width));
     match location {
         Some(location) => {
+            let total = preview
+                .filter(|preview| preview.file == location.file && preview.line == location.line)
+                .and_then(|preview| match &preview.state {
+                    crate::tui::code_preview::PreviewState::Ready { total_lines, .. } => {
+                        Some(*total_lines)
+                    }
+                    crate::tui::code_preview::PreviewState::Unavailable { .. } => None,
+                });
+            let line_label = match total {
+                Some(total) => format!("  linha {} de {total}", location.line),
+                None => format!("  linha {}", location.line),
+            };
             lines.push(Line::from(vec![
                 Span::styled("arquivo  ", Style::default().fg(MUTED)),
                 Span::styled(
-                    chrome::truncate_width(&location.file, width.saturating_sub(9)),
+                    chrome::truncate_width(
+                        &location.file,
+                        width.saturating_sub(12 + line_label.width()),
+                    ),
                     Style::default().fg(ACCENT).bold(),
                 ),
-                Span::styled(
-                    format!("  linha {}", location.line),
-                    Style::default().fg(TEXT),
-                ),
+                Span::styled(line_label, Style::default().fg(TEXT)),
             ]));
             append_code_block(lines, preview, location, width);
             if !remediation.is_empty() {
-                lines.push(Line::styled(
-                    "Correção sugerida",
-                    Style::default().fg(TEXT).bold(),
-                ));
+                lines.push(Line::from(""));
+                lines.push(section_rule("Correção sugerida", width));
                 for (index, step) in remediation.iter().enumerate() {
                     let prefix = format!("{}. ", index + 1);
                     let step_width = width.saturating_sub(prefix.len());
@@ -958,6 +1050,10 @@ fn append_code_block(
                 truncated,
                 ..
             } => {
+                lines.push(Line::styled(
+                    format!("┌{}", "─".repeat(width.saturating_sub(1))),
+                    Style::default().fg(SURFACE_ACTIVE),
+                ));
                 if *truncated {
                     push_wrapped_owned(
                         lines,
@@ -968,24 +1064,49 @@ fn append_code_block(
                 }
                 for code_line in code_lines {
                     let gutter = format!("{:>4} │ ", code_line.number);
-                    let text = chrome::truncate_width(
-                        &code_line.text,
-                        width.saturating_sub(gutter.width()),
-                    );
-                    let style = if code_line.is_target {
-                        Style::default()
-                            .fg(DANGER)
-                            .bg(Color::Rgb(55, 22, 22))
-                            .bold()
+                    let marker = if code_line.is_target { "> " } else { "  " };
+                    let text_width = width
+                        .saturating_sub(gutter.width())
+                        .saturating_sub(marker.width());
+                    let base = if code_line.is_target {
+                        Style::default().bg(Color::Rgb(55, 22, 22))
                     } else {
-                        Style::default().fg(MUTED)
+                        Style::default().bg(Color::Rgb(13, 16, 20))
                     };
-                    lines.push(Line::from(vec![
-                        Span::styled(if code_line.is_target { ">" } else { " " }, style),
-                        Span::styled(gutter, Style::default().fg(MUTED)),
-                        Span::styled(text, style),
-                    ]));
+                    let mut spans = vec![
+                        Span::styled(
+                            marker,
+                            base.fg(if code_line.is_target { DANGER } else { MUTED })
+                                .bold(),
+                        ),
+                        Span::styled(gutter, base.fg(MUTED)),
+                    ];
+                    let mut remaining = text_width;
+                    for (text, color) in
+                        crate::tui::code_preview::highlight_line(&code_line.text, preview.language)
+                    {
+                        if remaining == 0 {
+                            break;
+                        }
+                        let clipped = text.width() > remaining;
+                        let piece = chrome::truncate_width(&text, remaining);
+                        let style = if code_line.is_target {
+                            base.fg(color).bold()
+                        } else {
+                            base.fg(color)
+                        };
+                        remaining = remaining.saturating_sub(piece.width());
+                        spans.push(Span::styled(piece, style));
+                        if clipped {
+                            break;
+                        }
+                    }
+                    lines.push(Line::from(spans));
                 }
+                lines.push(Line::styled(
+                    format!("└{}", "─".repeat(width.saturating_sub(1))),
+                    Style::default().fg(SURFACE_ACTIVE),
+                ));
             }
             crate::tui::code_preview::PreviewState::Unavailable { reason } => {
                 push_wrapped_owned(
@@ -1018,7 +1139,10 @@ fn append_logged_snippet(
 }
 
 fn append_wrapped(lines: &mut Vec<Line<'static>>, value: &str, width: usize, color: Color) {
-    for paragraph in value.split("\n\n") {
+    for (index, paragraph) in value.split("\n\n").enumerate() {
+        if index > 0 {
+            lines.push(Line::from(""));
+        }
         for line in wrap_text(paragraph, width.max(1)) {
             lines.push(Line::styled(line, Style::default().fg(color)));
         }

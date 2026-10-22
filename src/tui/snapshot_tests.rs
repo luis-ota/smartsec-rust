@@ -416,7 +416,7 @@ fn result_empty_list_detail_and_didactic_match_80x24_snapshots() {
 /// A explicação assistida (RAG) mostra o exemplo e o veredito, ou a recusa
 /// explícita com motivo.
 #[test]
-fn finding_detail_shows_the_rag_explanation_or_the_refusal() {
+fn finding_didactic_shows_the_rag_explanation_or_the_refusal() {
     let mut app = app();
     app.step = AppStep::Results;
     app.orchestrator.findings = vec![finding()];
@@ -424,27 +424,28 @@ fn finding_detail_shows_the_rag_explanation_or_the_refusal() {
     app.focus = FocusTarget::ResultsDetail;
 
     app.detail_scroll = usize::MAX;
+    let snapshot = assert_snapshot(&mut app, &["Detalhe do achado", "Explicar (IA)"]);
+    assert!(
+        !snapshot.contains("Explicação assistida (RAG)"),
+        "a explicação da IA não fica mais no detalhe\n{snapshot}"
+    );
+
+    app.show_didactic = true;
+    app.focus = FocusTarget::DidacticContent;
+    app.rag_pending = Some(0);
+    app.didactic_scroll = 0;
     let snapshot = assert_snapshot(
         &mut app,
         &[
-            "Detalhe do achado",
-            "Explicação assistida (RAG)",
-            "Explicar (IA)",
+            "Em linguagem direta",
+            "gerando explicação em linguagem direta…",
         ],
     );
-    assert!(
-        snapshot.contains("validada por ontologia"),
-        "estado inicial orienta a ação\n{snapshot}"
-    );
-
-    app.rag_pending = Some(0);
-    app.detail_scroll = usize::MAX;
-    let (snapshot, _) = render_80x24(&mut app);
-    assert!(snapshot.contains("gerando explicação…"), "{snapshot}");
+    assert!(snapshot.contains("Explicação da IA"), "{snapshot}");
 
     app.rag_pending = None;
     app.rag_results.insert(0, rag_result(true));
-    app.detail_scroll = usize::MAX;
+    app.didactic_scroll = usize::MAX;
     let (snapshot, _) = render_80x24(&mut app);
     assert!(
         snapshot.contains("A entrada é concatenada na consulta."),
@@ -452,15 +453,18 @@ fn finding_detail_shows_the_rag_explanation_or_the_refusal() {
     );
     assert!(snapshot.contains("veredito"), "{snapshot}");
     assert!(snapshot.contains("padrão seguro"), "{snapshot}");
+    assert!(snapshot.contains("┌─ vulnerável"), "{snapshot}");
+    assert!(snapshot.contains("┌─ corrigido"), "{snapshot}");
 
     app.rag_results.insert(0, rag_result(false));
-    app.detail_scroll = usize::MAX;
+    app.didactic_scroll = usize::MAX;
     let (snapshot, _) = render_80x24(&mut app);
     assert!(
         snapshot.contains("não consegui explicar isto com segurança."),
         "{snapshot}"
     );
     assert!(snapshot.contains("o provedor falhou"), "{snapshot}");
+    assert!(snapshot.contains("Resumo determinístico"), "{snapshot}");
 }
 
 fn rag_result(approved: bool) -> crate::cyberrag::service::ExplanationResult {
