@@ -154,6 +154,16 @@ O `scan_id` tem o formato `scan_<nanos>` e nao e adivinhavel. Por isso o modo
 headless imprime o identificador ao final da execucao, e a TUI abre a lista com
 `h` ou pela paleta de comandos (`Ctrl+P`).
 
+Para abrir a TUI direto nos resultados de um scan concluído, sem repetir a
+varredura:
+
+```bash
+smartsec replay <SCAN_ID>
+```
+
+A tela reconstrói os achados e a linha do tempo das ações da IA a partir do log
+estruturado. O RAG continua sob demanda e não altera o registro original.
+
 Regras de seguranca e de robustez:
 
 - A consulta e **somente leitura**: nenhum artefato original e criado, reescrito

@@ -305,6 +305,8 @@ pub struct AppState {
     pub tool_visible_height: usize,
     pub exec_current: usize,
     pub exec_tick: u64,
+    /// Início da execução atual; `None` fora de uma varredura.
+    pub run_started_at: Option<std::time::Instant>,
     /// Buffer do log de execução; toda mutação passa por `push_exec_log`,
     /// `set_exec_logs` ou `clear_exec_logs` para as medidas seguirem alinhadas.
     exec_logs: Vec<String>,
@@ -509,6 +511,7 @@ impl AppState {
             tool_visible_height: 8,
             exec_current: 0,
             exec_tick: 0,
+            run_started_at: None,
             exec_logs: Vec::new(),
             log_rows: Vec::new(),
             log_rows_total: 0,
@@ -700,6 +703,77 @@ impl AppState {
             .collect()
     }
 
+    /// Carrega um scan concluído direto na tela de resultados.
+    pub fn load_replayed_scan(
+        &mut self,
+        metadata: crate::orchestrator::scan_logger::ScanMetadata,
+    ) -> anyhow::Result<()> {
+        let mut findings = Vec::with_capacity(metadata.findings.len());
+        for value in metadata.findings {
+            let finding: Vulnerability = serde_json::from_value(value).map_err(|error| {
+                anyhow::anyhow!("achado inválido no scan {}: {error}", metadata.scan_id)
+            })?;
+            findings.push(finding);
+        }
+        self.config.target_url = metadata.target_url.clone();
+        if !metadata.code_project_dir.is_empty() {
+            self.config.project_dir = Some(metadata.code_project_dir.clone());
+        }
+        self.config.active_tools = metadata
+            .tools_executed
+            .iter()
+            .map(|tool| tool.tool_name.clone())
+            .collect();
+        self.orchestrator.findings = findings;
+        self.orchestrator.decision_history = metadata.decisions.clone();
+        self.orchestrator.enrichment = metadata.enrichment.clone();
+        self.orchestrator.last_log =
+            format!("Execução recuperada do histórico {}", metadata.scan_id);
+        self.agent.last_analysis = metadata.agent_analysis.clone();
+        self.audit_log_path = Some(
+            crate::orchestrator::scan_logger::scans_dir()
+                .join(format!("{}.json", metadata.scan_id)),
+        );
+        self.llm_warning = metadata.llm_failure_reason.clone();
+        self.ai_timeline.clear();
+        for decision in &metadata.decisions {
+            self.push_ai_timeline(AiTimelineOrigin::Planning, decision_summary(decision));
+        }
+        if let Some(summary) = metadata.agent_analysis.lines().next() {
+            self.push_ai_timeline(
+                AiTimelineOrigin::Ai,
+                format!(
+                    "análise concluída · {}",
+                    crate::tui::chrome::truncate_width(summary, 200)
+                ),
+            );
+        }
+        for call in &metadata.code_tool_calls {
+            self.push_ai_timeline(
+                AiTimelineOrigin::Code,
+                format!(
+                    "{} · achado #{} · {}",
+                    call.tool,
+                    call.finding_index + 1,
+                    crate::tui::chrome::truncate_width(&call.summary, 160)
+                ),
+            );
+        }
+        self.ai_timeline_follow = true;
+        self.ai_timeline_scroll = 0;
+        self.step = AppStep::Results;
+        self.focus = FocusTarget::ResultsList;
+        self.result_cursor = 0;
+        self.result_scroll = 0;
+        self.severity_filter = None;
+        self.result_detail_vuln = None;
+        self.run_started_at = None;
+        self.md_exported = false;
+        self.exported_report_path = None;
+        self.exported_pdf_path = None;
+        Ok(())
+    }
+
     /// Índices visíveis, na mesma ordem de `vulnerabilities()`.
     pub fn visible_vulnerability_indices(&self) -> Vec<usize> {
         let filter = self.severity_filter;
@@ -877,6 +951,13 @@ impl AppState {
     #[allow(dead_code)]
     pub fn agent_last_analysis(&self) -> &str {
         self.ai_summary()
+    }
+
+    pub fn run_elapsed_label(&self) -> String {
+        self.run_started_at.map_or_else(
+            || "00:00".to_string(),
+            |start| format_elapsed(start.elapsed().as_secs()),
+        )
     }
 
     pub fn tick(&mut self) {
@@ -1323,6 +1404,7 @@ impl AppState {
         }
         self.exec_current = 0;
         self.exec_tick = 0;
+        self.run_started_at = Some(std::time::Instant::now());
         self.clear_exec_logs();
         self.log_scroll = 0;
         self.log_follow = true;
@@ -2408,6 +2490,17 @@ fn selected_from_active_tools(active_tools: &[String], name: &str) -> bool {
 
 /// Ordem de leitura dos achados: a severidade do scanner é autoritativa
 /// (TCC_SPEC.md, seção 7) e a tela apenas a ordena para destacar os críticos.
+fn format_elapsed(total_secs: u64) -> String {
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
 fn severity_rank(severity: crate::domain::Severity) -> u8 {
     match severity {
         crate::domain::Severity::Critical => 0,
@@ -2950,6 +3043,55 @@ mod tests {
             }),
             "todo evento carrega o horário local no formato HH:MM:SS"
         );
+    }
+
+    #[test]
+    fn elapsed_uses_mm_ss_and_hh_mm_ss() {
+        assert_eq!(format_elapsed(0), "00:00");
+        assert_eq!(format_elapsed(65), "01:05");
+        assert_eq!(format_elapsed(3661), "01:01:01");
+    }
+
+    #[test]
+    fn replay_loads_findings_and_opens_the_results_screen() {
+        use serde_json::json;
+
+        let finding = Vulnerability {
+            title: "Cabeçalho ausente".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-10-22T12:00:00Z".to_string(),
+            ..Default::default()
+        };
+        let metadata: crate::orchestrator::scan_logger::ScanMetadata =
+            serde_json::from_value(json!({
+                "scan_id": "scan_123",
+                "target_url": "http://alvo.local",
+                "started_at": "2026-10-22T12:00:00Z",
+                "completed_at": "2026-10-22T12:01:00Z",
+                "execution_type": "Assistido",
+                "llm_provider": "OpenAI",
+                "tools_executed": [],
+                "findings_count": 1,
+                "critical_count": 0,
+                "high_count": 1,
+                "medium_count": 0,
+                "low_count": 0,
+                "findings": [serde_json::to_value(&finding).unwrap()],
+                "agent_analysis": "resumo da IA"
+            }))
+            .expect("log de replay válido");
+
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.load_replayed_scan(metadata).expect("replay válido");
+
+        assert_eq!(app.step, AppStep::Results);
+        assert_eq!(app.orchestrator.findings.len(), 1);
+        assert_eq!(app.config.target_url, "http://alvo.local");
+        assert_eq!(app.agent.last_analysis, "resumo da IA");
     }
 
     #[test]

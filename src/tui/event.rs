@@ -1120,6 +1120,7 @@ fn new_scan(app: &mut AppState) {
     app.severity_filter = None;
     app.result_cursor = 0;
     app.result_scroll = 0;
+    app.run_started_at = None;
     app.detail_scroll = 0;
     app.detail_max_scroll = 0;
     app.show_didactic = false;

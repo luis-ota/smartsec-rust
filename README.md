@@ -101,6 +101,9 @@ cargo run -- scan --target https://example.com --project ./minha-aplicacao
 cargo run -- history
 cargo run -- show scan_1757000000000000000
 
+# Reabrir uma execucao concluida direto na TUI de resultados
+cargo run -- replay scan_1757000000000000000
+
 # Alvo local autorizado, a partir de um servidor preso ao loopback
 cargo run -- scan --target http://169.254.1.2:3000
 ```

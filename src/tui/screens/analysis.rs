@@ -11,7 +11,10 @@ use ratatui::{
 
 pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let (label, ratio) = stage_state(app);
-    let status = format!("IA em processamento · {label}");
+    let status = format!(
+        "IA em processamento · {label} · {}",
+        app.run_elapsed_label()
+    );
     let shell = chrome::render_shell(app, frame, area, "Análise", &status);
     let rows = Layout::vertical([
         Constraint::Length(3),

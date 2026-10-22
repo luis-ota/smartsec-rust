@@ -347,9 +347,14 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
         );
     }
 
+    let detail_index = if app.ai_timeline_follow {
+        app.ai_timeline.len().saturating_sub(1)
+    } else {
+        app.ai_timeline_scroll
+    };
     let detail = app
         .ai_timeline
-        .get(app.ai_timeline_scroll)
+        .get(detail_index)
         .or_else(|| app.ai_timeline.last())
         .map(|entry| format!("{} {} — {}", entry.time, entry.origin.label(), entry.text))
         .unwrap_or_else(|| "nenhuma ação registrada ainda".to_string());

@@ -136,15 +136,17 @@ fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let medium_width = format!("{medium} médias").width();
     let low_width = format!("{low} baixas").width();
     let info_width = format!("{info} informativas").width();
-    // A linha da IA traz o resumo real devolvido pelo agente; o texto completo
-    // permanece no relatório Markdown e no log de auditoria.
+    let ai_hint = "  ▸ ações da IA";
+    let ai_budget = (inner.width as usize).saturating_sub(4 + ai_hint.width());
     let ai = Line::from(vec![
         Span::styled("ia  ", Style::default().fg(MUTED)),
         Span::styled(
-            chrome::truncate_width(first_line(app.ai_summary()), inner.width as usize - 4),
+            chrome::truncate_width(first_line(app.ai_summary()), ai_budget),
             Style::default().fg(TEXT),
         ),
+        Span::styled(ai_hint, Style::default().fg(ACCENT).bold()),
     ]);
+    let mut ai_line_index = None;
     let mut severity_line_indices = Vec::new();
     let lines = if app.has_run_issues() {
         let mut lines = Vec::new();
@@ -182,6 +184,7 @@ fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
         lines.push(severities[1].clone());
         // Com ocorrências, o caminho da auditoria continua acessível no
         // relatório, no log estruturado e na tela de rastreabilidade (f2).
+        ai_line_index = Some(lines.len());
         lines.push(ai);
         lines
     } else if vulnerabilities.is_empty() {
@@ -200,6 +203,7 @@ fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
         // entre os dois paths, com folga para a borda direita.
         let path_budget = ((inner.width as usize).saturating_sub(18)) / 2;
         severity_line_indices.extend([0, 1]);
+        ai_line_index = Some(3);
         vec![
             severities[0].clone(),
             severities[1].clone(),
@@ -249,6 +253,12 @@ fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
         ] {
             app.register_hit_region(rect, SemanticAction::FilterSeverity(severity));
         }
+    }
+    if let Some(index) = ai_line_index {
+        app.register_hit_region(
+            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+            SemanticAction::OpenAiTimeline,
+        );
     }
     let mut lines = lines;
     if let Some(warning) = &app.enrichment_warning {
@@ -1018,6 +1028,22 @@ mod tests {
         assert_eq!(app.visible_vulnerability_indices().len(), 3);
         let screen = draw(&mut app, 80, 24);
         assert!(screen.contains("Alta 1"), "{screen}");
+    }
+
+    #[test]
+    fn clicking_the_ai_line_opens_the_tool_activity() {
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.orchestrator.findings.push(finding("Achado"));
+        app.step = AppStep::Results;
+
+        let _ = draw(&mut app, 80, 24);
+
+        assert!(app
+            .hit_regions
+            .iter()
+            .any(|region| region.action == SemanticAction::OpenAiTimeline));
+        crate::tui::event::dispatch_action(&mut app, SemanticAction::OpenAiTimeline);
+        assert!(app.show_ai_timeline);
     }
 
     /// O resumo exibe o diretório do projeto ao lado do alvo, para que o

@@ -59,6 +59,7 @@ enum CliCommand {
     History(HistoryArgs),
     Show(ShowArgs),
     Trace(ShowArgs),
+    Replay(ShowArgs),
     Onboarding,
 }
 
@@ -137,7 +138,7 @@ impl Cli {
                     command: Some(CliCommand::History(HistoryArgs { limit })),
                 });
             }
-            "show" | "trace" => {
+            "show" | "trace" | "replay" => {
                 let scan_id = arguments
                     .get(1)
                     .ok_or_else(|| anyhow::anyhow!("o scan_id da execução é obrigatório"))?;
@@ -154,10 +155,10 @@ impl Cli {
                     scan_id: scan_id.clone(),
                 };
                 return Ok(Self {
-                    command: Some(if command == "trace" {
-                        CliCommand::Trace(args)
-                    } else {
-                        CliCommand::Show(args)
+                    command: Some(match command {
+                        "trace" => CliCommand::Trace(args),
+                        "replay" => CliCommand::Replay(args),
+                        _ => CliCommand::Show(args),
                     }),
                 });
             }
@@ -261,6 +262,7 @@ fn print_help() {
     println!("  smartsec history [--limit <N>]");
     println!("  smartsec show <SCAN_ID>");
     println!("  smartsec trace <SCAN_ID>");
+    println!("  smartsec replay <SCAN_ID>");
     println!();
     println!("Comandos:");
     println!("  scan              Executa uma varredura não interativa.");
@@ -269,6 +271,7 @@ fn print_help() {
     println!("  history           Lista as execuções recentes do histórico.");
     println!("  show <SCAN_ID>    Mostra o detalhe de uma execução.");
     println!("  trace <SCAN_ID>   Mostra as ações que a IA executou na execução.");
+    println!("  replay <SCAN_ID>  Abre a TUI nos resultados de uma execução concluída.");
     println!();
     println!("Erros de uso:");
     println!("  ferramenta desconhecida  Ferramenta fora do catálogo registrado");
@@ -331,10 +334,22 @@ impl CommandLineInterface {
             Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
             Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
             Some(CliCommand::Trace(args)) => Ok(Self::print_agent_trace(&args.scan_id)),
+            Some(CliCommand::Replay(args)) => {
+                let (mut config, problems) =
+                    config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
+                let metadata =
+                    crate::orchestrator::scan_logger::load_scan_log_by_id(&args.scan_id)?;
+                config.target_url = metadata.target_url.clone();
+                if !metadata.code_project_dir.is_empty() {
+                    config.project_dir = Some(metadata.code_project_dir.clone());
+                }
+                Self::display_tui(config, problems, false, Some(metadata)).await?;
+                Ok(EXIT_SUCCESS)
+            }
             Some(CliCommand::Onboarding) => {
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
-                Self::display_tui(config, problems, true).await?;
+                Self::display_tui(config, problems, true, None).await?;
                 Ok(EXIT_SUCCESS)
             }
             None => {
@@ -344,7 +359,7 @@ impl CommandLineInterface {
                 // visível e o headless segue validando.
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
-                Self::display_tui(config, problems, force_onboarding).await?;
+                Self::display_tui(config, problems, force_onboarding, None).await?;
                 Ok(EXIT_SUCCESS)
             }
         }
@@ -354,8 +369,12 @@ impl CommandLineInterface {
         initial_config: config::Configuration,
         config_problems: Vec<String>,
         force_onboarding: bool,
+        replay: Option<crate::orchestrator::scan_logger::ScanMetadata>,
     ) -> Result<()> {
         let mut app = tui::state::AppState::new(initial_config)?;
+        if let Some(metadata) = replay {
+            app.load_replayed_scan(metadata)?;
+        }
         // O aviso de configuração entra antes de qualquer execução e só sai
         // quando o operador salva uma configuração válida pela própria tela.
         app.set_config_warning(Some(config_problems.join(" · ")));
@@ -1256,6 +1275,15 @@ mod tests {
         assert_eq!(configured.output_file.as_deref(), Some("personalizado.md"));
         assert_eq!(configured.output_dir.as_deref(), Some("saida"));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn parses_replay_with_a_scan_id() {
+        let cli = Cli::parse(&["replay".to_owned(), "scan_123".to_owned()]).unwrap();
+        let Some(CliCommand::Replay(args)) = cli.command else {
+            panic!("o comando replay deveria ser reconhecido");
+        };
+        assert_eq!(args.scan_id, "scan_123");
     }
 
     #[test]
