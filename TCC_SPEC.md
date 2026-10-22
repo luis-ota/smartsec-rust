@@ -120,6 +120,13 @@ A regra nao altera agressividade, permissao ou concorrencia de nenhum scanner: e
 | RNF10 | Proteger dados sensiveis e obter consentimento antes de enviar logs a IA remota. |
 | RNF11 | Modo headless com exit codes padronizados. |
 
+O caminho persistente da chave remota continua sendo o Secret Service do sistema
+(keyring). Para CI/headless ou quando o cofre estiver bloqueado,
+`SMARTSEC_API_KEY` fornece uma chave **somente da sessao**: tem precedencia sobre
+o keyring, nunca e gravada no TOML nem no keyring e e removida do ambiente dos
+processos filhos (Podman, `run_command` do agente e `git`). A origem da chave
+aparece na TUI como `chave da sessão (SMARTSEC_API_KEY)`.
+
 ## 6. Arquitetura esperada
 
 ```text

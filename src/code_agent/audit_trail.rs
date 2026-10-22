@@ -229,7 +229,7 @@ impl AgentAuditTrail {
                 "achado": finding_index + 1,
                 "aprovado": result.approved(),
                 "veredito": crate::utils::redaction::sanitize_diagnostic(
-                    &result.verdict.summary(),
+                    &result.verdict_summary(),
                 ),
                 "motivo_da_recusa": result
                     .failure_reason

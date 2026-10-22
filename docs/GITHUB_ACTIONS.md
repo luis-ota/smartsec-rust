@@ -134,23 +134,21 @@ O workflow consome **um** secret, opcional:
 |---|---|
 | `SMARTSEC_LLM_API_KEY` | habilitaria o provedor de IA remoto |
 
-**Limitação real:** hoje a chave é inerte. O binário carrega a credencial
-apenas do keyring do sistema operacional — `llm.api_key` é `#[serde(skip)]` no
-TOML (`src/config/llm_config.rs`) e a leitura acontece em
-`crate::config::persistence::load_api_key`, ou seja, no Secret Service. Não
-existe leitura de variável de ambiente em `src/`, e o runner hospedado não tem
-Secret Service. Na prática, o CI roda com `--llm ollama` (loopback) e, como não
-há Ollama no runner, o agente cai no **fallback determinístico local**
+A chave tem dois caminhos: o **keyring** do sistema operacional (persistente,
+padrão) e `SMARTSEC_API_KEY` (somente a sessão). O secret do workflow ainda não
+é repassado com esse nome, então o CI continua em `--llm ollama` (loopback) e,
+como não há Ollama no runner, o agente cai no **fallback determinístico local**
 (`local_analysis` em `src/ai/agent.rs`): a análise sai em português, sem
-reclassificar severidades, e o exit code não muda. O passo *Verificar a
-disponibilidade da chave de IA* publica apenas se a chave existe — o valor
-nunca é impresso, nunca vai para o relatório e nunca é gravado no repositório.
-Habilitar a IA remota de verdade exige alteração em `src/`, registrada como
-bloqueio na issue #26.
+reclassificar severidades, e o exit code não muda. Para habilitar a IA remota,
+basta acrescentar `SMARTSEC_API_KEY: ${{ secrets.SMARTSEC_LLM_API_KEY }}` ao
+`env` do passo da varredura. A chave não é persistida, não aparece no relatório
+e é removida do ambiente dos processos filhos (Podman, `run_command` e `git`).
+O passo *Verificar a disponibilidade da chave de IA* continua publicando apenas
+se a chave existe.
 
-O provedor remoto também exigiria `remote_consent` e HTTPS na base URL; sem a
-chave no keyring, `LlmConfig::validate` reprovaria a configuração e o scan
-terminaria com `2`.
+O provedor remoto também exige `remote_consent` e HTTPS na base URL; sem
+consentimento, `LlmConfig::validate` reprova a configuração e o scan termina
+com `2`.
 
 ## Pull requests de fork
 

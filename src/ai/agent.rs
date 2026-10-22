@@ -105,13 +105,31 @@ impl AIAgent {
         self.provider.as_ref()
     }
 
-    /// `true` quando o provedor configurado pode receber dados do alvo.
+    /// Motivo pelo qual o provedor não pode receber dados do alvo.
     ///
     /// O agente de código consulta este sinal **antes** de qualquer chamada: sem
     /// ele, um provedor remoto sem consentimento receberia o código do alvo, que
     /// o RNF10 proíbe enviar de forma mais estrita que o envio de logs.
-    pub fn allows_target_data(&self) -> bool {
-        self.remote_allowed && self.configuration_error.is_none()
+    ///
+    /// Distinguir credencial de consentimento importa: antes, uma configuração
+    /// inválida (keyring bloqueado, por exemplo) era relatada como "envio remoto
+    /// bloqueado", como se o operador não tivesse autorizado o envio.
+    pub fn target_data_block_reason(&self) -> Option<String> {
+        if let Some(error) = &self.configuration_error {
+            if error.contains("Consentimento ausente") {
+                return Some(
+                    "envio remoto sem consentimento explícito para dados do alvo (RNF10)"
+                        .to_string(),
+                );
+            }
+            return Some(format!("configuração da LLM inválida: {error}"));
+        }
+        if !self.remote_allowed {
+            return Some(
+                "envio remoto sem consentimento explícito para dados do alvo (RNF10)".to_string(),
+            );
+        }
+        None
     }
 
     /// Constrói um agente com provedores injetados. Restrito a testes: existe
@@ -502,6 +520,37 @@ mod tests {
         assert_eq!(outcome.provider, "OpenAI");
         assert_eq!(outcome.model, "gpt-4o");
         assert!(outcome.primary_error.is_none());
+    }
+
+    #[test]
+    fn target_data_block_reason_separates_credentials_from_consent() {
+        let remote = LlmConfig {
+            provider: LlmProviderKind::OpenAI,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key: "chave".to_string(),
+            remote_consent: false,
+            ..LlmConfig::default()
+        };
+        let agent = AIAgent::from_config(&remote);
+        let reason = agent
+            .target_data_block_reason()
+            .expect("consentimento ausente bloqueia");
+        assert!(reason.contains("consentimento"), "{reason}");
+
+        let locked = LlmConfig {
+            remote_consent: true,
+            api_key: String::new(),
+            credential_error: Some("o cofre de segredos do sistema está bloqueado".to_string()),
+            ..remote
+        };
+        let agent = AIAgent::from_config(&locked);
+        let reason = agent
+            .target_data_block_reason()
+            .expect("keyring bloqueado bloqueia");
+        assert!(reason.contains("cofre"), "{reason}");
+        assert!(reason.contains("Credenciais indisponíveis"), "{reason}");
+        assert!(!reason.contains("consentimento"), "{reason}");
     }
 
     #[tokio::test]

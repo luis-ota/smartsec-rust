@@ -226,16 +226,14 @@ impl CodeAnalysisReport {
         }
     }
 
-    /// Relatório da fase quando o envio ao provedor remoto foi bloqueado.
+    /// Relatório da fase quando o provedor não pode receber dados do alvo.
     ///
-    /// Reaproveita o consentimento que a issue #23 já exige para enviar logs; o
-    /// dado protegido aqui é o **código do alvo**. Nenhum turno é aberto, nem
-    /// mesmo um turno sem ferramentas, porque qualquer ida já seria o envio.
-    pub fn blocked_by_consent(findings: &[Vulnerability], model: &str, provider: &str) -> Self {
-        let reason = "o envio de trechos do código do alvo a um provedor remoto exige \
-                      consentimento explícito, que não está configurado (RNF10); a localização \
-                      no código não foi determinada"
-            .to_string();
+    /// O motivo vem de `AIAgent::target_data_block_reason`: pode ser falta de
+    /// consentimento ou configuração inválida (keyring bloqueado, por exemplo).
+    /// Nenhum turno é aberto, nem mesmo um sem ferramentas, porque qualquer ida
+    /// já seria o envio.
+    pub fn blocked(findings: &[Vulnerability], model: &str, provider: &str, reason: &str) -> Self {
+        let reason = format!("{reason}; a localização no código não foi determinada");
         Self {
             findings: findings
                 .iter()
@@ -247,7 +245,7 @@ impl CodeAnalysisReport {
                 })
                 .collect(),
             tool_calls: Vec::new(),
-            unavailable_reason: None,
+            unavailable_reason: Some(reason),
         }
     }
 
@@ -1762,7 +1760,12 @@ mod tests {
             "Authorization: Bearer segredo-real",
         )];
 
-        let report = CodeAnalysisReport::blocked_by_consent(&findings, "gpt-4o", "OpenAI");
+        let report = CodeAnalysisReport::blocked(
+            &findings,
+            "gpt-4o",
+            "OpenAI",
+            "envio remoto sem consentimento explícito para dados do alvo (RNF10)",
+        );
 
         assert!(report.tool_calls.is_empty());
         assert_eq!(report.findings.len(), 1);
@@ -1776,6 +1779,14 @@ mod tests {
                 .is_some_and(|reason| reason.contains("RNF10")),
             "{:?}",
             analysis.reason
+        );
+        assert!(
+            report
+                .unavailable_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("RNF10")),
+            "{:?}",
+            report.unavailable_reason
         );
         assert!(analysis.fallback_used);
         // O provedor fake não pode ter sido consultado.

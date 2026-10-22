@@ -1426,6 +1426,21 @@ mod tests {
         assert!(screen.contains("Espaço alterna"), "{screen}");
     }
 
+    #[test]
+    fn the_summary_marks_an_environment_key_as_session_only() {
+        let mut app = remote_app();
+        app.config.llm.credential_from_env = true;
+        app.show_settings = true;
+        app.reset_settings_draft();
+
+        let screen = draw(&mut app, 100, 24);
+
+        assert!(
+            screen.contains("chave da sessão (SMARTSEC_API_KEY)"),
+            "{screen}"
+        );
+    }
+
     /// O resumo responde "o que acontece se eu salvar" no estado do rascunho.
     #[test]
     fn the_summary_says_what_the_draft_will_do() {

@@ -191,6 +191,7 @@ impl SystemOnboardingProbe {
     async fn detect_podman(&self) -> PodmanMode {
         let output = tokio::process::Command::new("podman")
             .args(["info", "--format", "{{.Host.Security.Rootless}}"])
+            .env_remove("SMARTSEC_API_KEY")
             .output()
             .await;
         match output {

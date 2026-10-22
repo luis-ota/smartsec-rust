@@ -133,6 +133,37 @@ pub fn load_api_key() -> Result<String, keyring::Error> {
     entry.get_password()
 }
 
+/// Estado da credencial no keyring, separado do erro cru da biblioteca.
+///
+/// A TUI precisa distinguir "não há chave salva" de "o cofre está bloqueado":
+/// o primeiro pede a chave, o segundo pede o desbloqueio do sistema. Os dois
+/// antes viravam a mesma mensagem de "credenciais obrigatórias".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApiKeyStatus {
+    Available(String),
+    Missing,
+    Locked(String),
+    Unavailable(String),
+}
+
+pub fn api_key_status() -> ApiKeyStatus {
+    match load_api_key() {
+        Ok(key) if !key.trim().is_empty() => ApiKeyStatus::Available(key),
+        Ok(_) => ApiKeyStatus::Missing,
+        Err(keyring::Error::NoEntry) => ApiKeyStatus::Missing,
+        Err(error) => {
+            let detail = error.to_string();
+            if detail.to_lowercase().contains("locked") {
+                ApiKeyStatus::Locked("o cofre de segredos do sistema está bloqueado".to_string())
+            } else {
+                ApiKeyStatus::Unavailable(format!(
+                    "não foi possível acessar o cofre de segredos do sistema: {detail}"
+                ))
+            }
+        }
+    }
+}
+
 impl From<crate::config::Configuration> for PersistedConfig {
     fn from(c: crate::config::Configuration) -> Self {
         Self {

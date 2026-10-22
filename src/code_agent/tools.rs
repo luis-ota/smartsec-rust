@@ -282,6 +282,7 @@ impl LocalToolRegistry {
         let mut command = tokio::process::Command::new(program);
         command
             .args(args)
+            .env_remove("SMARTSEC_API_KEY")
             .current_dir(self.workspace.root())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

@@ -1875,13 +1875,17 @@ impl AppState {
         );
         if self.settings_connection_is_remote() {
             parts.push(
-                match (
-                    self.settings_api_key_touched,
-                    self.settings_input_api_key.trim().is_empty(),
-                ) {
-                    (true, false) => "chave nova digitada".to_string(),
-                    (false, false) => "chave salva".to_string(),
-                    _ => "sem chave".to_string(),
+                if self.config.llm.credential_from_env && !self.settings_api_key_touched {
+                    "chave da sessão (SMARTSEC_API_KEY)".to_string()
+                } else {
+                    match (
+                        self.settings_api_key_touched,
+                        self.settings_input_api_key.trim().is_empty(),
+                    ) {
+                        (true, false) => "chave nova digitada".to_string(),
+                        (false, false) => "chave salva".to_string(),
+                        _ => "sem chave".to_string(),
+                    }
                 },
             );
             parts.push(if self.settings_remote_consent {
@@ -2021,6 +2025,37 @@ impl AppState {
             .or(self.config_warning.as_deref())
     }
 
+    /// Tenta ler a chave do keyring de novo ao abrir `Configurar IA`.
+    ///
+    /// O operador pode ter desbloqueado o cofre depois de abrir a TUI; sem esta
+    /// releitura, a única saída era reiniciar a ferramenta. Quando a leitura
+    /// falha, o motivo real (cofre bloqueado, por exemplo) substitui a mensagem
+    /// genérica de credenciais.
+    pub(crate) fn reload_api_key_from_keyring(&mut self) {
+        if !self.config.llm.api_key.trim().is_empty() || !self.config.llm.is_remote() {
+            return;
+        }
+        match crate::config::persistence::api_key_status() {
+            crate::config::persistence::ApiKeyStatus::Available(key) => {
+                self.config.llm.api_key = key;
+                self.config.llm.credential_error = None;
+            }
+            crate::config::persistence::ApiKeyStatus::Missing => {
+                self.config.llm.credential_error = None;
+            }
+            crate::config::persistence::ApiKeyStatus::Locked(reason)
+            | crate::config::persistence::ApiKeyStatus::Unavailable(reason) => {
+                self.config.llm.credential_error = Some(reason);
+            }
+        }
+        let problems = self.config.validation_problems();
+        self.set_config_warning(if problems.is_empty() {
+            None
+        } else {
+            Some(problems.join(" · "))
+        });
+    }
+
     pub fn apply_settings(&mut self) -> Result<(), String> {
         let candidate = self.settings_candidate()?;
         candidate.save()?;
@@ -2053,6 +2088,8 @@ impl AppState {
         candidate.llm.provider = provider;
         candidate.llm.base_url = self.settings_effective_base_url();
         candidate.llm.api_key = self.settings_input_api_key.clone();
+        candidate.llm.credential_from_env =
+            self.config.llm.credential_from_env && !self.settings_api_key_touched;
         candidate.llm.model = self.settings_effective_model();
         candidate.llm.timeout_secs = timeout;
         candidate.llm.max_retries = retries;

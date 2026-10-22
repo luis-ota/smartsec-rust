@@ -735,7 +735,7 @@ fn append_rag_explanation(
     }
     push_wrapped_owned(
         lines,
-        format!("veredito: {}", result.verdict.summary()),
+        format!("veredito: {}", result.verdict_summary()),
         width,
         SUCCESS,
     );

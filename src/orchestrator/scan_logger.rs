@@ -388,7 +388,7 @@ impl ScanMetadata {
     ) -> Self {
         self.rag_explanations_count += 1;
         self.rag_ontology_verdict =
-            crate::utils::redaction::sanitize_diagnostic(&result.verdict.summary());
+            crate::utils::redaction::sanitize_diagnostic(&result.verdict_summary());
         self.rag_failure_reason = result
             .failure_reason
             .as_deref()

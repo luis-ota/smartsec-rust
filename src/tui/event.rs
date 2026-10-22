@@ -254,6 +254,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
                 app.focus
             };
             if !from_onboarding {
+                app.reload_api_key_from_keyring();
                 app.reset_settings_draft();
             }
             app.settings_editing = None;
@@ -356,7 +357,8 @@ fn start_rag_explanation(app: &mut AppState) {
         let agent = crate::ai::agent::AIAgent::from_config(&llm);
         let model = agent.model.clone();
         let label = agent.configured_provider_label();
-        let allowed = agent.allows_target_data();
+        let block_reason = agent.target_data_block_reason();
+        let allowed = block_reason.is_none();
         let corpus = crate::cyberrag::corpus::Corpus::shared();
         let ontology = crate::cyberrag::ontology::Ontology::shared();
         let result = crate::cyberrag::service::ExplanationService::new()
@@ -366,6 +368,7 @@ fn start_rag_explanation(app: &mut AppState) {
                     model: &model,
                     provider_label: &label,
                     target_data_allowed: allowed,
+                    target_data_block_reason: block_reason.as_deref(),
                     embedding_model: &embedding_model,
                     corpus,
                     ontology,

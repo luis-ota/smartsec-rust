@@ -306,7 +306,11 @@ async fn wait_for_cancellation(control: &mut watch::Receiver<RunControl>) {
 /// Executa um comando de controle curto do Podman com prazo fixo.
 async fn podman_control(binary: &Path, args: &[&str]) -> Result<(), String> {
     let mut command = Command::new(binary);
-    command.args(args).stdin(Stdio::null()).kill_on_drop(true);
+    command
+        .args(args)
+        .env_remove("SMARTSEC_API_KEY")
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
     match tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output()).await {
         Ok(Ok(output)) if output.status.success() => Ok(()),
         Ok(Ok(output)) => Err(format!(
@@ -341,6 +345,7 @@ async fn stop_container(
     let mut command = Command::new(binary);
     command
         .args(["stop", "--time", "5", container_id])
+        .env_remove("SMARTSEC_API_KEY")
         .stdin(Stdio::null())
         .kill_on_drop(true);
     // O `stop` tem prazo maior que os demais comandos: ele espera o scanner
@@ -353,6 +358,7 @@ async fn stop_container(
     if !stopped {
         let mut kill = Command::new(binary);
         kill.args(["kill", container_id])
+            .env_remove("SMARTSEC_API_KEY")
             .stdin(Stdio::null())
             .kill_on_drop(true);
         let _ = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, kill.output()).await;
@@ -954,7 +960,7 @@ impl PodmanExecutor {
 
     fn podman_command(&self) -> Command {
         let mut command = Command::new(&self.binary);
-        command.kill_on_drop(true);
+        command.env_remove("SMARTSEC_API_KEY").kill_on_drop(true);
         command
     }
 
@@ -991,6 +997,7 @@ impl Drop for ContainerCleanup {
         };
         let Ok(mut child) = std::process::Command::new(&self.binary)
             .args(["rm", "--force", "--ignore", &container_id])
+            .env_remove("SMARTSEC_API_KEY")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

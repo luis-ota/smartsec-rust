@@ -18,6 +18,22 @@ com schema mínimo está em [`smartsec.example.toml`](../smartsec.example.toml).
 A chave fora do TOML é deliberada: `llm.api_key` é `#[serde(skip)]`, então
 mesmo alguém com acesso ao arquivo de configuração não lê a credencial dali.
 
+### Chave por ambiente, só na sessão
+
+Quando o cofre do sistema está bloqueado ou não existe (CI, container, TTY sem
+prompt gráfico), a chave pode vir de `SMARTSEC_API_KEY`:
+
+```bash
+SMARTSEC_API_KEY="$MINHA_CHAVE" smartsec
+SMARTSEC_API_KEY="$MINHA_CHAVE" smartsec scan --target http://169.254.1.2:3000
+```
+
+Essa chave **não é gravada** no TOML nem no keyring: vale só para o processo.
+Ela tem precedência sobre a chave do keyring e é removida do ambiente dos
+processos filhos (Podman, `run_command` do agente e `git`), para não vazar para
+os scanners. Na TUI, o resumo mostra `chave da sessão (SMARTSEC_API_KEY)`.
+Para persistir, use a tela `Configurar IA` com o keyring desbloqueado.
+
 ## Arquivo de configuração TOML
 
 O modelo comentado [`smartsec.example.toml`](../smartsec.example.toml) mostra o

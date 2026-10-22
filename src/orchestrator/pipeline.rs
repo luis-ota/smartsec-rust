@@ -626,15 +626,15 @@ impl Orchestrator {
                 // da issue #23 para enviar logs precisa cobrir os trechos do
                 // código do alvo, o ativo mais sensível; sem a checagem, um
                 // provedor remoto sem consentimento receberia o código-fonte.
-                if !self.agent.allows_target_data() {
+                if let Some(reason) = self.agent.target_data_block_reason() {
                     self.agent_trail.record_event(
                         &crate::code_agent::progress::CodeAgentEvent::Finished {
                             located: 0,
                             total: self.findings.len(),
-                            unavailable_reason: Some("envio remoto bloqueado".to_string()),
+                            unavailable_reason: Some(reason.clone()),
                         },
                     );
-                    CodeAnalysisReport::blocked_by_consent(&self.findings, &model, &label)
+                    CodeAnalysisReport::blocked(&self.findings, &model, &label, &reason)
                 } else {
                     let (tx, mut rx) = mpsc::unbounded_channel();
                     let trail = std::sync::Arc::clone(&self.agent_trail);
@@ -1112,6 +1112,7 @@ fn validate_templates(path: &std::path::Path, expected: Option<&str>) -> anyhow:
     if let Some(expected) = expected {
         let output = std::process::Command::new("git")
             .args(["-C", &path.to_string_lossy(), "rev-parse", "HEAD"])
+            .env_remove("SMARTSEC_API_KEY")
             .output()
             .map_err(|error| {
                 anyhow::anyhow!("não foi possível validar o commit dos templates: {error}")

@@ -58,6 +58,11 @@ pub struct ExplanationContext<'a> {
     pub provider_label: &'a str,
     /// RNF10: sem consentimento, nenhum turno é aberto.
     pub target_data_allowed: bool,
+    /// Motivo real do bloqueio quando `target_data_allowed` é falso.
+    ///
+    /// Pode ser falta de consentimento ou configuração inválida (keyring
+    /// bloqueado). Sem ele, a recusa sempre culpava o consentimento.
+    pub target_data_block_reason: Option<&'a str>,
     /// Vazio liga a recuperação lexical.
     pub embedding_model: &'a str,
     pub corpus: &'a Corpus,
@@ -112,6 +117,16 @@ impl ExplanationResult {
                 .unwrap_or_else(|| "motivo não informado".to_string())
         )
     }
+
+    /// Veredito para logs. Quando nenhum turno foi aberto, não houve validação
+    /// por ontologia; dizer "resposta sem afirmações" culpava uma resposta que
+    /// nunca existiu.
+    pub fn verdict_summary(&self) -> String {
+        if !self.approved() && self.claims.is_empty() {
+            return "explicação não gerada; validação por ontologia não executada".to_string();
+        }
+        self.verdict.summary()
+    }
 }
 
 /// Interpretação da resposta do modelo.
@@ -162,13 +177,11 @@ impl ExplanationService {
         }
 
         if !context.target_data_allowed {
-            return self.refuse(
-                context,
-                finding_index,
+            let reason = context.target_data_block_reason.unwrap_or(
                 "o envio de trechos do código do alvo a um provedor remoto exige \
                  consentimento explícito, que não está configurado (RNF10)",
-                "lexical",
             );
+            return self.refuse(context, finding_index, reason, "lexical");
         }
 
         let snippet = finding
@@ -709,6 +722,14 @@ mod tests {
                     model: "modelo-de-teste",
                     provider_label: "NVIDIA NIM",
                     target_data_allowed,
+                    target_data_block_reason: if target_data_allowed {
+                        None
+                    } else {
+                        Some(
+                            "o envio de trechos do código do alvo a um provedor remoto exige \
+                             consentimento explícito, que não está configurado (RNF10)",
+                        )
+                    },
                     embedding_model,
                     corpus: &corpus,
                     ontology: &ontology,
@@ -751,6 +772,7 @@ mod tests {
                     model: "modelo-de-teste",
                     provider_label: "NVIDIA NIM",
                     target_data_allowed: true,
+                    target_data_block_reason: None,
                     embedding_model: "",
                     corpus,
                     ontology,
@@ -847,6 +869,39 @@ mod tests {
             .failure_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("RNF10")));
+        assert!(provider.prompts.lock().expect("prompts").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_locked_keyring_is_not_reported_as_missing_consent() {
+        let provider = ScriptedProvider::new(vec![VALID_ANSWER]);
+        let corpus = fixture_corpus();
+        let ontology = fixture_ontology();
+
+        let result = ExplanationService::new()
+            .explain(
+                &ExplanationContext {
+                    provider: &provider,
+                    model: "modelo-de-teste",
+                    provider_label: "NVIDIA NIM",
+                    target_data_allowed: false,
+                    target_data_block_reason: Some(
+                        "configuração da LLM inválida: Credenciais indisponíveis: o cofre de \
+                         segredos do sistema está bloqueado",
+                    ),
+                    embedding_model: "",
+                    corpus: &corpus,
+                    ontology: &ontology,
+                    trail: None,
+                },
+                0,
+                &finding(),
+            )
+            .await;
+
+        let reason = result.failure_reason.expect("motivo registrado");
+        assert!(reason.contains("Credenciais indisponíveis"), "{reason}");
+        assert!(!reason.contains("consentimento"), "{reason}");
         assert!(provider.prompts.lock().expect("prompts").is_empty());
     }
 
