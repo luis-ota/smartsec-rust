@@ -833,10 +833,26 @@ fn build_prompt(
                  for http://, explique que HSTS só se aplica em https.",
             );
             let nao_mitiga = guide.nao_mitiga.to_lowercase();
-            if nao_mitiga.contains("xss") || nao_mitiga.contains("clickjacking") {
+            let no_xss = [
+                "não bloqueia xss",
+                "não mitiga xss",
+                "não impede xss",
+                "não protege contra xss",
+            ]
+            .iter()
+            .any(|phrase| nao_mitiga.contains(phrase));
+            let no_clickjacking = nao_mitiga.contains("não bloqueia clickjacking")
+                || nao_mitiga.contains("nem clickjacking");
+            if no_xss {
                 prompt.push_str(
-                    "\nNão cite XSS nem clickjacking como efeito deste cabeçalho; \
-                     o campo 'não mitiga' delimita o escopo.",
+                    "\nNão cite XSS como efeito deste cabeçalho; o campo 'não mitiga' \
+                     delimita o escopo.",
+                );
+            }
+            if no_clickjacking {
+                prompt.push_str(
+                    "\nNão cite clickjacking como efeito deste cabeçalho; o campo \
+                     'não mitiga' delimita o escopo.",
                 );
             }
             if guide
@@ -1094,6 +1110,28 @@ mod tests {
             suggested_concept(&header),
             Some("cabecalho_seguranca_ausente")
         );
+    }
+
+    #[test]
+    fn the_header_guide_does_not_tell_csp_to_avoid_xss() {
+        let mut csp = finding();
+        csp.title = "Cabeçalho de segurança ausente — content-security-policy".to_string();
+        csp.code_location = None;
+        let prompt = build_prompt(&csp, None, Corpus::shared(), &[], Ontology::shared(), None);
+        assert!(!prompt.contains("Não cite XSS"), "{prompt}");
+
+        let mut permissions = finding();
+        permissions.title = "Cabeçalho de segurança ausente — permissions-policy".to_string();
+        permissions.code_location = None;
+        let prompt = build_prompt(
+            &permissions,
+            None,
+            Corpus::shared(),
+            &[],
+            Ontology::shared(),
+            None,
+        );
+        assert!(prompt.contains("Não cite XSS"), "{prompt}");
     }
 
     #[test]
