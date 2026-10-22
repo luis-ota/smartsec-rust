@@ -121,11 +121,18 @@ A regra nao altera agressividade, permissao ou concorrencia de nenhum scanner: e
 | RNF11 | Modo headless com exit codes padronizados. |
 
 O caminho persistente da chave remota continua sendo o Secret Service do sistema
-(keyring). Para CI/headless ou quando o cofre estiver bloqueado,
-`SMARTSEC_API_KEY` fornece uma chave **somente da sessao**: tem precedencia sobre
-o keyring, nunca e gravada no TOML nem no keyring e e removida do ambiente dos
-processos filhos (Podman, `run_command` do agente e `git`). A origem da chave
-aparece na TUI como `chave da sessão (SMARTSEC_API_KEY)`.
+(keyring), e o subcomando `smartsec auth` e a interface do operador para ele:
+`auth set` le a chave sem eco no terminal (ou de `--stdin`, para CI) e grava no
+cofre; `auth status` informa provedor, modelo, tamanho e ultimos quatro
+caracteres mascarados, sem nunca imprimir a chave inteira; `auth remove` apaga a
+credencial. A chave nao e aceita como argumento de processo nem gravada no TOML,
+em logs ou em arquivos do SmartSec, e nao existe dependencia de outra CLI. Para
+CI/headless ou quando o cofre estiver bloqueado, `SMARTSEC_API_KEY` fornece uma
+chave **somente da sessao**: tem precedencia sobre o keyring, nunca e gravada no
+TOML nem no keyring e e removida do ambiente dos processos filhos (Podman,
+`run_command` do agente e `git`). A origem da chave aparece na TUI como `chave da
+sessão (SMARTSEC_API_KEY)`. Cofre bloqueado ou indisponivel produz mensagem
+acionavel em pt-BR pedindo para desbloquear o cofre do sistema e tentar de novo.
 
 ## 6. Arquitetura esperada
 
@@ -145,6 +152,7 @@ CLI/TUI
 Modulos atuais do prototipo:
 
 - `src/main.rs`: entrada CLI, TUI e headless.
+- `src/auth.rs`: subcomando `auth` (cadastro, status e remoção da chave no keyring).
 - `src/tui/`: telas, eventos e estado da interface.
 - `src/orchestrator/`: pipeline, sandbox e parsers.
 - `src/tools/`: manifesto e registry extensivel de ferramentas, alem dos runners reais de Nmap, Nuclei, Nikto, SQLMap, TruffleHog e ZAP.
@@ -306,6 +314,8 @@ O CEP nao e pre-condicao para este TCC de desenvolvimento de ferramenta, conform
 Erro de scanner nao pode ser convertido em sucesso. Finding critico nao e erro interno: deve retornar `1` e preservar o relatorio. No modo headless os codigos derivam do resultado consolidado (achados e falhas de execucao), nunca de mensagens de texto; a falha de execucao tem precedencia sobre o achado critico, e o relatorio e o log estruturado sao gravados antes da mensagem final.
 
 A consulta ao historico tambem respeita este contrato. `history` retorna `0` mesmo com historico vazio, porque a listagem foi executada com sucesso. `show <SCAN_ID>` retorna `2` quando o identificador e invalido, quando viola o padrao `scan_<nanos>` ou quando nao existe registro correspondente: em automacao, um id inexistente e um erro de uso da ferramenta e nao pode ser confundido com `0` (nenhum achado critico) nem com `1` (achado critico), que significam que a varredura foi executada. Registros ilegiveis dentro de um historico listavel nao alteram o codigo de saida; eles sao reportados como aviso na saida padrao para que a listagem continue util, e essa escolha esta registrada em `docs/evidence/issue-24-historico.md` para revisao.
+
+Os subcomandos de credencial seguem um contrato proprio, tambem baseado nos codigos acima. `auth set` e `auth remove` retornam `0` quando a operacao conclui e `2` quando o cofre esta bloqueado ou indisponivel. `auth status` retorna `0` quando ha chave utilizavel (no keyring ou no override `SMARTSEC_API_KEY`), `1` quando nao ha chave cadastrada e `2` quando o cofre esta bloqueado ou indisponivel; nesse caso a mensagem pede para desbloquear o Secret Service e repetir o comando. Nenhum desses caminhos grava a chave no TOML, em log ou em arquivo do SmartSec.
 
 ### Cancelamento por sinal
 

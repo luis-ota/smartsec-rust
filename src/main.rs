@@ -5,6 +5,7 @@
 //! Suporta o modo TUI interativo e os comandos estruturados `scan`/`tool`.
 
 mod ai;
+mod auth;
 mod code_agent;
 mod code_audit;
 mod config;
@@ -18,6 +19,7 @@ mod tools;
 mod tui;
 mod utils;
 
+use crate::auth::AuthArgs;
 use crate::config::execution_type::ExecutionType;
 use crate::domain::security_tool::SecurityTool;
 use crate::domain::vulnerability::Vulnerability;
@@ -61,6 +63,7 @@ enum CliCommand {
     Trace(ShowArgs),
     Replay(ShowArgs),
     Onboarding,
+    Auth(AuthArgs),
 }
 
 #[derive(Debug)]
@@ -111,6 +114,11 @@ impl Cli {
         }
         if arguments.is_empty() {
             return Ok(Self { command: None });
+        }
+        if arguments[0] == "auth" {
+            return Ok(Self {
+                command: Some(CliCommand::Auth(AuthArgs::parse(&arguments[1..])?)),
+            });
         }
         if arguments
             .iter()
@@ -263,6 +271,7 @@ fn print_help() {
     println!("  smartsec show <SCAN_ID>");
     println!("  smartsec trace <SCAN_ID>");
     println!("  smartsec replay <SCAN_ID>");
+    println!("  smartsec auth <set|status|remove>");
     println!();
     println!("Comandos:");
     println!("  scan              Executa uma varredura não interativa.");
@@ -272,6 +281,14 @@ fn print_help() {
     println!("  show <SCAN_ID>    Mostra o detalhe de uma execução.");
     println!("  trace <SCAN_ID>   Mostra as ações que a IA executou na execução.");
     println!("  replay <SCAN_ID>  Abre a TUI nos resultados de uma execução concluída.");
+    println!("  auth              Gerencia a chave da API no cofre do sistema.");
+    println!();
+    println!("Chave da API:");
+    println!("  smartsec auth set [--stdin]  Lê sem eco e grava no Secret Service");
+    println!("  smartsec auth status         Mostra provedor, modelo e final mascarado");
+    println!("  smartsec auth remove         Remove a chave do cofre");
+    println!("  A chave nunca vai para o TOML; SMARTSEC_API_KEY é só override de");
+    println!("  sessão/CI e não substitui o cadastro no cofre.");
     println!();
     println!("Erros de uso:");
     println!("  ferramenta desconhecida  Ferramenta fora do catálogo registrado");
@@ -310,10 +327,11 @@ impl CommandLineInterface {
 
     pub async fn run(self) -> Result<i32> {
         let cli = Cli::parse(&self.arguments)?;
-        if self
-            .arguments
-            .iter()
-            .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+        if !matches!(&cli.command, Some(CliCommand::Auth(_)))
+            && self
+                .arguments
+                .iter()
+                .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
         {
             return Ok(EXIT_SUCCESS);
         }
@@ -352,6 +370,7 @@ impl CommandLineInterface {
                 Self::display_tui(config, problems, true, None).await?;
                 Ok(EXIT_SUCCESS)
             }
+            Some(CliCommand::Auth(args)) => auth::run(args),
             None => {
                 // A TUI abre mesmo com configuração inválida: é a própria tela de
                 // Configurar IA que conserta o que está errado, então abortar
@@ -1125,6 +1144,7 @@ pub async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthAction;
     use crate::config::llm_config::{LlmConfig, LlmProviderKind};
     use crate::config::Configuration;
     use crate::domain::vulnerability::FindingSource;
@@ -1288,6 +1308,39 @@ mod tests {
             panic!("o comando replay deveria ser reconhecido");
         };
         assert_eq!(args.scan_id, "scan_123");
+    }
+
+    #[test]
+    fn parses_the_auth_subcommand_through_the_main_cli() {
+        let cases = [
+            (vec!["auth"], AuthAction::Help),
+            (vec!["auth", "--help"], AuthAction::Help),
+            (vec!["auth", "set"], AuthAction::Set { from_stdin: false }),
+            (
+                vec!["auth", "set", "--stdin"],
+                AuthAction::Set { from_stdin: true },
+            ),
+            (vec!["auth", "status"], AuthAction::Status),
+            (vec!["auth", "remove"], AuthAction::Remove),
+        ];
+        for (arguments, expected) in cases {
+            let arguments: Vec<String> = arguments.into_iter().map(str::to_owned).collect();
+            let cli = Cli::parse(&arguments).unwrap();
+            let Some(CliCommand::Auth(args)) = cli.command else {
+                panic!("o comando auth deveria ser reconhecido: {arguments:?}");
+            };
+            assert_eq!(args.action, expected, "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn auth_rejects_unknown_arguments_without_treating_them_as_a_scan() {
+        let error = Cli::parse(&["auth".to_owned(), "set".to_owned(), "chave".to_owned()])
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("linha de comando"), "{error}");
+        assert!(!error.contains("--target"), "{error}");
     }
 
     #[test]

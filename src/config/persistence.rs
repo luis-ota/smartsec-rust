@@ -133,6 +133,15 @@ pub fn load_api_key() -> Result<String, keyring::Error> {
     entry.get_password()
 }
 
+/// Remove a chave. Ausência não é erro: `auth remove` é idempotente.
+pub fn delete_api_key() -> Result<(), keyring::Error> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Distingue chave ausente de cofre bloqueado ou indisponível.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApiKeyStatus {
@@ -142,21 +151,164 @@ pub enum ApiKeyStatus {
     Unavailable(String),
 }
 
-pub fn api_key_status() -> ApiKeyStatus {
-    match load_api_key() {
-        Ok(key) if !key.trim().is_empty() => ApiKeyStatus::Available(key),
-        Ok(_) => ApiKeyStatus::Missing,
-        Err(keyring::Error::NoEntry) => ApiKeyStatus::Missing,
-        Err(error) => {
-            let detail = error.to_string();
-            if detail.to_lowercase().contains("locked") {
-                ApiKeyStatus::Locked("o cofre de segredos do sistema está bloqueado".to_string())
-            } else {
-                ApiKeyStatus::Unavailable(format!(
-                    "não foi possível acessar o cofre de segredos do sistema: {detail}"
-                ))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CredentialStoreError {
+    Missing,
+    Locked(String),
+    Unavailable(String),
+}
+
+impl std::fmt::Display for CredentialStoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => {
+                write!(
+                    formatter,
+                    "nenhuma chave da API está cadastrada no cofre do sistema"
+                )
+            }
+            Self::Locked(reason) | Self::Unavailable(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
+impl std::error::Error for CredentialStoreError {}
+
+impl From<keyring::Error> for CredentialStoreError {
+    fn from(error: keyring::Error) -> Self {
+        match error {
+            keyring::Error::NoEntry => Self::Missing,
+            error => {
+                let detail = error.to_string();
+                if detail.to_lowercase().contains("locked") {
+                    Self::Locked("o cofre de segredos do sistema está bloqueado".to_string())
+                } else {
+                    Self::Unavailable(format!(
+                        "não foi possível acessar o cofre de segredos do sistema: {detail}"
+                    ))
+                }
             }
         }
+    }
+}
+
+fn status_from_load(result: Result<String, CredentialStoreError>) -> ApiKeyStatus {
+    match result {
+        Ok(key) if !key.trim().is_empty() => ApiKeyStatus::Available(key),
+        Ok(_) | Err(CredentialStoreError::Missing) => ApiKeyStatus::Missing,
+        Err(CredentialStoreError::Locked(reason)) => ApiKeyStatus::Locked(reason),
+        Err(CredentialStoreError::Unavailable(reason)) => ApiKeyStatus::Unavailable(reason),
+    }
+}
+
+/// Fronteira injetável entre o subcomando `auth` e o cofre do sistema.
+///
+/// O binário usa `SystemCredentialStore`; os testes usam uma implementação em
+/// memória e nunca tocam no keyring real.
+pub trait CredentialStore {
+    fn save(&self, key: &str) -> Result<(), CredentialStoreError>;
+    fn load(&self) -> Result<String, CredentialStoreError>;
+    fn delete(&self) -> Result<(), CredentialStoreError>;
+
+    fn status(&self) -> ApiKeyStatus {
+        status_from_load(self.load())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemCredentialStore;
+
+impl CredentialStore for SystemCredentialStore {
+    fn save(&self, key: &str) -> Result<(), CredentialStoreError> {
+        save_api_key(key).map_err(CredentialStoreError::from)
+    }
+
+    fn load(&self) -> Result<String, CredentialStoreError> {
+        load_api_key().map_err(CredentialStoreError::from)
+    }
+
+    fn delete(&self) -> Result<(), CredentialStoreError> {
+        delete_api_key().map_err(CredentialStoreError::from)
+    }
+
+    fn status(&self) -> ApiKeyStatus {
+        api_key_status()
+    }
+}
+
+pub fn api_key_status() -> ApiKeyStatus {
+    status_from_load(load_api_key().map_err(CredentialStoreError::from))
+}
+
+#[cfg(test)]
+pub(crate) struct InMemoryCredentialStore {
+    key: std::sync::Mutex<Option<String>>,
+    failure: std::sync::Mutex<Option<CredentialStoreError>>,
+}
+
+#[cfg(test)]
+impl InMemoryCredentialStore {
+    pub(crate) fn new() -> Self {
+        Self {
+            key: std::sync::Mutex::new(None),
+            failure: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn with_failure(error: CredentialStoreError) -> Self {
+        Self {
+            key: std::sync::Mutex::new(None),
+            failure: std::sync::Mutex::new(Some(error)),
+        }
+    }
+
+    pub(crate) fn stored_key(&self) -> Option<String> {
+        self.key
+            .lock()
+            .expect("o mutex da chave de teste não pode envenenar")
+            .clone()
+    }
+
+    fn fail(&self) -> Result<(), CredentialStoreError> {
+        match self
+            .failure
+            .lock()
+            .expect("o mutex de falha de teste não pode envenenar")
+            .clone()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl CredentialStore for InMemoryCredentialStore {
+    fn save(&self, key: &str) -> Result<(), CredentialStoreError> {
+        self.fail()?;
+        *self
+            .key
+            .lock()
+            .expect("o mutex da chave de teste não pode envenenar") = Some(key.to_string());
+        Ok(())
+    }
+
+    fn load(&self) -> Result<String, CredentialStoreError> {
+        self.fail()?;
+        self.key
+            .lock()
+            .expect("o mutex da chave de teste não pode envenenar")
+            .clone()
+            .ok_or(CredentialStoreError::Missing)
+    }
+
+    fn delete(&self) -> Result<(), CredentialStoreError> {
+        self.fail()?;
+        *self
+            .key
+            .lock()
+            .expect("o mutex da chave de teste não pode envenenar") = None;
+        Ok(())
     }
 }
 
@@ -330,5 +482,58 @@ mod tests {
         let config = try_load_config_file_at(&path.0).expect("arquivo válido deve carregar");
 
         assert_eq!(config.target_url, "http://alvo.local");
+    }
+
+    #[test]
+    fn in_memory_store_covers_set_status_and_remove() {
+        let store = InMemoryCredentialStore::new();
+        assert_eq!(store.status(), ApiKeyStatus::Missing);
+
+        store
+            .save("chave-de-teste")
+            .expect("a gravação deve funcionar");
+        assert_eq!(
+            store.status(),
+            ApiKeyStatus::Available("chave-de-teste".to_string())
+        );
+
+        store.delete().expect("a remoção deve funcionar");
+        assert_eq!(store.status(), ApiKeyStatus::Missing);
+        store
+            .delete()
+            .expect("remover uma chave ausente precisa ser idempotente");
+    }
+
+    #[test]
+    fn a_locked_store_is_reported_as_locked_not_missing() {
+        let store = InMemoryCredentialStore::with_failure(CredentialStoreError::Locked(
+            "o cofre de segredos do sistema está bloqueado".to_string(),
+        ));
+
+        assert_eq!(
+            store.status(),
+            ApiKeyStatus::Locked("o cofre de segredos do sistema está bloqueado".to_string())
+        );
+        assert!(store
+            .save("chave-de-teste")
+            .unwrap_err()
+            .to_string()
+            .contains("bloqueado"));
+    }
+
+    #[test]
+    fn an_empty_stored_key_counts_as_missing() {
+        let store = InMemoryCredentialStore::new();
+        store.save("   ").expect("a gravação deve funcionar");
+
+        assert_eq!(store.status(), ApiKeyStatus::Missing);
+    }
+
+    #[test]
+    fn no_entry_from_the_keyring_becomes_missing() {
+        assert_eq!(
+            CredentialStoreError::from(keyring::Error::NoEntry),
+            CredentialStoreError::Missing
+        );
     }
 }
