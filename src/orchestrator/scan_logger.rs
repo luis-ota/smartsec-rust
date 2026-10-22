@@ -4,7 +4,8 @@ use crate::orchestrator::decision::DecisionRecord;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Concordância de número para os textos de interface em pt-BR.
 fn plural(count: usize, singular: &str, plural: &str) -> String {
@@ -510,7 +511,11 @@ impl ScanMetadata {
                 .as_deref()
                 .map(crate::utils::redaction::sanitize_diagnostic),
             rag_explanations_count: self.rag_explanations_count,
-            rag_explanations: self.rag_explanations.clone(),
+            rag_explanations: self
+                .rag_explanations
+                .iter()
+                .map(crate::cyberrag::service::ExplanationResult::sanitized)
+                .collect(),
         }
     }
 }
@@ -530,13 +535,45 @@ fn sanitize_tool_call_record(
     }
 }
 
+/// Cria um diretório privado do usuário (0700 no Unix).
+pub(crate) fn secure_dir(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Grava um arquivo privado (0600 no Unix).
+fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(data.as_bytes())?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, data)
+    }
+}
+
 /// Retorna o diretório base para armazenamento de logs de scans.
 pub fn scans_dir() -> PathBuf {
     let base = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("smartsec")
         .join("scans");
-    let _ = fs::create_dir_all(&base);
+    let _ = secure_dir(&base);
     base
 }
 
@@ -547,8 +584,20 @@ pub fn save_scan_log(metadata: &ScanMetadata) -> Result<PathBuf> {
 }
 
 /// Salva os metadados em um diretório específico (útil para testes).
-pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Result<PathBuf> {
-    fs::create_dir_all(target_dir).context("Falha ao criar diretório de scans")?;
+pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &Path) -> Result<PathBuf> {
+    if metadata.scan_id.is_empty()
+        || metadata
+            .scan_id
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
+        || metadata.scan_id.contains("..")
+    {
+        anyhow::bail!(
+            "scan_id inválido para gravação: \"{}\"; não pode conter separador de caminho",
+            metadata.scan_id
+        );
+    }
+    secure_dir(target_dir).context("Falha ao criar diretório de scans")?;
     let metadata = metadata.sanitized();
     let filename = format!("{}.json", metadata.scan_id);
     let path = target_dir.join(filename);
@@ -556,7 +605,7 @@ pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Re
     let json_data = serde_json::to_string_pretty(&metadata)
         .context("Falha ao serializar metadados do scan para JSON")?;
 
-    fs::write(&path, json_data)
+    write_private(&path, &json_data)
         .with_context(|| format!("Falha ao gravar arquivo de scan em {:?}", path))?;
 
     Ok(path)
@@ -1718,5 +1767,41 @@ mod tests {
 
         assert!(capped.chars().count() <= MAX_LOG_TRACE_LINE_CHARS + 1);
         assert_eq!(capped_trace_line("curta"), "curta");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_scan_log_and_directory_are_private_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec-permissoes-scan-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let metadata = ScanMetadata::new(
+            "scan_1757000000000000777".to_string(),
+            "http://alvo.local".to_string(),
+            "2026-10-22T12:00:00Z".to_string(),
+            "2026-10-22T12:01:00Z".to_string(),
+            "Auto".to_string(),
+            "OpenAI".to_string(),
+            Vec::new(),
+            Vec::new(),
+            String::new(),
+        );
+
+        let path = save_scan_log_to_dir(&metadata, &dir).expect("gravação");
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

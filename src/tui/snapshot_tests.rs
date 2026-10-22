@@ -483,6 +483,7 @@ fn rag_result(approved: bool) -> crate::cyberrag::service::ExplanationResult {
             linguagem: Some("python".to_string()),
             vulneravel: Some("cursor.execute(query + user)".to_string()),
             corrigido: Some("cursor.execute(query, (user,))".to_string()),
+            header: None,
         }),
         claims: Vec::new(),
         verdict: crate::cyberrag::ontology::OntologyVerdict {

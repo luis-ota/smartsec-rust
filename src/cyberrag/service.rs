@@ -4,7 +4,7 @@
 //! como confiável (fluxo e adaptações em docs/cyberrag.md).
 
 use crate::code_agent::audit_trail::AgentAuditTrail;
-use crate::cyberrag::corpus::{searchable_text, Corpus};
+use crate::cyberrag::corpus::{searchable_text, Corpus, HeaderGuide};
 use crate::cyberrag::ontology::{Ontology, OntologyClaim, OntologyVerdict};
 use crate::cyberrag::retriever::{
     query_for_finding, LexicalRetriever, Retrieved, Retriever, DEFAULT_QUERY_MAX_CHARS,
@@ -12,7 +12,7 @@ use crate::cyberrag::retriever::{
 use crate::cyberrag::DEFAULT_TOP_K;
 use crate::domain::vulnerability::Vulnerability;
 use crate::llm::LLMProvider;
-use crate::utils::redaction::{sanitize_diagnostic, sanitize_text};
+use crate::utils::redaction::{sanitize_diagnostic, sanitize_prose, sanitize_text};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -85,6 +85,9 @@ pub struct RetrievedExample {
     pub linguagem: Option<String>,
     pub vulneravel: Option<String>,
     pub corrigido: Option<String>,
+    /// Cabeçalho específico quando o exemplo foi gerado para um achado de header.
+    #[serde(default)]
+    pub header: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,6 +135,52 @@ impl ExplanationResult {
             return "explicação não gerada; validação por ontologia não executada".to_string();
         }
         self.verdict.summary()
+    }
+
+    /// Cópia sanitizada para persistência.
+    ///
+    /// O texto e o motivo já saem sanitizados da geração, mas as claims e o
+    /// exemplo vêm do modelo/corpus e precisam passar pela mesma política. O
+    /// código do exemplo é removido do log e reconstruído do corpus no replay.
+    pub fn sanitized(&self) -> Self {
+        let sanitized_claim = |claim: &OntologyClaim| OntologyClaim {
+            sujeito: sanitize_text(&claim.sujeito),
+            relacao: sanitize_text(&claim.relacao),
+            objeto: sanitize_text(&claim.objeto),
+        };
+        Self {
+            finding_index: self.finding_index,
+            text: sanitize_prose(&self.text),
+            conceito: sanitize_text(&self.conceito),
+            example: self.example.as_ref().map(|example| RetrievedExample {
+                id: sanitize_text(&example.id),
+                titulo: sanitize_text(&example.titulo),
+                padrao_seguro: sanitize_text(&example.padrao_seguro),
+                linguagem: example.linguagem.clone(),
+                vulneravel: None,
+                corrigido: None,
+                header: example.header.clone(),
+            }),
+            claims: self.claims.iter().map(sanitized_claim).collect(),
+            verdict: OntologyVerdict {
+                aprovado: self.verdict.aprovado,
+                verificadas: self.verdict.verificadas,
+                rejeitadas: self
+                    .verdict
+                    .rejeitadas
+                    .iter()
+                    .map(|rejection| crate::cyberrag::ontology::ClaimRejection {
+                        claim: sanitized_claim(&rejection.claim),
+                        motivo: sanitize_text(&rejection.motivo),
+                    })
+                    .collect(),
+            },
+            provider: sanitize_text(&self.provider),
+            model: sanitize_text(&self.model),
+            failure_reason: self.failure_reason.as_deref().map(sanitize_diagnostic),
+            generated_at: sanitize_text(&self.generated_at),
+            retrieval_mode: sanitize_text(&self.retrieval_mode),
+        }
     }
 }
 
@@ -273,7 +322,7 @@ impl ExplanationService {
                 } => {
                     let result = ExplanationResult {
                         finding_index,
-                        text: sanitize_text(text.trim()),
+                        text: sanitize_prose(text.trim()),
                         conceito,
                         example,
                         claims,
@@ -559,6 +608,33 @@ fn corrective_prompt(base: &str, previous: &str, motive: &str) -> String {
     )
 }
 
+const SECURITY_HEADERS: &[&str] = &[
+    "permissions-policy",
+    "referrer-policy",
+    "cross-origin-opener-policy",
+    "cross-origin-embedder-policy",
+    "cross-origin-resource-policy",
+    "strict-transport-security",
+    "x-permitted-cross-domain-policies",
+    "content-security-policy",
+    "x-frame-options",
+    "x-content-type-options",
+    "x-xss-protection",
+];
+
+/// Cabeçalho específico citado pelo achado, quando houver.
+fn missing_header(finding: &Vulnerability) -> Option<&'static str> {
+    let text = format!(
+        "{} {} {}",
+        finding.title, finding.description, finding.evidence
+    )
+    .to_lowercase();
+    SECURITY_HEADERS
+        .iter()
+        .find(|header| text.contains(**header))
+        .copied()
+}
+
 /// Pista determinística para achados cujo título traz cabeçalho ou ferramenta.
 fn suggested_concept(finding: &Vulnerability) -> Option<&'static str> {
     let text = format!(
@@ -744,6 +820,39 @@ fn build_prompt(
         );
     }
 
+    if let Some(header) = missing_header(finding) {
+        if let Some(guide) = corpus.header_guide("cabecalho_seguranca_ausente", header) {
+            prompt.push_str("\n\n<GUIA_DO_CABECALHO>\n");
+            prompt.push_str(&format!(
+                "cabeçalho: {}\nefeito próprio: {}\nnão mitiga: {}\nvalor recomendado: {}\ncomo verificar: {}\n",
+                guide.cabecalho, guide.efeito, guide.nao_mitiga, guide.valor, guide.verificacao
+            ));
+            prompt.push_str(
+                "Use este guia para o item exato do achado. Não atribua a ele efeitos de \
+                 outros cabeçalhos e recomende somente o cabeçalho do achado. Se o endpoint \
+                 for http://, explique que HSTS só se aplica em https.",
+            );
+            let nao_mitiga = guide.nao_mitiga.to_lowercase();
+            if nao_mitiga.contains("xss") || nao_mitiga.contains("clickjacking") {
+                prompt.push_str(
+                    "\nNão cite XSS nem clickjacking como efeito deste cabeçalho; \
+                     o campo 'não mitiga' delimita o escopo.",
+                );
+            }
+            if guide
+                .cabecalho
+                .eq_ignore_ascii_case("strict-transport-security")
+            {
+                prompt.push_str(
+                    "\nO endpoint do achado é http://; diga explicitamente que HSTS só \
+                     passa a valer depois de configurar HTTPS e que a resposta HTTP não \
+                     é protegida por ele.",
+                );
+            }
+            prompt.push_str("\n</GUIA_DO_CABECALHO>");
+        }
+    }
+
     prompt.push_str(&format!(
         "\n\n<VOCABULARIO_DA_ONTOLOGIA>\n{}\n</VOCABULARIO_DA_ONTOLOGIA>",
         ontology.vocabulary_for_prompt()
@@ -763,6 +872,16 @@ fn build_example(
     let entry = suggested_concept(finding)
         .and_then(|concept| corpus.get(concept))
         .or_else(|| retrieved.iter().find_map(|hit| corpus.get(&hit.id)))?;
+    if let Some(header) = missing_header(finding) {
+        if let Some(guide) = corpus.header_guide(&entry.id, header) {
+            return Some(header_example(
+                entry.id.clone(),
+                header,
+                guide,
+                language.as_deref(),
+            ));
+        }
+    }
     let example = entry
         .exemplos
         .iter()
@@ -775,7 +894,53 @@ fn build_example(
         linguagem: example.map(|example| example.linguagem.clone()),
         vulneravel: example.map(|example| example.vulneravel.trim().to_string()),
         corrigido: example.map(|example| example.corrigido.trim().to_string()),
+        header: None,
     })
+}
+
+/// Exemplo específico do cabeçalho, coerente com o valor recomendado.
+pub(crate) fn header_example(
+    id: String,
+    header: &str,
+    guide: &HeaderGuide,
+    language: Option<&str>,
+) -> RetrievedExample {
+    let value = guide
+        .valor
+        .split_once(':')
+        .map(|(_, value)| value.trim())
+        .unwrap_or(guide.valor.as_str());
+    let (vulneravel, corrigido) = match language {
+        Some("javascript") | Some("typescript") => (
+            format!(
+                "app.get(\"/\", (_req, res) => {{\n  res.send(\"ok\"); // resposta sem {header}\n}});"
+            ),
+            format!(
+                "app.use((_req, res, next) => {{\n  res.setHeader({header:?}, {value:?});\n  next();\n}});"
+            ),
+        ),
+        Some("python") => (
+            format!(
+                "@app.after_request\ndef sem_cabecalho(response):\n    return response  # resposta sem {header}"
+            ),
+            format!(
+                "@app.after_request\ndef com_cabecalho(response):\n    response.headers[{header:?}] = {value:?}\n    return response"
+            ),
+        ),
+        _ => (
+            format!("# resposta HTTP sem {header}"),
+            format!("{header}: {value}"),
+        ),
+    };
+    RetrievedExample {
+        id,
+        titulo: format!("Cabeçalho {header} ausente"),
+        padrao_seguro: guide.valor.clone(),
+        linguagem: language.map(str::to_string),
+        vulneravel: Some(vulneravel),
+        corrigido: Some(corrigido),
+        header: Some(header.to_string()),
+    }
 }
 
 fn language_hint(finding: &Vulnerability) -> Option<String> {
@@ -932,6 +1097,34 @@ mod tests {
     }
 
     #[test]
+    fn a_header_example_uses_the_same_header_in_the_fix() {
+        let mut header = finding();
+        header.title =
+            "Cabeçalho de segurança ausente — x-permitted-cross-domain-policies".to_string();
+        header.code_location = Some(CodeLocation {
+            file: "server.ts".to_string(),
+            line: 10,
+            snippet: String::new(),
+        });
+
+        let example = build_example(Corpus::shared(), &[], &header).expect("exemplo");
+
+        assert_eq!(
+            example.header.as_deref(),
+            Some("x-permitted-cross-domain-policies")
+        );
+        let corrected = example.corrigido.expect("correção");
+        assert!(
+            corrected.contains("x-permitted-cross-domain-policies"),
+            "{corrected}"
+        );
+        assert!(
+            !corrected.contains("Content-Security-Policy"),
+            "{corrected}"
+        );
+    }
+
+    #[test]
     fn the_prompt_closes_the_set_of_valid_triples() {
         let corpus = Corpus::shared();
         let ontology = Ontology::shared();
@@ -942,6 +1135,7 @@ mod tests {
             linguagem: Some("python".to_string()),
             vulneravel: Some("cursor.execute(consulta + entrada)".to_string()),
             corrigido: Some("cursor.execute(consulta, (entrada,))".to_string()),
+            header: None,
         };
 
         let prompt = build_prompt(&finding(), None, corpus, &[], ontology, Some(&example));
@@ -978,6 +1172,46 @@ mod tests {
         header.title = "Cabeçalho de segurança ausente — cross-origin-opener-policy".to_string();
         let example = build_example(corpus, &[], &header).expect("exemplo do cabeçalho");
         assert_eq!(example.id, "cabecalho_seguranca_ausente");
+    }
+
+    #[test]
+    fn a_persisted_explanation_is_sanitized() {
+        let result = ExplanationResult {
+            finding_index: 0,
+            text: "token=abc".to_string(),
+            conceito: "injecao_sql".to_string(),
+            example: Some(RetrievedExample {
+                id: "injecao_sql".to_string(),
+                titulo: "Injeção de SQL".to_string(),
+                padrao_seguro: "consulta parametrizada".to_string(),
+                linguagem: Some("python".to_string()),
+                vulneravel: Some("password = \"segredo\"".to_string()),
+                corrigido: None,
+                header: None,
+            }),
+            claims: vec![OntologyClaim {
+                sujeito: "injecao_sql".to_string(),
+                relacao: "expoe".to_string(),
+                objeto: "password=segredo".to_string(),
+            }],
+            verdict: OntologyVerdict {
+                aprovado: true,
+                verificadas: 1,
+                rejeitadas: Vec::new(),
+            },
+            provider: "OpenAI".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            failure_reason: Some("Authorization: Bearer segredo".to_string()),
+            generated_at: "2026-10-22T12:00:00Z".to_string(),
+            retrieval_mode: "lexical".to_string(),
+        };
+
+        let sanitized = result.sanitized();
+
+        assert_eq!(sanitized.text, "token=[REDACTED]");
+        assert!(sanitized.example.as_ref().unwrap().vulneravel.is_none());
+        assert_eq!(sanitized.claims[0].objeto, "[REDACTED]");
+        assert_eq!(sanitized.failure_reason.as_deref(), Some("[REDACTED]"));
     }
 
     #[test]
@@ -1377,17 +1611,23 @@ mod tests {
             "para", "pela", "pelo", "com", "uma", "dos", "das", "que", "não", "the", "and", "http",
             "https", "template", "matcher", "endpoint", "host", "url", "tags",
         ];
-        format!(
+        let mut terms = Vec::new();
+        if let Some(header) = missing_header(finding) {
+            terms.push(header.to_string());
+        }
+        for term in format!(
             "{} {} {}",
             finding.title, finding.description, finding.evidence
         )
         .to_lowercase()
         .split(|character: char| !character.is_alphanumeric() && character != '-')
         .filter(|term| term.len() > 4 && !STOP.contains(term))
-        .map(str::to_string)
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .take(8)
-        .collect()
+        {
+            if !terms.iter().any(|existing| existing == term) {
+                terms.push(term.to_string());
+            }
+        }
+        terms.truncate(12);
+        terms
     }
 }

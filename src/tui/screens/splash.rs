@@ -222,11 +222,17 @@ fn render_recent_scans(app: &mut AppState, frame: &mut Frame, area: Rect) {
             .completed_at
             .get(..10)
             .unwrap_or(record.completed_at.as_str());
+        let time = record.completed_at.get(11..16).unwrap_or("");
+        let stamp = if time.is_empty() {
+            date.to_string()
+        } else {
+            format!("{date} {time}")
+        };
         let target =
-            chrome::truncate_width(&record.target_url, inner.width.saturating_sub(36) as usize);
+            chrome::truncate_width(&record.target_url, inner.width.saturating_sub(42) as usize);
         let counts = &record.severity_counts;
         let line = format!(
-            "{} {date}  {target}  {} ach.  C{} A{} M{} B{} I{}",
+            "{} {stamp}  {target}  {} ach.  C{} A{} M{} B{} I{}",
             if selected { ">" } else { " " },
             record.findings_count,
             counts.critical,

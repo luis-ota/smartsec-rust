@@ -41,9 +41,18 @@ ontologia do SmartSec são autorais.
    tripla inexistente reprova; após um retry corretivo, a explicação é
    **recusada** com motivo — "não consegui explicar isto com segurança" — em
    vez de ser exibida como confiável.
-4. **Avaliação** — fora do escopo desta entrega. Se realizada, será feita
-   **no corpus do SmartSec**, e os números **não serão comparáveis** aos do
-   artigo (BERTScore/METEOR/ROUGE de lá não são resultado deste trabalho).
+4. **Avaliação** — o harness `rag_eval_real_openai` roda no corpus do
+   SmartSec; os números **não são comparáveis** aos do artigo
+   (BERTScore/METEOR/ROUGE de lá não são resultado deste trabalho).
+
+### Cabeçalhos específicos
+
+Quando o achado cita um cabeçalho (por exemplo, `permissions-policy`), o
+corpus fornece um **guia por cabeçalho**: efeito próprio, o que ele **não**
+mitiga, valor recomendado e como verificar. O prompt recebe esse guia e o
+exemplo corrigido usa o mesmo cabeçalho do achado. Sem isso, um corpus
+genérico de "cabeçalho ausente" fazia o modelo atribuir XSS/clickjacking a
+Permissions-Policy, COOP ou COEP — que têm outros efeitos.
 
 ## Adaptações em relação ao artigo (e por quê)
 

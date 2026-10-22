@@ -2611,12 +2611,29 @@ fn restore_rag_example(result: &mut crate::cyberrag::service::ExplanationResult)
         return;
     };
     let Some(entry) = crate::cyberrag::corpus::Corpus::shared().get(&example.id) else {
+        result.example = None;
         return;
     };
+    let language = example.linguagem.clone();
+    if let Some(header) = example.header.clone() {
+        if let Some(guide) = entry
+            .cabecalhos
+            .iter()
+            .find(|guide| guide.cabecalho.eq_ignore_ascii_case(&header))
+        {
+            *example = crate::cyberrag::service::header_example(
+                entry.id.clone(),
+                &header,
+                guide,
+                language.as_deref(),
+            );
+            return;
+        }
+    }
     let code = entry
         .exemplos
         .iter()
-        .find(|candidate| Some(candidate.linguagem.as_str()) == example.linguagem.as_deref())
+        .find(|candidate| Some(candidate.linguagem.as_str()) == language.as_deref())
         .or_else(|| entry.exemplos.first());
     example.titulo = entry.titulo.clone();
     example.padrao_seguro = entry.padrao_seguro.clone();

@@ -288,7 +288,7 @@ pub fn mask_key(key: &str) -> String {
     if length == 0 {
         return String::new();
     }
-    if length <= 4 {
+    if length <= 12 {
         return "•".repeat(length);
     }
     let suffix: String = key.chars().skip(length - 4).collect();
@@ -354,13 +354,18 @@ fn read_stdin_key() -> Result<String> {
             "`smartsec auth set --stdin` é para CI e entrada redirecionada; no terminal, use `smartsec auth set` para ocultar a digitação"
         );
     }
+    const MAX_KEY_BYTES: u64 = 4 * 1024;
     let mut raw = String::new();
     io::stdin()
         .lock()
+        .take(MAX_KEY_BYTES + 1)
         .read_to_string(&mut raw)
         .map_err(|error| {
             anyhow::anyhow!("não foi possível ler a chave da entrada padrão: {error}")
         })?;
+    if raw.len() as u64 > MAX_KEY_BYTES {
+        bail!("a chave da API excede o limite de 4 KiB; nada foi gravado");
+    }
     Ok(raw)
 }
 
@@ -520,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn status_does_not_reveal_a_key_with_four_characters_or_fewer() {
+    fn status_does_not_reveal_short_keys() {
         let store = InMemoryCredentialStore::new();
         run_set(&store, "abcd").expect("a chave deve ser gravada");
 
@@ -531,7 +536,8 @@ mod tests {
         assert!(!text.contains("abcd"), "{text}");
         assert!(text.contains("4 caracteres"), "{text}");
         assert_eq!(mask_key("abcd"), "••••");
-        assert_eq!(mask_key("abcde"), "••••bcde");
+        assert_eq!(mask_key("abcde"), "•••••");
+        assert_eq!(mask_key("chave-de-teste"), "••••este");
     }
 
     #[test]

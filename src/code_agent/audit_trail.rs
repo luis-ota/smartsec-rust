@@ -33,13 +33,24 @@ pub fn agent_trails_dir() -> PathBuf {
 impl AgentAuditTrail {
     /// Abre a trilha de um scan em um diretório, criando o arquivo se faltar.
     pub fn open_in(dir: &Path, scan_id: &str) -> Result<Self> {
-        std::fs::create_dir_all(dir).context("Falha ao criar diretório da trilha de auditoria")?;
+        crate::orchestrator::scan_logger::secure_dir(dir)
+            .context("Falha ao criar diretório da trilha de auditoria")?;
         let path = dir.join(format!("{scan_id}.jsonl"));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
             .open(&path)
             .with_context(|| format!("Falha ao abrir trilha de auditoria em {:?}", path))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(Self {
             path,
             file: Mutex::new(file),

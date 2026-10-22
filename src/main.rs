@@ -133,7 +133,7 @@ impl Cli {
                 if arguments.len() > 1 {
                     anyhow::bail!(
                         "opção desconhecida: {}; o assistente inicial não recebe opções",
-                        arguments[1]
+                        safe_argument(&arguments[1])
                     );
                 }
                 return Ok(Self {
@@ -156,7 +156,7 @@ impl Cli {
                 if arguments.len() > 2 {
                     anyhow::bail!(
                         "argumento desconhecido: {}; use --help para ver as opções",
-                        arguments[2]
+                        safe_argument(&arguments[2])
                     );
                 }
                 let args = ShowArgs {
@@ -224,12 +224,30 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
             }
             "--project" => options.project = Some(value(&mut index, "--project")?),
             other => {
-                anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções")
+                anyhow::bail!(
+                    "argumento desconhecido: {}; use --help para ver as opções",
+                    safe_argument(other)
+                )
             }
         }
         index += 1;
     }
     Ok((target, options))
+}
+
+/// Não ecoa valores de credenciais em mensagens de argumento inválido.
+fn safe_argument(argument: &str) -> String {
+    let lower = argument.to_lowercase();
+    if ["api-key", "apikey", "token", "secret", "authorization"]
+        .iter()
+        .any(|key| lower.contains(key))
+    {
+        return argument.find('=').map_or_else(
+            || "<oculto>".to_string(),
+            |index| format!("{}<oculto>", &argument[..=index]),
+        );
+    }
+    argument.to_string()
 }
 
 /// Interpreta o limite de `history` (`--limit`, `-n` ou `--limite`).
@@ -243,7 +261,10 @@ fn parse_history_limit(arguments: &[String]) -> Result<usize> {
     while index < arguments.len() {
         let argument = arguments[index].as_str();
         if !matches!(argument, "--limit" | "-n" | "--limite") {
-            anyhow::bail!("argumento desconhecido: {argument}; use --help para ver as opções");
+            anyhow::bail!(
+                "argumento desconhecido: {}; use --help para ver as opções",
+                safe_argument(argument)
+            );
         }
         index += 1;
         let value = arguments
@@ -1299,6 +1320,21 @@ mod tests {
         assert_eq!(configured.output_file.as_deref(), Some("personalizado.md"));
         assert_eq!(configured.output_dir.as_deref(), Some("saida"));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unknown_arguments_do_not_echo_api_keys() {
+        let error = Cli::parse(&[
+            "scan".to_string(),
+            "--api-key=sk-segredo".to_string(),
+            "--target".to_string(),
+            "192.0.2.10".to_string(),
+        ])
+        .unwrap_err()
+        .to_string();
+
+        assert!(!error.contains("sk-segredo"), "{error}");
+        assert!(error.contains("<oculto>"), "{error}");
     }
 
     #[test]

@@ -54,9 +54,19 @@ comando de novo. Nada é gravado no TOML em nenhum dos caminhos.
 como caminho principal. Quando o cofre do sistema está bloqueado ou não existe
 (CI, container, TTY sem prompt gráfico), a chave pode vir da variável:
 
+Prefira o cofre, inclusive na TUI:
+
 ```bash
-SMARTSEC_API_KEY="$MINHA_CHAVE" smartsec
-SMARTSEC_API_KEY="$MINHA_CHAVE" smartsec scan --target http://169.254.1.2:3000
+smartsec auth set
+smartsec
+```
+
+Em CI, a variável deve vir do secret do runner, nunca digitada no histórico do
+shell:
+
+```bash
+# o runner define SMARTSEC_API_KEY a partir do secret
+smartsec scan --target http://169.254.1.2:3000
 ```
 
 Essa chave **não é gravada** no TOML nem no keyring: vale só para o processo.

@@ -234,6 +234,81 @@ pub fn sanitize_code_line(value: &str) -> String {
     mask_code_assignment(&output)
 }
 
+/// Sanitiza texto corrido gerado pela IA.
+///
+/// `sanitize_text` redige a linha inteira ao encontrar "token" ou
+/// "authorization", o que apagava explicações legítimas sobre cabeçalhos. Aqui
+/// só o valor depois de `chave=`/`chave:` é mascarado; a prosa permanece.
+pub fn sanitize_prose(value: &str) -> String {
+    value
+        .lines()
+        .map(sanitize_prose_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn sanitize_prose_line(line: &str) -> String {
+    let clean: String = line
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\t')
+        .collect();
+    let mut output = String::new();
+    let mut rest = clean.as_str();
+    let mut redact_next = 0usize;
+    while !rest.is_empty() {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (token, tail) = rest.split_at(end);
+        let whitespace_end = tail
+            .find(|character: char| !character.is_whitespace())
+            .unwrap_or(tail.len());
+        if redact_next > 0 {
+            output.push_str("[REDACTED]");
+            redact_next -= 1;
+        } else if let Some((key, _)) = token.split_once(['=', ':']) {
+            let key = key.trim();
+            if is_sensitive_key(key) {
+                let separator = &token[key.len()..key.len() + 1];
+                output.push_str(key);
+                output.push_str(separator);
+                output.push_str("[REDACTED]");
+                if key.eq_ignore_ascii_case("authorization") {
+                    redact_next = 2;
+                }
+            } else {
+                output.push_str(token);
+            }
+        } else {
+            output.push_str(token);
+        }
+        output.push_str(&tail[..whitespace_end]);
+        rest = &tail[whitespace_end..];
+    }
+    sanitize_urls_preserving_spaces(&output)
+}
+
+fn sanitize_urls_preserving_spaces(value: &str) -> String {
+    let mut output = String::new();
+    let mut rest = value;
+    while !rest.is_empty() {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (token, tail) = rest.split_at(end);
+        let (prefix, candidate, suffix) = split_url_token(token);
+        if candidate.starts_with("http://") || candidate.starts_with("https://") {
+            output.push_str(prefix);
+            output.push_str(&sanitize_url(candidate));
+            output.push_str(suffix);
+        } else {
+            output.push_str(token);
+        }
+        let whitespace_end = tail
+            .find(|character: char| !character.is_whitespace())
+            .unwrap_or(tail.len());
+        output.push_str(&tail[..whitespace_end]);
+        rest = &tail[whitespace_end..];
+    }
+    output
+}
+
 fn mask_code_assignment(line: &str) -> String {
     let Some(separator) = line.find(['=', ':']) else {
         return line.to_string();
@@ -361,6 +436,22 @@ mod tests {
             "[REDACTED]"
         );
         assert_eq!(sanitize_text("resultado seguro"), "resultado seguro");
+    }
+
+    #[test]
+    fn prose_keeps_the_words_and_redacts_only_values() {
+        let sanitized = sanitize_prose(
+            "O cabeçalho Authorization: Bearer abc123 deve ser configurado. Use token=segredo no header.",
+        );
+
+        assert!(!sanitized.contains("abc123"), "{sanitized}");
+        assert!(!sanitized.contains("segredo"), "{sanitized}");
+        assert!(sanitized.contains("Authorization"), "{sanitized}");
+        assert!(sanitized.contains("[REDACTED]"), "{sanitized}");
+        assert_eq!(
+            sanitize_prose("O token JWT deve ser validado antes do uso."),
+            "O token JWT deve ser validado antes do uso."
+        );
     }
 
     #[test]

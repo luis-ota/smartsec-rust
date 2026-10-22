@@ -717,8 +717,8 @@ id = "cabecalho_seguranca_ausente"
 classe = "cabecalho_seguranca_ausente"
 cwe = "CWE-693"
 titulo = "Cabeçalho de segurança HTTP ausente"
-descricao = "Sem Content-Security-Policy, HSTS, X-Frame-Options e cabeçalhos equivalentes, o navegador deixa de aplicar proteções que reduziriam o impacto de XSS, clickjacking e downgrade de TLS. A ausência não é um erro de sintaxe: é uma camada de defesa que simplesmente não chega ao cliente."
-padrao_seguro = "Definir os cabeçalhos no proxy reverso ou no framework, com CSP restritiva, HSTS em HTTPS, X-Frame-Options ou frame-ancestors, X-Content-Type-Options: nosniff e Referrer-Policy. Tratar a lista como configuração versionada e validada em teste."
+descricao = "Cada cabeçalho de segurança tem um efeito próprio: CSP restringe origens de script, HSTS força HTTPS, X-Frame-Options e COOP isolam enquadramento e janela, e Permissions-Policy controla recursos do dispositivo. Tratar todos como uma proteção genérica faz o operador atribuir ao cabeçalho do achado um efeito que ele não tem."
+padrao_seguro = "Aplicar o valor específico do cabeçalho ausente e verificar o efeito próprio dele; não substituir esse cabeçalho por uma lista genérica de outros. O guia por cabeçalho abaixo separa efeito, limite, valor e verificação."
 referencias = ["CWE-693", "OWASP Secure Headers Project"]
 
 [[entradas.exemplos]]
@@ -760,6 +760,83 @@ app.use(helmet());
 app.get("/", (_req, res) => res.send("ok"));
 app.listen(3000);
 """
+
+[[entradas.cabecalhos]]
+cabecalho = "permissions-policy"
+efeito = "restringe câmera, microfone, geolocalização e outras APIs de recursos do navegador."
+nao_mitiga = "não bloqueia XSS nem clickjacking; esses ataques são tratados por CSP e X-Frame-Options."
+valor = "Permissions-Policy: camera=(), microphone=(), geolocation=()"
+verificacao = "a resposta do endpoint deve conter Permissions-Policy com as diretivas esperadas."
+
+[[entradas.cabecalhos]]
+cabecalho = "referrer-policy"
+efeito = "controla quanto da URL de origem vai no cabeçalho Referer ao navegar para outro site."
+nao_mitiga = "não impede XSS; reduz o vazamento de caminho e query string para terceiros."
+valor = "Referrer-Policy: strict-origin-when-cross-origin ou no-referrer"
+verificacao = "a resposta deve conter Referrer-Policy e o valor escolhido."
+
+[[entradas.cabecalhos]]
+cabecalho = "cross-origin-opener-policy"
+efeito = "isola o contexto de navegação e impede que outra origem controle window.opener."
+nao_mitiga = "não mitiga XSS; o efeito é isolamento de janela entre origens."
+valor = "Cross-Origin-Opener-Policy: same-origin"
+verificacao = "a resposta deve conter Cross-Origin-Opener-Policy: same-origin."
+
+[[entradas.cabecalhos]]
+cabecalho = "cross-origin-embedder-policy"
+efeito = "exige recursos compatíveis com CORP para isolar o documento de conteúdos incorporados de outras origens."
+nao_mitiga = "não mitiga XSS; depende de Cross-Origin-Resource-Policy nos recursos incorporados."
+valor = "Cross-Origin-Embedder-Policy: require-corp"
+verificacao = "a resposta deve conter Cross-Origin-Embedder-Policy: require-corp."
+
+[[entradas.cabecalhos]]
+cabecalho = "cross-origin-resource-policy"
+efeito = "impede que outros sites leiam o recurso por requisições cross-origin sem CORS."
+nao_mitiga = "não protege contra XSS; controla a leitura do recurso por outra origem."
+valor = "Cross-Origin-Resource-Policy: same-origin"
+verificacao = "a resposta deve conter Cross-Origin-Resource-Policy: same-origin."
+
+[[entradas.cabecalhos]]
+cabecalho = "strict-transport-security"
+efeito = "força o navegador a usar HTTPS nas próximas visitas e bloqueia downgrade para HTTP."
+nao_mitiga = "não tem efeito em endpoint http://; só vale depois que HTTPS está configurado."
+valor = "Strict-Transport-Security: max-age=31536000; includeSubDomains"
+verificacao = "acesse o endpoint por https:// e confira o cabeçalho na resposta HTTPS, não na HTTP."
+
+[[entradas.cabecalhos]]
+cabecalho = "x-permitted-cross-domain-policies"
+efeito = "controla arquivos crossdomain.xml e políticas de acesso de plugins e PDF a dados entre domínios."
+nao_mitiga = "não é CSP nem X-Frame-Options; não bloqueia XSS."
+valor = "X-Permitted-Cross-Domain-Policies: none"
+verificacao = "a resposta deve conter X-Permitted-Cross-Domain-Policies: none."
+
+[[entradas.cabecalhos]]
+cabecalho = "content-security-policy"
+efeito = "restringe de onde scripts, estilos, imagens e conexões podem ser carregados."
+nao_mitiga = "não substitui HSTS nem X-Frame-Options; é a camada principal contra XSS."
+valor = "Content-Security-Policy: default-src 'self'"
+verificacao = "a resposta deve conter Content-Security-Policy e a política deve cobrir scripts e origens."
+
+[[entradas.cabecalhos]]
+cabecalho = "x-frame-options"
+efeito = "impede que a página seja enquadrada por outro site, reduzindo clickjacking."
+nao_mitiga = "não bloqueia XSS; para enquadramento moderno pode usar frame-ancestors na CSP."
+valor = "X-Frame-Options: DENY"
+verificacao = "a resposta deve conter X-Frame-Options: DENY ou SAMEORIGIN."
+
+[[entradas.cabecalhos]]
+cabecalho = "x-content-type-options"
+efeito = "impede o navegador de adivinhar o MIME type e executar um arquivo como outro tipo."
+nao_mitiga = "não bloqueia XSS; reduz o sniffing de tipo."
+valor = "X-Content-Type-Options: nosniff"
+verificacao = "a resposta deve conter X-Content-Type-Options: nosniff."
+
+[[entradas.cabecalhos]]
+cabecalho = "x-xss-protection"
+efeito = "cabeçalho legado de filtro XSS; navegadores modernos o ignoram em favor de CSP."
+nao_mitiga = "não substitui CSP; em navegadores atuais não é a defesa principal."
+valor = "X-XSS-Protection: 0 para desativar o filtro legado, ou usar CSP"
+verificacao = "confirme o valor e prefira CSP; o filtro legado não é confiável."
 
 [[entradas]]
 id = "divulgacao_por_erro"

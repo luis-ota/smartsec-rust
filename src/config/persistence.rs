@@ -104,11 +104,33 @@ pub fn save_config_file(cfg: &PersistedConfig) -> std::io::Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     let mut cfg_no_key = cfg.clone();
     cfg_no_key.llm.api_key = String::new();
     let content = toml::to_string_pretty(&cfg_no_key).map_err(std::io::Error::other)?;
-    fs::write(&path, content)
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(content.as_bytes())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&path, content)
+    }
 }
 
 pub(crate) const KEYRING_SERVICE: &str = "smartsec";
@@ -121,7 +143,10 @@ pub fn config_file_exists_at(path: &std::path::Path) -> bool {
 pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
     if key.is_empty() {
-        let _ = entry.delete_credential();
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(error) => return Err(error),
+        }
     } else {
         entry.set_password(key)?;
     }
@@ -143,12 +168,25 @@ pub fn delete_api_key() -> Result<(), keyring::Error> {
 }
 
 /// Distingue chave ausente de cofre bloqueado ou indisponível.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ApiKeyStatus {
     Available(String),
     Missing,
     Locked(String),
     Unavailable(String),
+}
+
+impl std::fmt::Debug for ApiKeyStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Available(_) => formatter.write_str("Available([OCULTA])"),
+            Self::Missing => formatter.write_str("Missing"),
+            Self::Locked(reason) => formatter.debug_tuple("Locked").field(reason).finish(),
+            Self::Unavailable(reason) => {
+                formatter.debug_tuple("Unavailable").field(reason).finish()
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

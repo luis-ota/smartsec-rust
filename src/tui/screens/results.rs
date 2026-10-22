@@ -909,10 +909,16 @@ fn append_example_block(
         Color::Rgb(18, 30, 20)
     };
     let base = Style::default().bg(background);
-    lines.push(Line::styled(format!("┌─ {label}"), base.fg(color).bold()));
+    let header = format!("┌─ {label} ");
+    let fill = width.saturating_sub(header.width() + 1);
+    lines.push(Line::styled(
+        format!("{header}{}┐", "─".repeat(fill)),
+        base.fg(color).bold(),
+    ));
     for (index, line_text) in code.lines().enumerate() {
         let gutter = format!("{:>4} │ ", index + 1);
-        let mut remaining = width.saturating_sub(gutter.width());
+        let mut remaining = width.saturating_sub(gutter.width() + 1);
+        let mut used = gutter.width();
         let mut spans = vec![Span::styled(gutter, base.fg(MUTED))];
         for (text, token_color) in crate::tui::code_preview::highlight_line(line_text, language) {
             if remaining == 0 {
@@ -921,15 +927,19 @@ fn append_example_block(
             let clipped = text.width() > remaining;
             let piece = chrome::truncate_width(&text, remaining);
             remaining = remaining.saturating_sub(piece.width());
+            used += piece.width();
             spans.push(Span::styled(piece, base.fg(token_color)));
             if clipped {
                 break;
             }
         }
+        let padding = width.saturating_sub(used + 1);
+        spans.push(Span::styled(" ".repeat(padding), base));
+        spans.push(Span::styled("│", base.fg(color)));
         lines.push(Line::from(spans));
     }
     lines.push(Line::styled(
-        format!("└{}", "─".repeat(width.saturating_sub(1))),
+        format!("└{}┘", "─".repeat(width.saturating_sub(2))),
         base.fg(color),
     ));
 }
@@ -1080,7 +1090,7 @@ fn append_code_block(
                 ..
             } => {
                 lines.push(Line::styled(
-                    format!("┌{}", "─".repeat(width.saturating_sub(1))),
+                    format!("┌{}┐", "─".repeat(width.saturating_sub(2))),
                     Style::default().fg(SURFACE_ACTIVE),
                 ));
                 if *truncated {
@@ -1093,9 +1103,10 @@ fn append_code_block(
                 }
                 for code_line in code_lines {
                     let gutter = format!("{:>4} │ ", code_line.number);
+                    let gutter_width = gutter.width();
                     let marker = if code_line.is_target { "> " } else { "  " };
                     let text_width = width
-                        .saturating_sub(gutter.width())
+                        .saturating_sub(gutter_width)
                         .saturating_sub(marker.width());
                     let base = if code_line.is_target {
                         Style::default().bg(Color::Rgb(55, 22, 22))
@@ -1111,6 +1122,7 @@ fn append_code_block(
                         Span::styled(gutter, base.fg(MUTED)),
                     ];
                     let mut remaining = text_width;
+                    let mut used = marker.width() + gutter_width;
                     for (text, color) in
                         crate::tui::code_preview::highlight_line(&code_line.text, preview.language)
                     {
@@ -1125,15 +1137,22 @@ fn append_code_block(
                             base.fg(color)
                         };
                         remaining = remaining.saturating_sub(piece.width());
+                        used += piece.width();
                         spans.push(Span::styled(piece, style));
                         if clipped {
                             break;
                         }
                     }
+                    let padding = width.saturating_sub(used + 1);
+                    spans.push(Span::styled(" ".repeat(padding), base));
+                    spans.push(Span::styled(
+                        "│",
+                        base.fg(if code_line.is_target { DANGER } else { MUTED }),
+                    ));
                     lines.push(Line::from(spans));
                 }
                 lines.push(Line::styled(
-                    format!("└{}", "─".repeat(width.saturating_sub(1))),
+                    format!("└{}┘", "─".repeat(width.saturating_sub(2))),
                     Style::default().fg(SURFACE_ACTIVE),
                 ));
             }
