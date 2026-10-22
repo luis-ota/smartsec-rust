@@ -182,8 +182,7 @@ impl Configuration {
             &crate::config::persistence::PersistedConfig::from(self),
         )
         .map_err(|error| format!("não foi possível salvar a configuração: {error}"))?;
-        // Chave de ambiente é da sessão: gravar no keyring mudaria a origem
-        // silenciosamente e poderia falhar com o cofre bloqueado.
+        // Chave de ambiente é da sessão; não a grave no keyring.
         if !self.llm.credential_from_env {
             crate::config::persistence::save_api_key(&self.llm.api_key).map_err(|error| {
                 format!("não foi possível atualizar a chave no keyring: {error}")
@@ -229,9 +228,7 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             llm.model = llm.provider.default_model().to_string();
         }
         if llm.api_key.is_empty() {
-            // Caminho explícito para CI/TUI quando o cofre do sistema está
-            // bloqueado. A chave não é persistida; o `credential_from_env`
-            // mantém a origem visível na tela e nos logs.
+            // Caminho de CI/TUI quando o cofre está bloqueado.
             if let Ok(key) = std::env::var("SMARTSEC_API_KEY") {
                 if !key.trim().is_empty() {
                     llm.api_key = key;

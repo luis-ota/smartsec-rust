@@ -144,12 +144,7 @@ pub struct LlmConfig {
     pub model: String,
     #[serde(skip)]
     pub api_key: String,
-    /// Motivo pelo qual a chave não pôde ser lida do keyring.
-    ///
-    /// Não é persistido: existe só na configuração em memória para que a
-    /// validação e a TUI distingam cofre bloqueado de chave ausente. Sem isso,
-    /// as duas situações caíam em "Credenciais obrigatórias" e o bloqueio do
-    /// agente de código aparecia como falta de consentimento.
+    /// Erro ao ler a chave do keyring, apenas em memória.
     #[serde(skip)]
     pub credential_error: Option<String>,
     /// Chave veio de `SMARTSEC_API_KEY` e vale só nesta sessão.

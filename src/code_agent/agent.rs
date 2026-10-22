@@ -227,11 +227,6 @@ impl CodeAnalysisReport {
     }
 
     /// Relatório da fase quando o provedor não pode receber dados do alvo.
-    ///
-    /// O motivo vem de `AIAgent::target_data_block_reason`: pode ser falta de
-    /// consentimento ou configuração inválida (keyring bloqueado, por exemplo).
-    /// Nenhum turno é aberto, nem mesmo um sem ferramentas, porque qualquer ida
-    /// já seria o envio.
     pub fn blocked(findings: &[Vulnerability], model: &str, provider: &str, reason: &str) -> Self {
         let reason = format!("{reason}; a localização no código não foi determinada");
         Self {

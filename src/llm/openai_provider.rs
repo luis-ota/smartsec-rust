@@ -84,8 +84,7 @@ pub const DEFAULT_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 
 /// Teto da espera entre retentativas, para que a espera não consuma o prazo da
 /// análise inteira antes da segunda tentativa.
-/// Groq free tier costuma pedir 15–20s; esperar abaixo disso só devolve 429 de
-/// novo. O teto continua abaixo do orçamento de 45s por análise.
+/// Groq free tier pede 15–20s; o teto fica abaixo dos 45s da análise.
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(20);
 
 impl OpenAIProvider {
@@ -154,8 +153,7 @@ impl OpenAIProvider {
             let status = answer.status();
             let retry_after = retry_after_of(&answer);
             let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
-            // O corpo de erro do provedor costuma dizer qual campo recusou; sem
-            // ele, "400 Bad Request" não dá ao operador nada para corrigir.
+            // Sem o corpo, "400 Bad Request" não diz o que corrigir.
             let detail = if rate_limited {
                 None
             } else {

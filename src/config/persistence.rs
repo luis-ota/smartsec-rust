@@ -133,11 +133,7 @@ pub fn load_api_key() -> Result<String, keyring::Error> {
     entry.get_password()
 }
 
-/// Estado da credencial no keyring, separado do erro cru da biblioteca.
-///
-/// A TUI precisa distinguir "não há chave salva" de "o cofre está bloqueado":
-/// o primeiro pede a chave, o segundo pede o desbloqueio do sistema. Os dois
-/// antes viravam a mesma mensagem de "credenciais obrigatórias".
+/// Distingue chave ausente de cofre bloqueado ou indisponível.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApiKeyStatus {
     Available(String),

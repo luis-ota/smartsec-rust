@@ -105,15 +105,7 @@ impl AIAgent {
         self.provider.as_ref()
     }
 
-    /// Motivo pelo qual o provedor não pode receber dados do alvo.
-    ///
-    /// O agente de código consulta este sinal **antes** de qualquer chamada: sem
-    /// ele, um provedor remoto sem consentimento receberia o código do alvo, que
-    /// o RNF10 proíbe enviar de forma mais estrita que o envio de logs.
-    ///
-    /// Distinguir credencial de consentimento importa: antes, uma configuração
-    /// inválida (keyring bloqueado, por exemplo) era relatada como "envio remoto
-    /// bloqueado", como se o operador não tivesse autorizado o envio.
+    /// Motivo real do bloqueio, separando credencial de consentimento.
     pub fn target_data_block_reason(&self) -> Option<String> {
         if let Some(error) = &self.configuration_error {
             if error.contains("Consentimento ausente") {
