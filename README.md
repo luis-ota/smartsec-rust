@@ -88,6 +88,14 @@ Instalado, o comando e `smartsec`. A partir do repositorio:
 # TUI interativa
 cargo run
 
+# Cadastrar, conferir e remover a chave do provedor remoto no cofre do sistema
+cargo run -- auth set
+cargo run -- auth status
+cargo run -- auth remove
+
+# CI: a chave entra pela entrada padrão, nunca por argumento
+smartsec auth set --stdin < /run/secrets/smartsec-api-key
+
 # Headless — scan automatico com relatorio
 cargo run -- scan --target https://example.com
 
@@ -110,6 +118,30 @@ cargo run -- scan --target http://169.254.1.2:3000
 
 O arquivo TOML e as flags sao detalhados em
 [docs/CONFIGURACAO.md](docs/CONFIGURACAO.md).
+
+## Chave da API
+
+O caminho principal e o cofre de segredos do sistema (Secret Service, via
+`keyring`). O proprio SmartSec cadastra, consulta e remove a chave; nao ha
+dependencia de `opencode auth export`, de `~/.local/share/opencode/auth.json`
+nem de qualquer outra CLI.
+
+```bash
+smartsec auth set      # digite a chave; a entrada nao aparece no terminal
+smartsec auth status   # provedor, modelo, tamanho e final mascarado
+smartsec auth remove   # apaga a chave do cofre
+```
+
+Em CI, `smartsec auth set --stdin < /run/secrets/smartsec-api-key` le a chave da
+entrada padrao, sem prompt e sem coloca-la em argumentos de processo. O comando
+recusa `--stdin` em terminal para nao ecoar a digitacao.
+
+A chave **nunca** vai para o TOML, para logs ou para arquivos do SmartSec.
+`SMARTSEC_API_KEY` continua existindo apenas como override explicito de
+CI/sessao: tem precedencia sobre o cofre, nao e gravada e e removida do ambiente
+dos scanners. Se o cofre estiver bloqueado, `auth set` e `auth status` dizem para
+desbloquear o Secret Service (por exemplo, gnome-keyring ou KWallet) e tentar de
+novo.
 
 ## Relatorios
 
@@ -163,6 +195,7 @@ src/
   llm/             Provedores LLM (openai, llama.cpp, nvidia-nim)
   domain/          Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/          Persistencia de configuracao (~/.config/smartsec/)
+  auth.rs          Cadastro da chave da API no cofre do sistema
   report/          Gerador de relatorio Markdown e PDF
 ```
 

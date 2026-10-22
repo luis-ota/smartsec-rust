@@ -18,10 +18,41 @@ com schema mínimo está em [`smartsec.example.toml`](../smartsec.example.toml).
 A chave fora do TOML é deliberada: `llm.api_key` é `#[serde(skip)]`, então
 mesmo alguém com acesso ao arquivo de configuração não lê a credencial dali.
 
-### Chave por ambiente, só na sessão
+### Cadastrar, conferir e remover a chave pela CLI
 
-Quando o cofre do sistema está bloqueado ou não existe (CI, container, TTY sem
-prompt gráfico), a chave pode vir de `SMARTSEC_API_KEY`:
+O caminho principal é o cofre do sistema, e o próprio SmartSec é a interface para
+ele. Não é preciso `opencode auth export`, `auth.json` nem outra CLI:
+
+```bash
+smartsec auth set      # entrada oculta, sem eco no terminal
+smartsec auth status   # provedor, modelo, tamanho e final mascarado
+smartsec auth remove   # apaga a chave do cofre
+```
+
+`auth set` valida que a chave não está vazia, não tem quebra de linha e grava no
+Secret Service via `keyring`. Em CI, a chave entra pela entrada padrão:
+
+```bash
+smartsec auth set --stdin < /run/secrets/smartsec-api-key
+```
+
+O `--stdin` é recusado quando a entrada é um terminal, justamente para não ecoar
+a digitação. A chave não é aceita como argumento de linha de comando e nunca é
+impressa inteira: `auth status` mostra apenas o tamanho e os últimos quatro
+caracteres, e chaves com até quatro caracteres aparecem totalmente mascaradas.
+O código de saída de `status` é `0` quando há chave utilizável (cofre ou override
+de sessão), `1` quando não há chave e `2` quando o cofre está bloqueado ou
+indisponível. `set` e `remove` retornam `0` em sucesso e `2` em falha.
+
+Se o cofre estiver bloqueado ou indisponível, a mensagem pede para desbloquear o
+Secret Service do sistema (por exemplo, gnome-keyring ou KWallet) e executar o
+comando de novo. Nada é gravado no TOML em nenhum dos caminhos.
+
+### Override de sessão/CI (`SMARTSEC_API_KEY`)
+
+`SMARTSEC_API_KEY` existe **apenas** como override explícito de CI/sessão, não
+como caminho principal. Quando o cofre do sistema está bloqueado ou não existe
+(CI, container, TTY sem prompt gráfico), a chave pode vir da variável:
 
 ```bash
 SMARTSEC_API_KEY="$MINHA_CHAVE" smartsec
@@ -31,8 +62,8 @@ SMARTSEC_API_KEY="$MINHA_CHAVE" smartsec scan --target http://169.254.1.2:3000
 Essa chave **não é gravada** no TOML nem no keyring: vale só para o processo.
 Ela tem precedência sobre a chave do keyring e é removida do ambiente dos
 processos filhos (Podman, `run_command` do agente e `git`), para não vazar para
-os scanners. Na TUI, o resumo mostra `chave da sessão (SMARTSEC_API_KEY)`.
-Para persistir, use a tela `Configurar IA` com o keyring desbloqueado.
+os scanners. Na TUI, o resumo mostra `chave da sessão (SMARTSEC_API_KEY)`. Para
+persistir, use `smartsec auth set` com o keyring desbloqueado.
 
 ## Arquivo de configuração TOML
 
