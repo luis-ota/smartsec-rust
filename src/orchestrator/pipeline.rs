@@ -383,11 +383,43 @@ impl Orchestrator {
     /// ponto fixo do container; um alvo remoto autorizado vira URI, sem mount.
     /// Nenhum caminho do host atravessa o comando, e o repositório nunca é
     /// montado para escrita nem recebe o resultado da varredura.
+    /// Usa `project_dir` quando o alvo é web e o scanner exige repositório.
+    fn repository_target_for(&self, target: &str) -> (String, Option<String>) {
+        let trimmed = target.trim();
+        if trimmed.starts_with('/') {
+            return (trimmed.to_string(), None);
+        }
+        let looks_like_git_uri = trimmed.ends_with(".git")
+            || trimmed.contains("github.com/")
+            || trimmed.contains("gitlab.com/")
+            || trimmed.contains("bitbucket.org/");
+        if looks_like_git_uri {
+            return (trimmed.to_string(), None);
+        }
+        let Some(project) = self.config.project_dir.as_deref() else {
+            return (trimmed.to_string(), None);
+        };
+        let path = std::path::Path::new(project);
+        if !path.is_dir() {
+            return (trimmed.to_string(), None);
+        }
+        let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        (absolute.display().to_string(), Some(trimmed.to_string()))
+    }
+
     async fn execute_repository(&mut self, tool: &RegisteredTool, target: &str) -> SecurityTool {
-        let repository = match crate::tools::repository::resolve(target) {
+        let (repository_target, overridden_from) = self.repository_target_for(target);
+        if let Some(original) = overridden_from.as_deref() {
+            if let Some(sink) = &self.trace_sink {
+                let _ = sink.send(format!(
+                    "TruffleHog: alvo web {original}; usando o repositório local {repository_target}"
+                ));
+            }
+        }
+        let repository = match crate::tools::repository::resolve(&repository_target) {
             Ok(repository) => repository,
             Err(message) => {
-                let mut exec = SecurityTool::new(&tool.manifest.name, target);
+                let mut exec = SecurityTool::new(&tool.manifest.name, &repository_target);
                 exec.tool_version = Some(tool.manifest.version.clone());
                 exec.image = Some(tool.manifest.image.clone());
                 exec.executed_at = now_iso8601();
@@ -401,7 +433,7 @@ impl Orchestrator {
         let container_path = repository.container_path().unwrap_or_default();
         let arguments =
             crate::tools::trufflehog::container_arguments(&repository.source_uri(), container_path);
-        let mut exec = SecurityTool::new(&tool.manifest.name, &arguments.join(" "));
+        let mut exec = SecurityTool::new(&tool.manifest.name, &repository_target);
         exec.tool_version = Some(tool.manifest.version.clone());
         exec.image = Some(tool.manifest.image.clone());
         exec.executed_at = now_iso8601();
@@ -418,9 +450,24 @@ impl Orchestrator {
                 exec.stderr = sanitize(&result.stderr);
                 let output = podman_output(result);
                 if exec.status != "succeeded" {
-                    exec.execution_error = Some(output.clone());
+                    let lower = output.to_lowercase();
+                    if lower.contains("is this a git repository")
+                        || lower.contains("git clone failed")
+                    {
+                        let message = format!(
+                            "TruffleHog analisa repositórios Git, não aplicações web. O alvo \
+                             \"{repository_target}\" não é um repositório Git. Configure \
+                             project_dir no TOML/TUI ou informe o caminho absoluto do repositório."
+                        );
+                        exec.execution_error = Some(message.clone());
+                        exec.output = format!("[ERRO] {message}");
+                    } else {
+                        exec.execution_error = Some(output.clone());
+                        exec.output = output;
+                    }
+                } else {
+                    exec.output = output;
                 }
-                exec.output = output;
             }
             Err(error) => {
                 exec.status = "failed".to_string();
@@ -1143,6 +1190,34 @@ mod tests {
             target_url: "http://test.local".to_string(),
             ..Configuration::default()
         }
+    }
+
+    #[test]
+    fn a_web_target_uses_the_project_dir_for_repository_tools() {
+        let mut config = make_config();
+        config.project_dir = Some("/tmp".to_string());
+        let orchestrator = Orchestrator::new(config).expect("configuração válida");
+
+        let (target, overridden) = orchestrator.repository_target_for("http://169.254.1.2:3000");
+
+        assert_eq!(
+            target,
+            std::fs::canonicalize("/tmp").unwrap().display().to_string()
+        );
+        assert_eq!(overridden.as_deref(), Some("http://169.254.1.2:3000"));
+    }
+
+    #[test]
+    fn a_git_uri_is_not_replaced_by_the_project_dir() {
+        let mut config = make_config();
+        config.project_dir = Some("/tmp".to_string());
+        let orchestrator = Orchestrator::new(config).expect("configuração válida");
+
+        let (target, overridden) =
+            orchestrator.repository_target_for("https://github.com/org/repo.git");
+
+        assert_eq!(target, "https://github.com/org/repo.git");
+        assert!(overridden.is_none());
     }
 
     #[test]
