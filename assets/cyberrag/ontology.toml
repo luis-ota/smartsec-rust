@@ -7,9 +7,9 @@
 # referência (sem licença) nem de páginas do CWE; ids e textos são autorais.
 
 [meta]
-versao = "0.1.0"
+versao = "0.2.0"
 autor = "SmartSec (autoral)"
-data = "2026-10-14"
+data = "2026-10-22"
 escopo = "classes de fraqueza, ativos e mitigações do corpus do agente de explicação"
 
 [[entidades]]
@@ -86,6 +86,11 @@ rotulos = ["sessão insegura", "insecure session management", "fixação de sess
 id = "configuracao_insegura"
 tipo = "fraqueza"
 rotulos = ["configuração insegura", "security misconfiguration", "configuração sem endurecimento"]
+
+[[entidades]]
+id = "cabecalho_seguranca_ausente"
+tipo = "fraqueza"
+rotulos = ["cabeçalho de segurança ausente", "missing security header", "cabeçalhos HTTP de proteção ausentes"]
 
 [[entidades]]
 id = "divulgacao_por_erro"
@@ -276,6 +281,11 @@ rotulos = ["atualização de dependências", "dependency patching", "gestão de 
 id = "politica_cors_estrita"
 tipo = "mitigacao"
 rotulos = ["política CORS estrita", "strict CORS policy", "CORS restritivo"]
+
+[[entidades]]
+id = "cabecalhos_de_seguranca"
+tipo = "mitigacao"
+rotulos = ["cabeçalhos de segurança HTTP", "security headers", "CSP, HSTS e X-Frame-Options"]
 
 [[entidades]]
 id = "dados_sensiveis_fora_de_logs"
@@ -644,6 +654,26 @@ objeto = "politica_cors_estrita"
 
 [[triplas]]
 sujeito = "configuracao_insegura"
+relacao = "explorada_por"
+objeto = "exploracao_manual"
+
+[[triplas]]
+sujeito = "cabecalho_seguranca_ausente"
+relacao = "expoe"
+objeto = "navegador_usuario"
+
+[[triplas]]
+sujeito = "cabecalho_seguranca_ausente"
+relacao = "mitigada_por"
+objeto = "hardening_de_configuracao"
+
+[[triplas]]
+sujeito = "cabecalho_seguranca_ausente"
+relacao = "mitigada_por"
+objeto = "cabecalhos_de_seguranca"
+
+[[triplas]]
+sujeito = "cabecalho_seguranca_ausente"
 relacao = "explorada_por"
 objeto = "exploracao_manual"
 

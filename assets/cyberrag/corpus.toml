@@ -713,6 +713,55 @@ app.listen(3000, "127.0.0.1");
 """
 
 [[entradas]]
+id = "cabecalho_seguranca_ausente"
+classe = "cabecalho_seguranca_ausente"
+cwe = "CWE-693"
+titulo = "Cabeçalho de segurança HTTP ausente"
+descricao = "Sem Content-Security-Policy, HSTS, X-Frame-Options e cabeçalhos equivalentes, o navegador deixa de aplicar proteções que reduziriam o impacto de XSS, clickjacking e downgrade de TLS. A ausência não é um erro de sintaxe: é uma camada de defesa que simplesmente não chega ao cliente."
+padrao_seguro = "Definir os cabeçalhos no proxy reverso ou no framework, com CSP restritiva, HSTS em HTTPS, X-Frame-Options ou frame-ancestors, X-Content-Type-Options: nosniff e Referrer-Policy. Tratar a lista como configuração versionada e validada em teste."
+referencias = ["CWE-693", "OWASP Secure Headers Project"]
+
+[[entradas.exemplos]]
+linguagem = "python"
+vulneravel = """
+from flask import Flask
+app = Flask(__name__)
+
+@app.after_request
+def sem_cabecalhos(response):
+    return response
+"""
+corrigido = """
+from flask import Flask
+app = Flask(__name__)
+
+@app.after_request
+def cabecalhos_de_seguranca(response):
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+"""
+
+[[entradas.exemplos]]
+linguagem = "javascript"
+vulneravel = """
+const express = require("express");
+const app = express();
+app.get("/", (_req, res) => res.send("ok"));
+app.listen(3000);
+"""
+corrigido = """
+const express = require("express");
+const helmet = require("helmet");
+const app = express();
+app.use(helmet());
+app.get("/", (_req, res) => res.send("ok"));
+app.listen(3000);
+"""
+
+[[entradas]]
 id = "divulgacao_por_erro"
 classe = "divulgacao_por_erro"
 cwe = "CWE-209"

@@ -273,6 +273,12 @@ impl Ontology {
                 relation.id, relation.rotulo, relation.descricao
             ));
         }
+        // O modelo precisa das triplas, não só de entidades e relações.
+        vocabulary
+            .push_str("\nTriplas válidas (sujeito · relação · objeto) — use somente estas:\n");
+        for (subject, relation, object) in &self.triples {
+            vocabulary.push_str(&format!("- {subject} · {relation} · {object}\n"));
+        }
         vocabulary
     }
 
