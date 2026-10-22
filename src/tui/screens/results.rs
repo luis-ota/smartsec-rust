@@ -682,8 +682,8 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 item.title.clone(),
                 Style::default().fg(TEXT).bold(),
             ));
-            lines.push(Line::from(""));
             if app.rag_pending == Some(index) {
+                lines.push(Line::from(""));
                 lines.push(section_rule("Explicação da IA", inner.width as usize));
                 push_wrapped_owned(
                     &mut lines,
@@ -699,6 +699,7 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
                     append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
                 }
             } else {
+                lines.push(Line::from(""));
                 append_wrapped(&mut lines, &item.didactic, inner.width as usize, MUTED);
             }
         }
@@ -717,8 +718,17 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
             lines.push(Line::from(""));
         }
     }
-    let visible = inner.height.max(1) as usize;
-    app.didactic_max_scroll = lines.len().saturating_sub(visible);
+    let has_scroll = lines.len() > inner.height as usize;
+    let indicator_height = u16::from(has_scroll);
+    let viewport = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(indicator_height),
+    );
+    let visible = viewport.height.max(1) as usize;
+    let total = lines.len();
+    app.didactic_max_scroll = total.saturating_sub(visible);
     app.didactic_scroll = app.didactic_scroll.min(app.didactic_max_scroll);
     let visible_lines: Vec<_> = lines
         .into_iter()
@@ -727,8 +737,23 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .collect();
     frame.render_widget(
         Paragraph::new(Text::from(visible_lines)).style(Style::default().bg(SURFACE)),
-        inner,
+        viewport,
     );
+    if has_scroll {
+        let first = app.didactic_scroll + 1;
+        let last = (app.didactic_scroll + visible).min(total);
+        frame.render_widget(
+            Paragraph::new(format!("↑↓ rolar · linhas {first}-{last} de {total}"))
+                .alignment(ratatui::layout::Alignment::Right)
+                .style(Style::default().fg(ACCENT).bg(SURFACE)),
+            Rect::new(
+                inner.x,
+                inner.y + inner.height.saturating_sub(1),
+                inner.width,
+                1,
+            ),
+        );
+    }
     app.register_hit_region(
         rows[0],
         SemanticAction::SetFocus(FocusTarget::DidacticContent),
@@ -753,20 +778,22 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
         SemanticAction::Back,
         chrome::ButtonState::secondary(app.focus == FocusTarget::DidacticBack),
     );
-    let ai_label = if pending {
-        "Gerando…"
-    } else {
-        "Explicar (IA)"
-    };
-    chrome::render_button(
-        app,
-        frame,
-        actions[2],
-        ai_label,
-        SemanticAction::ExplainFinding,
-        chrome::ButtonState::primary(app.focus == FocusTarget::DidacticExplain)
-            .enabled(!pending && !has_result),
-    );
+    if pending || !has_result {
+        let ai_label = if pending {
+            "Gerando…"
+        } else {
+            "Explicar (IA)"
+        };
+        chrome::render_button(
+            app,
+            frame,
+            actions[2],
+            ai_label,
+            SemanticAction::ExplainFinding,
+            chrome::ButtonState::primary(app.focus == FocusTarget::DidacticExplain)
+                .enabled(!pending),
+        );
+    }
 }
 
 /// Explicação assistida do achado: aprovada (com o exemplo do corpus) ou a
@@ -829,6 +856,7 @@ fn append_rag_explanation(
             format!("exemplo do corpus: {} ({language})", example.titulo),
             Style::default().fg(ACCENT).bold(),
         ));
+        lines.push(Line::from(""));
         append_example_block(
             lines,
             "vulnerável",
@@ -914,6 +942,7 @@ fn append_rag_claims(
     if result.claims.is_empty() && result.verdict.rejeitadas.is_empty() {
         return;
     }
+    lines.push(Line::from(""));
     lines.push(Line::styled(
         "Fundamentação (triplas da ontologia)",
         Style::default().fg(TEXT).bold(),

@@ -766,6 +766,7 @@ impl AppState {
             restore_rag_example(&mut result);
             self.rag_results.insert(result.finding_index, result);
         }
+        self.orchestrator.rag_explanations = self.rag_results.values().cloned().collect();
         self.orchestrator.decision_history = metadata.decisions.clone();
         self.orchestrator.enrichment = metadata.enrichment.clone();
         self.orchestrator.last_log =
@@ -1305,9 +1306,35 @@ impl AppState {
         self.rag_results.insert(finding_index, result);
     }
 
-    /// Re-grava o log do scan com o veredito mais recente da explicação RAG.
+    /// Re-grava o log do scan com as explicações RAG completas.
+    ///
+    /// Para um replay, atualiza o arquivo original em vez de criar um scan novo;
+    /// assim a explicação salva reaparece sem gastar tokens na próxima abertura.
     fn persist_rag_explanation(&mut self) {
-        if let Err(error) = self.orchestrator.persist_scan_log() {
+        let update = (|| -> anyhow::Result<()> {
+            let Some(path) = self.audit_log_path.clone() else {
+                self.orchestrator.persist_scan_log()?;
+                return Ok(());
+            };
+            let mut metadata = crate::orchestrator::scan_logger::load_scan_log_from_file(&path)?;
+            metadata.rag_explanations = self.orchestrator.rag_explanations.clone();
+            metadata.rag_explanations_count = metadata.rag_explanations.len();
+            if let Some(last) = metadata.rag_explanations.last() {
+                metadata.rag_ontology_verdict =
+                    crate::utils::redaction::sanitize_diagnostic(&last.verdict_summary());
+                metadata.rag_failure_reason = last
+                    .failure_reason
+                    .as_deref()
+                    .map(crate::utils::redaction::sanitize_diagnostic);
+            }
+            let parent = path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("log do scan sem diretório pai"))?
+                .to_path_buf();
+            crate::orchestrator::scan_logger::save_scan_log_to_dir(&metadata, &parent)?;
+            Ok(())
+        })();
+        if let Err(error) = update {
             self.record_run_issue(
                 RunIssueScope::Ai,
                 format!("o log do scan não pôde ser regravado após a explicação: {error}"),
