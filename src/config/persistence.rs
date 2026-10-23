@@ -140,13 +140,12 @@ pub fn config_file_exists_at(path: &std::path::Path) -> bool {
     path.exists()
 }
 
-/// Cofre usado pelo SmartSec.
+/// Cofre usado pelo SmartSec no Linux.
 ///
-/// No Linux, o `Login` é o keyring que o PAM desbloqueia no login. O
-/// `Default keyring` não tem prompter em TTY e ficava permanentemente
-/// bloqueado em sessões sem ambiente gráfico. Fora do Linux, o backend nativo
-/// continua usando o cofre padrão.
-fn keyring_entry() -> Result<keyring::Entry, keyring::Error> {
+/// O `Login` é o keyring que o PAM desbloqueia no login/SSH; o `Default
+/// keyring` é o cofre histórico do SmartSec. A leitura tenta os dois, então uma
+/// chave antiga no Default continua funcionando quando ele está desbloqueado.
+fn login_keyring_entry() -> Result<keyring::Entry, keyring::Error> {
     #[cfg(target_os = "linux")]
     {
         keyring::Entry::new_with_target("Login", KEYRING_SERVICE, KEYRING_USERNAME)
@@ -157,30 +156,72 @@ fn keyring_entry() -> Result<keyring::Entry, keyring::Error> {
     }
 }
 
-pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
-    let entry = keyring_entry()?;
-    if key.is_empty() {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(error) => return Err(error),
-        }
-    } else {
-        entry.set_password(key)?;
+fn default_keyring_entry() -> Result<keyring::Entry, keyring::Error> {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)
+}
+
+fn keyring_candidates() -> Result<Vec<keyring::Entry>, keyring::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(vec![login_keyring_entry()?, default_keyring_entry()?])
     }
-    Ok(())
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(vec![default_keyring_entry()?])
+    }
+}
+
+pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
+    let entries = keyring_candidates()?;
+    if key.is_empty() {
+        let mut last_error = None;
+        for entry in &entries {
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(error) => last_error = Some(error),
+            }
+        }
+        return match last_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        };
+    }
+    let mut last_error = None;
+    for entry in &entries {
+        match entry.set_password(key) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or(keyring::Error::NoEntry))
 }
 
 pub fn load_api_key() -> Result<String, keyring::Error> {
-    let entry = keyring_entry()?;
-    entry.get_password()
+    let entries = keyring_candidates()?;
+    let mut last_error = None;
+    for entry in &entries {
+        match entry.get_password() {
+            Ok(key) => return Ok(key),
+            Err(keyring::Error::NoEntry) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or(keyring::Error::NoEntry))
 }
 
 /// Remove a chave. Ausência não é erro: `auth remove` é idempotente.
 pub fn delete_api_key() -> Result<(), keyring::Error> {
-    let entry = keyring_entry()?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(error),
+    let entries = keyring_candidates()?;
+    let mut last_error = None;
+    for entry in &entries {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match last_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 

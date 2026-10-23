@@ -38,14 +38,19 @@ smartsec auth set --stdin < /run/secrets/smartsec-api-key
 
 ### Sessão SSH/TTY sem prompt gráfico
 
-Em SSH ou TTY puro não existe janela para o `gcr-prompter`, e o
-`Default keyring` fica bloqueado para sempre. O SmartSec usa o keyring
-**Login** no Linux, que é o mesmo que o PAM desbloqueia. Para desbloquear:
+Em SSH ou TTY puro não existe janela para o `gcr-prompter`. O SmartSec procura
+a chave primeiro no keyring **Login** (o que o PAM desbloqueia) e depois no
+`Default keyring` histórico. Se a chave antiga só existe no Default, ela
+continua válida quando o Default está desbloqueado; no SSH, o caminho prático é
+cadastrar de novo no Login — o Default antigo não é apagado.
+
+Para destravar o Login sem ambiente gráfico:
 
 ```bash
 printf 'Senha do login/keyring: '
 read -rs K
 echo
+systemctl --user stop gnome-keyring-daemon.service gnome-keyring-daemon.socket
 printf '%s\n' "$K" | gnome-keyring-daemon --unlock --daemonize --components=secrets
 unset K
 smartsec auth status
