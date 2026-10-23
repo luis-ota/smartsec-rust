@@ -140,8 +140,25 @@ pub fn config_file_exists_at(path: &std::path::Path) -> bool {
     path.exists()
 }
 
+/// Cofre usado pelo SmartSec.
+///
+/// No Linux, o `Login` é o keyring que o PAM desbloqueia no login. O
+/// `Default keyring` não tem prompter em TTY e ficava permanentemente
+/// bloqueado em sessões sem ambiente gráfico. Fora do Linux, o backend nativo
+/// continua usando o cofre padrão.
+fn keyring_entry() -> Result<keyring::Entry, keyring::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        keyring::Entry::new_with_target("Login", KEYRING_SERVICE, KEYRING_USERNAME)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)
+    }
+}
+
 pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
+    let entry = keyring_entry()?;
     if key.is_empty() {
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
@@ -154,13 +171,13 @@ pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
 }
 
 pub fn load_api_key() -> Result<String, keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
+    let entry = keyring_entry()?;
     entry.get_password()
 }
 
 /// Remove a chave. Ausência não é erro: `auth remove` é idempotente.
 pub fn delete_api_key() -> Result<(), keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
+    let entry = keyring_entry()?;
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error),

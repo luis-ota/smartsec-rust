@@ -36,6 +36,23 @@ Secret Service via `keyring`. Em CI, a chave entra pela entrada padrão:
 smartsec auth set --stdin < /run/secrets/smartsec-api-key
 ```
 
+### Sessão SSH/TTY sem prompt gráfico
+
+Em SSH ou TTY puro não existe janela para o `gcr-prompter`, e o
+`Default keyring` fica bloqueado para sempre. O SmartSec usa o keyring
+**Login** no Linux, que é o mesmo que o PAM desbloqueia. Para desbloquear:
+
+```bash
+read -rsp 'Senha do login/keyring: ' K; echo
+printf '%s\n' "$K" | gnome-keyring-daemon --replace --unlock
+unset K
+smartsec auth status
+```
+
+Se o `auth status` continuar dizendo que o cofre está bloqueado, a senha do
+keyring é diferente da senha de login; nesse caso use o override de sessão
+abaixo ou recrie o keyring em um ambiente gráfico.
+
 O `--stdin` é recusado quando a entrada é um terminal, justamente para não ecoar
 a digitação. A chave não é aceita como argumento de linha de comando e nunca é
 impressa inteira: `auth status` mostra apenas o tamanho e os últimos quatro
