@@ -881,6 +881,9 @@ fn build_example(
     retrieved: &[Retrieved],
     finding: &Vulnerability,
 ) -> Option<RetrievedExample> {
+    if finding.is_network_port_finding() {
+        return None;
+    }
     let language = language_hint(finding);
     // O exemplo precisa ser da mesma fraqueza do conceito sugerido; um hit
     // lexical vizinho (upload para uma porta aberta, por exemplo) confundiria
@@ -1132,6 +1135,17 @@ mod tests {
             None,
         );
         assert!(prompt.contains("Não cite XSS"), "{prompt}");
+    }
+
+    #[test]
+    fn a_network_port_finding_has_no_code_example() {
+        let mut port = finding();
+        port.tool = "Nmap".to_string();
+        port.title = "Porta 3000 (ppp) aberta".to_string();
+        port.source = crate::domain::vulnerability::FindingSource::Real;
+        port.code_location = None;
+
+        assert!(build_example(Corpus::shared(), &[], &port).is_none());
     }
 
     #[test]

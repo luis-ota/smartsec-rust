@@ -318,6 +318,15 @@ impl CodeAnalysisService {
             },
         );
         for (index, finding) in findings.iter().enumerate() {
+            if finding.is_network_port_finding() {
+                report.findings.push(undetermined(
+                    index,
+                    model,
+                    provider_label,
+                    "achado de porta/serviço de rede não tem origem em um arquivo do projeto; localização não determinada".to_string(),
+                ));
+                continue;
+            }
             // O registro de chamadas é acumulado **fora** do futuro do timeout:
             // dentro dele, um achado que estoura o prazo perderia as chamadas já
             // executadas e o log deixaria de mostrar ferramentas que rodaram.
@@ -1072,6 +1081,40 @@ mod tests {
         assert_eq!(wire[0]["role"], "system");
         assert_eq!(wire[1]["role"], "user");
         assert!(sent[0].tools.iter().any(|spec| spec.name == "search_code"));
+    }
+
+    #[tokio::test]
+    async fn a_network_port_finding_is_not_sent_to_the_code_agent() {
+        let provider = ScriptedProvider::new(Vec::new(), true);
+        let requests = Arc::clone(&provider.requests);
+        let mut port = finding("Porta 3000 (ppp) aberta", "nmap porta=3000/tcp servico=ppp");
+        port.tool = "Nmap".to_string();
+
+        let report = fixture_service(CodeAgentLimits::default())
+            .analyze(
+                &provider,
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[port],
+                    progress: None,
+                },
+            )
+            .await;
+
+        assert!(report.findings[0].location.is_none());
+        assert!(
+            report.findings[0]
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("rede")),
+            "{:?}",
+            report.findings[0].reason
+        );
+        assert!(
+            requests.lock().expect("requisições").is_empty(),
+            "o agente não deve gastar um turno para achar código de uma porta"
+        );
     }
 
     #[tokio::test]

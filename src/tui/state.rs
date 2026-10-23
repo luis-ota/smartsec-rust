@@ -739,9 +739,15 @@ impl AppState {
     ) -> anyhow::Result<()> {
         let mut findings = Vec::with_capacity(metadata.findings.len());
         for value in metadata.findings {
-            let finding: Vulnerability = serde_json::from_value(value).map_err(|error| {
+            let mut finding: Vulnerability = serde_json::from_value(value).map_err(|error| {
                 anyhow::anyhow!("achado inválido no scan {}: {error}", metadata.scan_id)
             })?;
+            // Logs antigos podem ter uma localização alucinada para porta/serviço
+            // de rede; a origem não existe no projeto, então não a exibimos.
+            if finding.is_network_port_finding() && finding.code_location.is_some() {
+                finding.code_location = None;
+                finding.code_remediation.clear();
+            }
             findings.push(finding);
         }
         self.config.target_url = metadata.target_url.clone();
@@ -764,6 +770,14 @@ impl AppState {
         self.rag_pending = None;
         for mut result in metadata.rag_explanations {
             restore_rag_example(&mut result);
+            if self
+                .orchestrator
+                .findings
+                .get(result.finding_index)
+                .is_some_and(Vulnerability::is_network_port_finding)
+            {
+                result.example = None;
+            }
             self.rag_results.insert(result.finding_index, result);
         }
         self.orchestrator.rag_explanations = self.rag_results.values().cloned().collect();
