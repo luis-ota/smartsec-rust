@@ -761,9 +761,16 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let pending = app
         .result_detail_vuln
         .is_some_and(|index| app.rag_pending == Some(index));
-    let has_result = app
-        .result_detail_vuln
-        .is_some_and(|index| app.rag_results.contains_key(&index));
+    let has_result = app.result_detail_vuln.is_some_and(|index| {
+        app.rag_results
+            .get(&index)
+            .is_some_and(crate::cyberrag::service::ExplanationResult::approved)
+    });
+    let has_failed = app.result_detail_vuln.is_some_and(|index| {
+        app.rag_results
+            .get(&index)
+            .is_some_and(|result| !result.approved())
+    });
     let actions = Layout::horizontal([
         Constraint::Length(10),
         Constraint::Min(1),
@@ -781,6 +788,8 @@ fn render_didactic(app: &mut AppState, frame: &mut Frame, area: Rect) {
     if pending || !has_result {
         let ai_label = if pending {
             "Gerando…"
+        } else if has_failed {
+            "Tentar de novo"
         } else {
             "Explicar (IA)"
         };

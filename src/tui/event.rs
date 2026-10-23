@@ -354,7 +354,12 @@ fn start_rag_explanation(app: &mut AppState) {
     app.show_didactic = true;
     app.didactic_scroll = 0;
     app.focus = FocusTarget::DidacticContent;
-    if app.rag_results.contains_key(&index) || app.rag_pending.is_some() {
+    if app
+        .rag_results
+        .get(&index)
+        .is_some_and(crate::cyberrag::service::ExplanationResult::approved)
+        || app.rag_pending.is_some()
+    {
         return;
     }
     let Some(finding) = app.orchestrator.findings.get(index).cloned() else {
@@ -436,7 +441,12 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
     if app.show_didactic {
         let mut order = vec![FocusTarget::DidacticContent];
         if let Some(index) = app.result_detail_vuln {
-            if app.rag_pending.is_none() && !app.rag_results.contains_key(&index) {
+            if app.rag_pending.is_none()
+                && !app
+                    .rag_results
+                    .get(&index)
+                    .is_some_and(crate::cyberrag::service::ExplanationResult::approved)
+            {
                 order.push(FocusTarget::DidacticExplain);
             }
         }

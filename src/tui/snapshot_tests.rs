@@ -464,6 +464,7 @@ fn finding_didactic_shows_the_rag_explanation_or_the_refusal() {
         "{snapshot}"
     );
     assert!(snapshot.contains("o provedor falhou"), "{snapshot}");
+    assert!(snapshot.contains("Tentar de novo"), "{snapshot}");
     assert!(snapshot.contains("Resumo determinístico"), "{snapshot}");
 }
 
