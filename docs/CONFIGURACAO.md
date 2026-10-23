@@ -43,8 +43,10 @@ Em SSH ou TTY puro não existe janela para o `gcr-prompter`, e o
 **Login** no Linux, que é o mesmo que o PAM desbloqueia. Para desbloquear:
 
 ```bash
-read -rsp 'Senha do login/keyring: ' K; echo
-printf '%s\n' "$K" | gnome-keyring-daemon --replace --unlock
+printf 'Senha do login/keyring: '
+read -rs K
+echo
+printf '%s\n' "$K" | gnome-keyring-daemon --unlock --daemonize --components=secrets
 unset K
 smartsec auth status
 ```
