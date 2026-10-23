@@ -55,6 +55,85 @@ pub fn config_path() -> PathBuf {
     base.join("smartsec").join("config.toml")
 }
 
+/// Caminho do fallback local, usado apenas quando o Secret Service está
+/// bloqueado e o usuário pede `auth set --file`.
+pub fn api_key_file_path() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("smartsec").join("api_key")
+}
+
+pub fn api_key_file_exists() -> bool {
+    api_key_file_path().is_file()
+}
+
+/// Grava a chave em arquivo privado (0600 no Unix).
+///
+/// É um fallback explícito para TTY/SSH sem prompt de keyring. O arquivo não é
+/// cifrado; a proteção é a permissão 0600 e o diretório 0700.
+pub fn save_api_key_file(key: &str) -> std::io::Result<()> {
+    let path = api_key_file_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(key.as_bytes())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&path, key)
+    }
+}
+
+fn load_api_key_file() -> std::io::Result<Option<String>> {
+    let path = api_key_file_path();
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "o arquivo local da chave não está com permissão 0600",
+            ));
+        }
+    }
+    let key = fs::read_to_string(&path)?;
+    let key = key.trim();
+    if key.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(key.to_string()))
+    }
+}
+
+fn delete_api_key_file() -> std::io::Result<()> {
+    match fs::remove_file(api_key_file_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Carrega a configuração global: arquivo ausente devolve os padrões; TOML
 /// inválido é erro, porque cair em `default()` em silêncio faria perder alvo,
 /// ferramentas e provedor. A leitura nunca sobrescreve o arquivo, e a CLI
@@ -206,7 +285,13 @@ pub fn load_api_key() -> Result<String, keyring::Error> {
             Err(error) => last_error = Some(error),
         }
     }
-    Err(last_error.unwrap_or(keyring::Error::NoEntry))
+    match load_api_key_file() {
+        Ok(Some(key)) => Ok(key),
+        Ok(None) => Err(last_error.unwrap_or(keyring::Error::NoEntry)),
+        Err(error) => {
+            Err(last_error.unwrap_or_else(|| keyring::Error::PlatformFailure(Box::new(error))))
+        }
+    }
 }
 
 /// Remove a chave. Ausência não é erro: `auth remove` é idempotente.
@@ -219,9 +304,10 @@ pub fn delete_api_key() -> Result<(), keyring::Error> {
             Err(error) => last_error = Some(error),
         }
     }
+    let file_result = delete_api_key_file();
     match last_error {
         Some(error) => Err(error),
-        None => Ok(()),
+        None => file_result.map_err(|error| keyring::Error::PlatformFailure(Box::new(error))),
     }
 }
 

@@ -60,6 +60,30 @@ Se o `auth status` continuar dizendo que o cofre está bloqueado, a senha do
 keyring é diferente da senha de login; nesse caso use o override de sessão
 abaixo ou recrie o keyring em um ambiente gráfico.
 
+### Fallback local 0600 (keyring bloqueado)
+
+Quando o Secret Service está bloqueado e não há como abrir o prompt, o SmartSec
+tem um fallback explícito em `~/.config/smartsec/api_key`, com permissão `0600`.
+Ele **não é cifrado**; use só enquanto o keyring não estiver disponível.
+
+```bash
+# com a chave vinda do seu gerenciador/OpenCode, sem imprimir:
+key=$(opencode auth export 2>/dev/null | jq -r '[.[] | select(.integrationID=="openai" and .value.type=="key")][0].value.key')
+printf '%s' "$key" | smartsec auth set --stdin --file
+unset key
+smartsec auth status
+```
+
+O status mostra `fonte: arquivo local 0600`. O TUI e o RAG leem esse arquivo
+quando o keyring não entrega a chave. Para remover:
+
+```bash
+smartsec auth remove
+```
+
+Se o keyring estiver bloqueado, o `auth remove` pode avisar que não conseguiu
+limpar o cofre antigo; o arquivo local é removido de qualquer forma.
+
 O `--stdin` é recusado quando a entrada é um terminal, justamente para não ecoar
 a digitação. A chave não é aceita como argumento de linha de comando e nunca é
 impressa inteira: `auth status` mostra apenas o tamanho e os últimos quatro

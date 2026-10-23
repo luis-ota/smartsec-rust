@@ -17,7 +17,7 @@ pub const AUTH_EXIT_ERROR: i32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthAction {
-    Set { from_stdin: bool },
+    Set { from_stdin: bool, to_file: bool },
     Status,
     Remove,
     Help,
@@ -46,21 +46,27 @@ impl AuthArgs {
         let action = match command.as_str() {
             "set" => {
                 let mut from_stdin = false;
+                let mut to_file = false;
                 for argument in &arguments[1..] {
                     match argument.as_str() {
                         "--stdin" if !from_stdin => from_stdin = true,
                         "--stdin" => bail!("`--stdin` foi informado mais de uma vez"),
+                        "--file" if !to_file => to_file = true,
+                        "--file" => bail!("`--file` foi informado mais de uma vez"),
                         "--help" | "-h" => {
                             return Ok(Self {
                                 action: AuthAction::Help,
                             });
                         }
                         _ => bail!(
-                            "`smartsec auth set` não aceita esse argumento; a chave não pode ser passada pela linha de comando. Use `smartsec auth set` (digitação oculta) ou `smartsec auth set --stdin` (CI)."
+                            "`smartsec auth set` não aceita esse argumento; a chave não pode ser passada pela linha de comando. Use `smartsec auth set` (digitação oculta), `smartsec auth set --stdin` (CI) ou `--file` (fallback 0600)."
                         ),
                     }
                 }
-                AuthAction::Set { from_stdin }
+                AuthAction::Set {
+                    from_stdin,
+                    to_file,
+                }
             }
             "status" | "remove" => {
                 if let Some(argument) = arguments.get(1) {
@@ -91,15 +97,18 @@ pub fn print_help() {
     println!("SmartSec — Chave da API no cofre do sistema");
     println!();
     println!("Uso:");
-    println!("  smartsec auth set [--stdin]  Lê a chave sem eco e grava no Secret Service");
+    println!(
+        "  smartsec auth set [--stdin] [--file]  Lê a chave sem eco e grava no Secret Service"
+    );
     println!("  smartsec auth status         Mostra se há chave, provedor, modelo e final");
     println!("  smartsec auth remove         Remove a chave do cofre");
     println!("  smartsec auth --help         Mostra esta ajuda");
     println!();
     println!("A chave nunca é gravada no TOML, não passa por argumentos de processo");
     println!("e não aparece em logs. Sem `--stdin`, a digitação é oculta no terminal.");
-    println!("Com `--stdin`, a chave vem da entrada padrão e o comando se destina a CI:");
+    println!("Com `--file`, grava em ~/.config/smartsec/api_key (0600) quando o keyring");
     println!("  smartsec auth set --stdin < /run/secrets/smartsec-api-key");
+    println!("  smartsec auth set --stdin --file  # fallback local 0600");
     println!();
     println!("SMARTSEC_API_KEY é apenas um override explícito de sessão/CI: tem");
     println!("precedência sobre o cofre, não é gravada e não substitui `auth set`.");
@@ -114,15 +123,30 @@ pub fn run(args: AuthArgs) -> Result<i32> {
             print_help();
             Ok(AUTH_EXIT_OK)
         }
-        AuthAction::Set { from_stdin } => {
-            ensure_store_available(&SystemCredentialStore, "set")?;
+        AuthAction::Set {
+            from_stdin,
+            to_file,
+        } => {
             let key = if from_stdin {
                 read_stdin_key()?
             } else {
                 read_hidden_key()?
             };
-            run_set(&SystemCredentialStore, &key)?;
-            println!("Chave da API gravada no cofre de segredos do sistema (Secret Service).");
+            let key = normalize_key(&key)?;
+            if to_file {
+                persistence::save_api_key_file(&key)?;
+                println!(
+                    "Chave da API gravada no fallback local ({}), com permissão 0600.",
+                    persistence::api_key_file_path().display()
+                );
+                println!(
+                    "O arquivo não é cifrado; use apenas enquanto o keyring estiver bloqueado."
+                );
+            } else {
+                ensure_store_available(&SystemCredentialStore, "set")?;
+                run_set(&SystemCredentialStore, &key)?;
+                println!("Chave da API gravada no cofre de segredos do sistema (Secret Service).");
+            }
             println!("Ela não foi gravada no TOML. Confira com: smartsec auth status");
             warn_about_env_override();
             Ok(AUTH_EXIT_OK)
@@ -136,6 +160,13 @@ pub fn run(args: AuthArgs) -> Result<i32> {
                 &mut stdout,
             )?;
             stdout.flush()?;
+            drop(stdout);
+            if persistence::api_key_file_exists() {
+                println!(
+                    "  fonte:    arquivo local 0600 ({})",
+                    persistence::api_key_file_path().display()
+                );
+            }
             Ok(code)
         }
         AuthAction::Remove => {
@@ -188,7 +219,7 @@ pub fn run_status(
     let status = store.status();
     match &status {
         ApiKeyStatus::Available(key) => {
-            writeln!(out, "  Chave:    cadastrada no cofre do sistema")?;
+            writeln!(out, "  Chave:    cadastrada")?;
             writeln!(
                 out,
                 "            {} caracteres · final {}",
@@ -311,7 +342,7 @@ fn normalize_key(raw: &str) -> Result<String> {
 fn actionable_error(action: &str, error: CredentialStoreError) -> anyhow::Error {
     match error {
         CredentialStoreError::Locked(reason) => anyhow::anyhow!(
-            "{reason}. Desbloqueie o cofre de segredos do sistema (por exemplo, gnome-keyring ou KWallet) e execute `smartsec auth {action}` de novo."
+            "{reason}. Desbloqueie o cofre de segredos do sistema (por exemplo, gnome-keyring ou KWallet) e execute `smartsec auth {action}` de novo. Em SSH/TTY sem prompt gráfico, use `smartsec auth set --file` ou SMARTSEC_API_KEY."
         ),
         CredentialStoreError::Unavailable(reason) => anyhow::anyhow!(
             "{reason}. Verifique se o Secret Service está em execução, desbloqueie o cofre do sistema e execute `smartsec auth {action}` de novo."
@@ -459,10 +490,19 @@ mod tests {
         let cases = [
             (args(&[]), AuthAction::Help),
             (args(&["--help"]), AuthAction::Help),
-            (args(&["set"]), AuthAction::Set { from_stdin: false }),
+            (
+                args(&["set"]),
+                AuthAction::Set {
+                    from_stdin: false,
+                    to_file: false,
+                },
+            ),
             (
                 args(&["set", "--stdin"]),
-                AuthAction::Set { from_stdin: true },
+                AuthAction::Set {
+                    from_stdin: true,
+                    to_file: false,
+                },
             ),
             (args(&["status"]), AuthAction::Status),
             (args(&["remove"]), AuthAction::Remove),

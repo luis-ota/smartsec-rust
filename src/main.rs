@@ -1351,10 +1351,26 @@ mod tests {
         let cases = [
             (vec!["auth"], AuthAction::Help),
             (vec!["auth", "--help"], AuthAction::Help),
-            (vec!["auth", "set"], AuthAction::Set { from_stdin: false }),
+            (
+                vec!["auth", "set"],
+                AuthAction::Set {
+                    from_stdin: false,
+                    to_file: false,
+                },
+            ),
             (
                 vec!["auth", "set", "--stdin"],
-                AuthAction::Set { from_stdin: true },
+                AuthAction::Set {
+                    from_stdin: true,
+                    to_file: false,
+                },
+            ),
+            (
+                vec!["auth", "set", "--file"],
+                AuthAction::Set {
+                    from_stdin: false,
+                    to_file: true,
+                },
             ),
             (vec!["auth", "status"], AuthAction::Status),
             (vec!["auth", "remove"], AuthAction::Remove),
