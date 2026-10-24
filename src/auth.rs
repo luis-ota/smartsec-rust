@@ -60,7 +60,7 @@ impl AuthArgs {
                             });
                         }
                         _ => bail!(
-                            "`smartsec auth set` não aceita esse argumento; a chave não pode ser passada pela linha de comando. Use `smartsec auth set` (digitação oculta), `smartsec auth set --stdin` (CI) ou `--file` (fallback 0600)."
+                            "`smartsec auth set` não aceita esse argumento; a chave não pode ser passada pela linha de comando. Use `smartsec auth set` (digitação oculta) ou `smartsec auth set --stdin` (CI). `--file` é aceito por compatibilidade."
                         ),
                     }
                 }
@@ -129,7 +129,6 @@ pub fn run(args: AuthArgs) -> Result<i32> {
                 read_hidden_key()?
             };
             let key = normalize_key(&key)?;
-            ensure_store_available(&SystemCredentialStore, "set")?;
             run_set(&SystemCredentialStore, &key)?;
             println!(
                 "Chave da API gravada em {} (0600).",
@@ -230,7 +229,7 @@ pub fn run_status(
             writeln!(out, "  Chave:    indisponível — {reason}")?;
             writeln!(
                 out,
-                "            verifique se o Secret Service está em execução, desbloqueie o cofre do sistema e execute `smartsec auth status` de novo"
+                "            verifique as permissões de ~/.config/smartsec/auth.json e execute `smartsec auth status` de novo"
             )?;
         }
     }
@@ -341,6 +340,7 @@ fn actionable_error(action: &str, error: CredentialStoreError) -> anyhow::Error 
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn ensure_store_available(store: &dyn CredentialStore, action: &str) -> Result<()> {
     match store.status() {
         ApiKeyStatus::Locked(reason) => Err(actionable_error(

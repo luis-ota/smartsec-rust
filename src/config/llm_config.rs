@@ -142,9 +142,9 @@ pub struct LlmConfig {
     pub base_url: String,
     #[serde(default)]
     pub model: String,
-    #[serde(skip)]
+    #[serde(default, skip_serializing)]
     pub api_key: String,
-    /// Erro ao ler a chave do keyring, apenas em memória.
+    /// Erro ao ler o arquivo local de credenciais, apenas em memória.
     #[serde(skip)]
     pub credential_error: Option<String>,
     /// Chave veio de `SMARTSEC_API_KEY` e vale só nesta sessão.

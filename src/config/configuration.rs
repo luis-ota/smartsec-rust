@@ -184,9 +184,15 @@ impl Configuration {
         .map_err(|error| format!("não foi possível salvar a configuração: {error}"))?;
         // Chave de ambiente é da sessão; não a grave no arquivo local.
         if !self.llm.credential_from_env {
-            crate::config::persistence::save_api_key(&self.llm.api_key).map_err(|error| {
-                format!("não foi possível atualizar a chave no arquivo local: {error}")
-            })?;
+            // Se a leitura anterior falhou e o campo ficou vazio, salvar a
+            // configuração não pode apagar a credencial que não foi lida.
+            let loaded_error_without_key =
+                self.llm.api_key.trim().is_empty() && self.llm.credential_error.is_some();
+            if !loaded_error_without_key {
+                crate::config::persistence::save_api_key(&self.llm.api_key).map_err(|error| {
+                    format!("não foi possível atualizar a chave no arquivo local: {error}")
+                })?;
+            }
         }
         Ok(())
     }

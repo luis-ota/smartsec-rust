@@ -71,7 +71,25 @@ fn legacy_api_key_path() -> PathBuf {
 }
 
 pub fn api_key_file_exists() -> bool {
-    api_key_file_path().is_file() || legacy_api_key_path().is_file()
+    [api_key_file_path(), legacy_api_key_path()]
+        .iter()
+        .any(|path| {
+            let Ok(metadata) = fs::symlink_metadata(path) else {
+                return false;
+            };
+            if !metadata.file_type().is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o077 == 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -80,50 +98,93 @@ struct StoredAuth {
     key: String,
 }
 
-/// Grava a chave no arquivo privado (0600 no Unix).
+/// Grava a chave no arquivo privado (0600 no Unix), com troca atômica.
 pub fn save_api_key_file(key: &str) -> std::io::Result<()> {
-    if key.trim().is_empty() {
+    let key = key.trim();
+    if key.is_empty() {
         return delete_api_key_file();
     }
-    let path = api_key_file_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
-        }
+    if key.chars().any(char::is_control) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a chave contém quebra de linha ou caractere de controle",
+        ));
     }
+    let path = api_key_file_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("auth.json sem diretório pai"))?;
+    fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    ensure_not_symlink(&path)?;
     let content = serde_json::to_string_pretty(&StoredAuth {
         version: 1,
         key: key.to_string(),
     })
     .map_err(std::io::Error::other)?;
+
+    let temp = path.with_file_name(format!(".auth.json.tmp.{}", std::process::id()));
+    let _ = fs::remove_file(&temp);
     #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut file = fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(&path)?;
+            .open(&temp)?;
         file.write_all(content.as_bytes())?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        file.sync_all()?;
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(not(unix))]
     {
-        fs::write(&path, content)?;
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::rename(&temp, &path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     }
     // Migra o fallback antigo (texto puro) para o JSON novo.
     let _ = fs::remove_file(legacy_api_key_path());
     Ok(())
 }
 
+fn ensure_not_symlink(path: &std::path::Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} é um symlink; recusado por segurança", path.display()),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
 fn secured_metadata(path: &std::path::Path) -> std::io::Result<bool> {
-    match fs::metadata(path) {
+    match fs::symlink_metadata(path) {
         Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("{} é um symlink; recusado por segurança", path.display()),
+                ));
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -141,39 +202,70 @@ fn secured_metadata(path: &std::path::Path) -> std::io::Result<bool> {
     }
 }
 
+#[cfg_attr(test, allow(dead_code))]
+fn read_auth_file() -> std::io::Result<Option<String>> {
+    let path = api_key_file_path();
+    if !secured_metadata(&path)? {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path)?;
+    let stored: StoredAuth = serde_json::from_str(&content).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("auth.json inválido: {error}"),
+        )
+    })?;
+    if stored.version != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("auth.json com versão não suportada: {}", stored.version),
+        ));
+    }
+    let key = stored.key.trim();
+    Ok((!key.is_empty()).then(|| key.to_string()))
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn read_legacy_file() -> std::io::Result<Option<String>> {
+    let path = legacy_api_key_path();
+    if !secured_metadata(&path)? {
+        return Ok(None);
+    }
+    let key = fs::read_to_string(&path)?;
+    let key = key.trim();
+    Ok((!key.is_empty()).then(|| key.to_string()))
+}
+
 fn load_api_key_file() -> std::io::Result<Option<String>> {
     #[cfg(test)]
     {
         // Os testes não podem depender da chave real do usuário.
-        return Ok(None);
+        Ok(None)
     }
     #[cfg(not(test))]
     {
-        let path = api_key_file_path();
-        if secured_metadata(&path)? {
-            let content = fs::read_to_string(&path)?;
-            let stored: StoredAuth = serde_json::from_str(&content).map_err(|error| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("auth.json inválido: {error}"),
-                )
-            })?;
-            let key = stored.key.trim();
-            return Ok((!key.is_empty()).then(|| key.to_string()));
-        }
-
-        let legacy = legacy_api_key_path();
-        if secured_metadata(&legacy)? {
-            let key = fs::read_to_string(&legacy)?;
-            let key = key.trim();
-            if key.is_empty() {
-                return Ok(None);
+        let auth_error = match read_auth_file() {
+            Ok(Some(key)) => return Ok(Some(key)),
+            Ok(None) => None,
+            Err(error) => Some(error),
+        };
+        match read_legacy_file() {
+            Ok(Some(key)) => {
+                // Se o auth.json existente estava ilegível, tenta reconstruí-lo.
+                let _ = save_api_key_file(&key);
+                return Ok(Some(key));
             }
-            // Migra na próxima leitura; se falhar, a chave ainda é usada nesta sessão.
-            let _ = save_api_key_file(key);
-            return Ok(Some(key.to_string()));
+            Ok(None) => {}
+            Err(legacy_error) => {
+                if auth_error.is_none() {
+                    return Err(legacy_error);
+                }
+            }
         }
-        Ok(None)
+        match auth_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
     }
 }
 
@@ -219,12 +311,22 @@ fn try_load_config_file_at(path: &std::path::Path) -> Result<PersistedConfig, St
             path.display()
         )
     })?;
-    toml::from_str(&content).map_err(|error| {
+    let mut config: PersistedConfig = toml::from_str(&content).map_err(|error| {
         format!(
             "a configuração global em '{}' é um TOML inválido: {error}. Corrija o arquivo ou remova-o; nenhuma configuração foi sobrescrita.",
             path.display()
         )
-    })
+    })?;
+    // Migração de instalações antigas: a chave que estava em texto puro no
+    // TOML vai para auth.json 0600 e o campo é removido do arquivo.
+    if !config.llm.api_key.trim().is_empty() {
+        let legacy = config.llm.api_key.clone();
+        if save_api_key_file(&legacy).is_ok() {
+            config.llm.api_key.clear();
+            let _ = save_config_file(&config);
+        }
+    }
+    Ok(config)
 }
 
 pub fn load_config_file_from(path: &std::path::Path) -> Result<PersistedConfig, String> {
@@ -337,14 +439,12 @@ impl From<keyring::Error> for CredentialStoreError {
         match error {
             keyring::Error::NoEntry => Self::Missing,
             error => {
-                let detail = error.to_string();
-                if detail.to_lowercase().contains("locked") {
-                    Self::Locked("o cofre de segredos do sistema está bloqueado".to_string())
-                } else {
-                    Self::Unavailable(format!(
-                        "não foi possível acessar o cofre de segredos do sistema: {detail}"
-                    ))
-                }
+                let detail = error
+                    .to_string()
+                    .replace("Platform secure storage failure: ", "");
+                Self::Unavailable(format!(
+                    "não foi possível acessar o arquivo local de credenciais: {detail}"
+                ))
             }
         }
     }

@@ -80,7 +80,7 @@ fn step_hint(step: OnboardingStep) -> &'static str {
             "Escolha quem interpreta os logs: esta máquina ou um provedor remoto."
         }
         OnboardingStep::Credential => {
-            "A chave é gravada no cofre do sistema e nunca no arquivo de configuração."
+            "A chave é gravada em ~/.config/smartsec/auth.json (0600) e nunca no config.toml."
         }
         OnboardingStep::Consent => "Nada sai da máquina sem a sua autorização explícita (RNF10).",
         OnboardingStep::Connection => {
