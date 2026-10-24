@@ -459,8 +459,9 @@ fn finding_didactic_shows_the_rag_explanation_or_the_refusal() {
         snapshot.contains("A entrada é concatenada na consulta."),
         "{snapshot}"
     );
+    assert!(snapshot.contains("2. Como corrigir"), "{snapshot}");
     assert!(
-        snapshot.contains("2. Do vulnerável ao corrigido"),
+        snapshot.contains("Do vulnerável ao corrigido"),
         "{snapshot}"
     );
     assert!(snapshot.contains("┌─ vulnerável"), "{snapshot}");

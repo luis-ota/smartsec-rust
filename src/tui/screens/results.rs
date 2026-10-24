@@ -1009,10 +1009,26 @@ fn append_rag_explanation(
         append_rag_claims(lines, result, width);
         return;
     }
-    push_wrapped_owned(lines, result.text.clone(), width, TEXT);
-
+    let (problem, correction, verification) = split_educational_sections(&result.text);
+    append_educational_paragraphs(lines, &problem, width);
     lines.push(Line::from(""));
-    lines.push(section_rule("2. Do vulnerável ao corrigido", width));
+    lines.push(section_rule("2. Como corrigir", width));
+    if correction.trim().is_empty() {
+        push_wrapped_owned(
+            lines,
+            "A explicação não trouxe passos separados; use o exemplo corrigido e os passos de remediação do achado."
+                .to_string(),
+            width,
+            TEXT_SOFT,
+        );
+    } else {
+        append_correction_steps(lines, &correction, width);
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "Do vulnerável ao corrigido",
+        Style::default().fg(ACCENT).bold(),
+    ));
     match result.example.as_ref() {
         Some(example) => {
             let language = example
@@ -1059,12 +1075,16 @@ fn append_rag_explanation(
 
     lines.push(Line::from(""));
     lines.push(section_rule("3. Como verificar", width));
-    push_wrapped_owned(
-        lines,
-        "Repita o teste que gerou o achado e confirme que ele não aparece mais.".to_string(),
-        width,
-        TEXT,
-    );
+    if verification.trim().is_empty() {
+        push_wrapped_owned(
+            lines,
+            "Repita o teste que gerou o achado e confirme que ele não aparece mais.".to_string(),
+            width,
+            TEXT,
+        );
+    } else {
+        append_educational_paragraphs(lines, &verification, width);
+    }
 
     append_rag_claims(lines, result, width);
     lines.push(Line::from(""));
@@ -1080,6 +1100,158 @@ fn append_rag_explanation(
             "Pergunta de fixação: explique em uma frase por que o exemplo vulnerável falha.",
             Style::default().fg(ACCENT).bold(),
         ));
+    }
+}
+
+fn normalize_educational_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences = Vec::new();
+    let mut current = String::new();
+    let characters: Vec<char> = text.chars().collect();
+    for (index, character) in characters.iter().enumerate() {
+        current.push(*character);
+        if matches!(character, '.' | '!' | '?') {
+            let boundary = characters
+                .get(index + 1)
+                .is_none_or(|next| next.is_whitespace());
+            if boundary {
+                let sentence = current.trim().to_string();
+                if !sentence.is_empty() {
+                    sentences.push(sentence);
+                }
+                current.clear();
+            }
+        }
+    }
+    let tail = current.trim();
+    if !tail.is_empty() {
+        sentences.push(tail.to_string());
+    }
+    sentences
+}
+
+/// Separa a prosa da IA em problema, correção e verificação usando os
+/// conectivos que o próprio texto em linguagem direta costuma trazer.
+fn split_educational_sections(text: &str) -> (String, String, String) {
+    let text = normalize_educational_text(text);
+    let lower = text.to_lowercase();
+    let correction_markers = [
+        "para corrigir",
+        "a correção",
+        "como corrigir",
+        "para resolver",
+        "os passos incluem",
+    ];
+    let verification_markers = [
+        "para confirmar",
+        "para verificar",
+        "após implementar",
+        "após a correção",
+        "valide ",
+        "teste ",
+    ];
+    let correction_start = correction_markers
+        .iter()
+        .filter_map(|marker| lower.find(marker))
+        .min();
+    let Some(correction_start) = correction_start else {
+        return (text, String::new(), String::new());
+    };
+    let verification_start = verification_markers
+        .iter()
+        .filter_map(|marker| {
+            lower[correction_start..]
+                .find(marker)
+                .map(|offset| correction_start + offset)
+        })
+        .min()
+        .unwrap_or(text.len());
+    let problem = text[..correction_start].trim().to_string();
+    let correction = text[correction_start..verification_start]
+        .trim()
+        .to_string();
+    let verification = text[verification_start..].trim().to_string();
+    (problem, correction, verification)
+}
+
+fn append_educational_paragraphs(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
+    let sentences = split_sentences(text);
+    if sentences.is_empty() {
+        return;
+    }
+    for (index, pair) in sentences.chunks(2).enumerate() {
+        push_wrapped_owned(lines, pair.join(" "), width, TEXT);
+        if index + 1 < sentences.chunks(2).count() {
+            lines.push(Line::from(""));
+        }
+    }
+}
+
+fn split_enumerated(text: &str) -> Option<(String, Vec<String>)> {
+    let mut positions = Vec::new();
+    for number in 1..=9 {
+        let marker = format!("({number})");
+        if let Some(position) = text.find(&marker) {
+            positions.push((position, marker.len()));
+        }
+    }
+    if positions.is_empty() {
+        return None;
+    }
+    positions.sort_by_key(|(position, _)| *position);
+    let intro = text[..positions[0].0].trim().to_string();
+    let mut items = Vec::new();
+    for (index, (position, length)) in positions.iter().enumerate() {
+        let start = position + length;
+        let end = positions
+            .get(index + 1)
+            .map_or(text.len(), |(next, _)| *next);
+        let item = text[start..end]
+            .trim()
+            .trim_end_matches([',', ';', '.'])
+            .to_string();
+        if !item.is_empty() {
+            items.push(item);
+        }
+    }
+    Some((intro, items))
+}
+
+fn append_correction_steps(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
+    let text = normalize_educational_text(text);
+    if let Some((intro, items)) = split_enumerated(&text) {
+        if !intro.is_empty() {
+            append_educational_paragraphs(lines, &intro, width);
+            lines.push(Line::from(""));
+        }
+        for (index, item) in items.iter().enumerate() {
+            let prefix = format!("{}. ", index + 1);
+            let item_width = width.saturating_sub(prefix.len()).max(1);
+            for (offset, part) in wrap_text(item, item_width).into_iter().enumerate() {
+                let line = if offset == 0 {
+                    format!("{prefix}{part}")
+                } else {
+                    format!("   {part}")
+                };
+                lines.push(Line::styled(line, Style::default().fg(TEXT)));
+            }
+        }
+        return;
+    }
+    for sentence in split_sentences(&text) {
+        let prefix = "• ";
+        let sentence_width = width.saturating_sub(prefix.len()).max(1);
+        for (offset, part) in wrap_text(&sentence, sentence_width).into_iter().enumerate() {
+            let line = if offset == 0 {
+                format!("{prefix}{part}")
+            } else {
+                format!("  {part}")
+            };
+            lines.push(Line::styled(line, Style::default().fg(TEXT)));
+        }
     }
 }
 
