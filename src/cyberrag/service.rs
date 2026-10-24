@@ -949,8 +949,8 @@ pub(crate) fn header_example(
             ),
         ),
         _ => (
-            format!("# resposta HTTP sem {header}"),
-            format!("{header}: {value}"),
+            "HTTP/1.1 200 OK\nContent-Type: text/html".to_string(),
+            format!("HTTP/1.1 200 OK\n{header}: {value}"),
         ),
     };
     RetrievedExample {

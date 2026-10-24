@@ -1191,24 +1191,54 @@ fn append_educational_paragraphs(lines: &mut Vec<Line<'static>>, text: &str, wid
 }
 
 fn split_enumerated(text: &str) -> Option<(String, Vec<String>)> {
-    let mut positions = Vec::new();
+    // Aceita "(1)", "1." e "1)" — o modelo alterna entre as formas.
+    let mut markers: Vec<(usize, usize, usize)> = Vec::new();
     for number in 1..=9 {
-        let marker = format!("({number})");
-        if let Some(position) = text.find(&marker) {
-            positions.push((position, marker.len()));
+        let patterns = [
+            format!("({number})"),
+            format!("{number}."),
+            format!("{number})"),
+        ];
+        let mut best: Option<(usize, usize)> = None;
+        for pattern in patterns {
+            let mut from = 0;
+            while let Some(relative) = text[from..].find(&pattern) {
+                let position = from + relative;
+                let end = position + pattern.len();
+                let before_ok = position == 0
+                    || text[..position]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|character| !character.is_alphanumeric());
+                let after_ok = end == text.len()
+                    || text[end..]
+                        .chars()
+                        .next()
+                        .is_some_and(|character| character.is_whitespace());
+                if before_ok && after_ok {
+                    if best.is_none_or(|(current, _)| position < current) {
+                        best = Some((position, pattern.len()));
+                    }
+                    break;
+                }
+                from = end;
+            }
+        }
+        if let Some((position, length)) = best {
+            markers.push((position, length, number));
         }
     }
-    if positions.is_empty() {
+    markers.sort_by_key(|(position, _, _)| *position);
+    markers.dedup_by_key(|(position, _, _)| *position);
+    if markers.len() < 2 || markers[0].2 != 1 {
         return None;
     }
-    positions.sort_by_key(|(position, _)| *position);
-    let intro = text[..positions[0].0].trim().to_string();
     let mut items = Vec::new();
-    for (index, (position, length)) in positions.iter().enumerate() {
+    for (index, (position, length, _)) in markers.iter().enumerate() {
         let start = position + length;
-        let end = positions
+        let end = markers
             .get(index + 1)
-            .map_or(text.len(), |(next, _)| *next);
+            .map_or(text.len(), |(next, _, _)| *next);
         let item = text[start..end]
             .trim()
             .trim_end_matches([',', ';', '.'])
@@ -1217,6 +1247,10 @@ fn split_enumerated(text: &str) -> Option<(String, Vec<String>)> {
             items.push(item);
         }
     }
+    if items.len() < 2 {
+        return None;
+    }
+    let intro = text[..markers[0].0].trim().to_string();
     Some((intro, items))
 }
 
@@ -2082,5 +2116,36 @@ mod tests {
         }
         let continuation = text_of(code_rows[1]);
         assert!(continuation.starts_with("     │ "), "{continuation}");
+    }
+
+    #[test]
+    fn the_hsts_text_renders_numbered_steps_without_orphan_bullets() {
+        let text = "Para corrigir, siga os passos abaixo:\n                    1. Configure seu servidor para responder ao protocolo HTTPS, se ainda não estiver configurado.\n                    2. Após configurar o HTTPS, adicione o cabeçalho 'Strict-Transport-Security'.\n                    3. Certifique-se de que o cabeçalho seja enviado em todas as respostas HTTPS.\n                    4. Teste a configuração.";
+        let mut lines = Vec::new();
+        append_correction_steps(&mut lines, text, 100);
+        let rendered: String = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("1. Configure seu servidor"), "{rendered}");
+        assert!(rendered.contains("4. Teste a configuração"), "{rendered}");
+        assert!(!rendered.contains("• 2."), "{rendered}");
+        assert!(!rendered.contains("passos abaixo: 1."), "{rendered}");
+    }
+
+    #[test]
+    fn numbered_steps_are_parsed_as_items_not_as_orphan_bullets() {
+        let text = "Para corrigir, siga os passos abaixo:\n                    1. Configure o HTTPS.\n                    2. Adicione o cabeçalho.\n                    3. Envie em todas as respostas.\n                    4. Teste a configuração.";
+        let (intro, items) = split_enumerated(text).expect("passos numerados");
+        assert!(intro.contains("Para corrigir"), "{intro}");
+        assert_eq!(items.len(), 4, "{items:?}");
+        assert!(items[0].starts_with("Configure o HTTPS"), "{items:?}");
+        assert!(items[3].starts_with("Teste a configuração"), "{items:?}");
     }
 }

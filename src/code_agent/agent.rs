@@ -945,6 +945,14 @@ fn location_is_relevant(finding: &Vulnerability, location: &CodeLocation) -> boo
         };
         return line_declares_port(&location.file, &location.snippet, port);
     }
+    if !matches!(
+        finding.source,
+        crate::domain::vulnerability::FindingSource::CodeAudit
+    ) && is_test_path(&location.file)
+        && !finding_mentions_path(finding, &location.file)
+    {
+        return false;
+    }
     let content = format!(
         "{} {}",
         location.file.to_lowercase(),
@@ -952,6 +960,28 @@ fn location_is_relevant(finding: &Vulnerability, location: &CodeLocation) -> boo
     );
     let anchors = finding_anchors(finding);
     anchors.iter().any(|anchor| content.contains(anchor))
+}
+
+fn is_test_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.split('/').any(|segment| {
+        matches!(
+            segment,
+            "test" | "tests" | "__tests__" | "spec" | "specs" | "cypress" | "fixtures" | "mocks"
+        )
+    }) || lower.contains(".test.")
+        || lower.contains(".spec.")
+}
+
+fn finding_mentions_path(finding: &Vulnerability, path: &str) -> bool {
+    let text = format!(
+        "{} {} {}",
+        finding.title, finding.description, finding.evidence
+    )
+    .to_ascii_lowercase();
+    let path = path.to_ascii_lowercase();
+    let name = path.rsplit('/').next().unwrap_or(&path);
+    text.contains(&path) || text.contains(name)
 }
 
 /// Extrai a porta de um achado de rede a partir do título ou da evidência.
@@ -1442,6 +1472,14 @@ fn build_system_prompt(limits: CodeAgentLimits) -> String {
 
 /// Monta as pistas do achado para o modelo, sanitizadas e delimitadas.
 fn build_user_prompt(finding: &Vulnerability) -> String {
+    let source_guidance = if matches!(
+        finding.source,
+        crate::domain::vulnerability::FindingSource::CodeAudit
+    ) {
+        ""
+    } else {
+        "\nPrefira código de produção. Não localize achados de scanner em tests/, fixtures, mocks ou specs, a menos que o próprio achado cite o arquivo de teste.\n"
+    };
     let port_guidance = if finding.is_network_port_finding() {
         "\nEste achado é de porta/serviço de rede: procure a porta exata em EXPOSE, ports, \
          containerPort, targetPort, listen, bind, PORT ou ListenAndServe. Não aceite imports, \
@@ -1455,6 +1493,7 @@ fn build_user_prompt(finding: &Vulnerability) -> String {
          do próprio achado: quando a evidência indicar arquivo e linha, comece por eles e não \
          os substitua por outra irregularidade encontrada durante a exploração.\n\
          {port_guidance}\
+         {source_guidance}\
          \n{HINT_OPEN}\n\
          ferramenta: {}\n\
          alvo: {}\n\
@@ -1859,6 +1898,33 @@ mod tests {
 
         assert!(report.findings[0].location.is_none());
         assert!(!requests.lock().expect("requisições").is_empty());
+    }
+
+    #[test]
+    fn scanner_locations_in_test_files_are_rejected_unless_the_finding_names_them() {
+        let mut header = finding(
+            "Cabeçalho de segurança ausente — x-xss-protection",
+            "template: http-missing-security-headers",
+        );
+        header.source = crate::domain::vulnerability::FindingSource::Real;
+        let bad = CodeLocation {
+            file: "test/api/http.test.ts".to_string(),
+            line: 48,
+            snippet: "assert.equal(res.headers['x-xss-protection'], undefined)".to_string(),
+        };
+        assert!(!location_is_relevant(&header, &bad));
+
+        let mut secret = finding(
+            "Segredo exposto por JWT em test/api/user.test.ts",
+            "test/api/user.test.ts:280",
+        );
+        secret.source = crate::domain::vulnerability::FindingSource::Real;
+        let good = CodeLocation {
+            file: "test/api/user.test.ts".to_string(),
+            line: 280,
+            snippet: "const token = 'jwt-secret'".to_string(),
+        };
+        assert!(location_is_relevant(&secret, &good));
     }
 
     #[test]
