@@ -194,19 +194,36 @@ impl Workspace {
     /// Busca textual recursiva no workspace, pulando diretórios de build,
     /// arquivos binários e arquivos maiores que o limite configurado.
     pub fn search(&self, term: &str, max_results: usize) -> Result<Vec<SearchHit>, WorkspaceError> {
+        self.search_any(&[term], max_results)
+    }
+
+    /// Busca por qualquer um dos termos em uma única passagem pelo workspace.
+    ///
+    /// Uma passagem só é necessária porque o localizador de portas testa vários
+    /// formatos (`EXPOSE 3000`, `containerPort: 3000`, `listen(3000)`); repetir
+    /// `search` por formato releria o projeto inteiro.
+    pub fn search_any(
+        &self,
+        terms: &[&str],
+        max_results: usize,
+    ) -> Result<Vec<SearchHit>, WorkspaceError> {
+        let needles: Vec<String> = terms
+            .iter()
+            .map(|term| term.to_ascii_lowercase())
+            .filter(|term| !term.is_empty())
+            .collect();
         let mut hits = Vec::new();
-        let needle = term.to_ascii_lowercase();
-        if needle.is_empty() || max_results == 0 {
+        if needles.is_empty() || max_results == 0 {
             return Ok(hits);
         }
-        self.search_directory(&self.root, &needle, max_results, &mut hits);
+        self.search_directory(&self.root, &needles, max_results, &mut hits);
         Ok(hits)
     }
 
     fn search_directory(
         &self,
         directory: &Path,
-        needle: &str,
+        needles: &[String],
         max_results: usize,
         hits: &mut Vec<SearchHit>,
     ) {
@@ -237,9 +254,9 @@ impl Workspace {
                 return;
             }
             if path.is_dir() {
-                self.search_directory(&path, needle, max_results, hits);
+                self.search_directory(&path, needles, max_results, hits);
             } else {
-                self.search_file(&path, needle, max_results, hits);
+                self.search_file(&path, needles, max_results, hits);
             }
         }
     }
@@ -247,7 +264,7 @@ impl Workspace {
     fn search_file(
         &self,
         path: &Path,
-        needle: &str,
+        needles: &[String],
         max_results: usize,
         hits: &mut Vec<SearchHit>,
     ) {
@@ -277,7 +294,8 @@ impl Workspace {
             if hits.len() >= max_results {
                 return;
             }
-            if line.to_ascii_lowercase().contains(needle) {
+            let lower = line.to_ascii_lowercase();
+            if needles.iter().any(|needle| lower.contains(needle)) {
                 hits.push(SearchHit {
                     path: relative.clone(),
                     line: index + 1,
@@ -463,6 +481,29 @@ mod tests {
         let limited = workspace.search("login", 2).unwrap();
         assert_eq!(limited.len(), 2);
         assert_eq!(limited[1].line, 4);
+    }
+
+    #[test]
+    fn search_any_matches_every_term_in_a_single_pass() {
+        let workspace = fixture_workspace();
+
+        let hits = workspace
+            .search_any(&["EXEMPLO_SECRET", "DEBUG"], 10)
+            .unwrap();
+        let locations: Vec<(String, usize)> = hits
+            .iter()
+            .map(|hit| (hit.path.clone(), hit.line))
+            .collect();
+        assert_eq!(
+            locations,
+            vec![
+                ("src/config.py".to_owned(), 2),
+                ("src/config.py".to_owned(), 3),
+            ]
+        );
+        assert!(hits
+            .iter()
+            .all(|hit| !hit.text.contains("valor-de-exemplo")));
     }
 
     #[test]

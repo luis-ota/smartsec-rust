@@ -10,7 +10,7 @@
 //! apenas apontar onde corrigir, nunca reclassificar o achado.
 
 use crate::code_agent::tools::{LocalToolRegistry, ToolCallResult, READ_FILE, SEARCH_CODE};
-use crate::code_agent::workspace::Workspace;
+use crate::code_agent::workspace::{SearchHit, Workspace};
 use crate::code_agent::CodeAgentLimits;
 use crate::domain::vulnerability::Vulnerability;
 use crate::llm::tool_calling::{ToolCall, ToolMessage, ToolTurn, ToolTurnRequest};
@@ -319,13 +319,26 @@ impl CodeAnalysisService {
         );
         for (index, finding) in findings.iter().enumerate() {
             if finding.is_network_port_finding() {
-                report.findings.push(undetermined(
-                    index,
-                    model,
-                    provider_label,
-                    "achado de porta/serviço de rede não tem origem em um arquivo do projeto; localização não determinada".to_string(),
-                ));
-                continue;
+                if let Some(location) = locate_network_port(self.registry.workspace(), finding) {
+                    crate::code_agent::progress::emit(
+                        progress,
+                        crate::code_agent::progress::CodeAgentEvent::FindingFinished {
+                            finding_index: index,
+                            located: true,
+                            tool_calls: 0,
+                        },
+                    );
+                    report.findings.push(deterministic_location(
+                        index,
+                        model,
+                        provider_label,
+                        location,
+                        finding,
+                    ));
+                    continue;
+                }
+                // Sem âncora determinística, o laço normal ainda pode achar o
+                // bind da porta; o portão de relevância rejeita imports.
             }
             // O registro de chamadas é acumulado **fora** do futuro do timeout:
             // dentro dele, um achado que estoura o prazo perderia as chamadas já
@@ -463,6 +476,16 @@ impl CodeAnalysisService {
                     &observed,
                     calls,
                 );
+                if let Some(location) = analysis.location.clone() {
+                    if !location_is_relevant(job.finding, &location) {
+                        analysis.location = None;
+                        analysis.remediation.clear();
+                        analysis.reason = Some(format!(
+                            "o trecho lido em {}:{} não contém nenhum termo que relacione o código ao achado; localização descartada",
+                            location.file, location.line
+                        ));
+                    }
+                }
                 if calls.is_empty() {
                     let note = format!("nenhuma ferramenta foi usada nas {iterations} tentativas");
                     analysis.reason = Some(match analysis.reason {
@@ -607,6 +630,605 @@ impl CodeAnalysisService {
 struct Dispatched {
     record: ToolCallRecord,
     model_output: String,
+}
+
+const RELEVANCE_STOPWORDS: &[&str] = &[
+    "porta",
+    "portas",
+    "open",
+    "aberta",
+    "aberto",
+    "servico",
+    "serviço",
+    "servidor",
+    "target",
+    "alvo",
+    "header",
+    "cabecalho",
+    "cabeçalho",
+    "ausente",
+    "missing",
+    "detectado",
+    "detected",
+    "vulnerabilidade",
+    "vulnerability",
+    "security",
+    "seguranca",
+    "segurança",
+    "http",
+    "https",
+    "template",
+    "matcher",
+    "endpoint",
+    "nuclei",
+    "nmap",
+    "produto",
+    "versao",
+    "versão",
+    "inform",
+    "informativa",
+    "real",
+    "configuracao",
+    "configuração",
+    "codigo",
+    "código",
+];
+
+const HEADER_RELEVANCE: &[(&str, &[&str])] = &[
+    (
+        "permissions-policy",
+        &[
+            "permissions-policy",
+            "permissions_policy",
+            "permissionspolicy",
+            "feature-policy",
+            "featurepolicy",
+            "helmet",
+        ],
+    ),
+    (
+        "referrer-policy",
+        &[
+            "referrer-policy",
+            "referrer_policy",
+            "referrerpolicy",
+            "referrer",
+            "helmet",
+        ],
+    ),
+    (
+        "strict-transport-security",
+        &[
+            "strict-transport-security",
+            "strict_transport_security",
+            "hsts",
+            "helmet",
+            "max-age",
+        ],
+    ),
+    (
+        "cross-origin-opener-policy",
+        &[
+            "cross-origin-opener-policy",
+            "cross_origin_opener_policy",
+            "coop",
+            "helmet",
+        ],
+    ),
+    (
+        "cross-origin-embedder-policy",
+        &[
+            "cross-origin-embedder-policy",
+            "cross_origin_embedder_policy",
+            "coep",
+            "require-corp",
+            "helmet",
+        ],
+    ),
+    (
+        "cross-origin-resource-policy",
+        &[
+            "cross-origin-resource-policy",
+            "cross_origin_resource_policy",
+            "corp",
+            "helmet",
+        ],
+    ),
+    (
+        "x-permitted-cross-domain-policies",
+        &[
+            "x-permitted-cross-domain-policies",
+            "permitted-cross-domain",
+            "crossdomain",
+            "cross-domain",
+            "helmet",
+        ],
+    ),
+    (
+        "x-frame-options",
+        &[
+            "x-frame-options",
+            "x_frame_options",
+            "frameguard",
+            "frame-ancestors",
+            "helmet",
+        ],
+    ),
+    (
+        "x-content-type-options",
+        &["x-content-type-options", "nosniff", "helmet"],
+    ),
+    (
+        "content-security-policy",
+        &[
+            "content-security-policy",
+            "content_security_policy",
+            "contentsecuritypolicy",
+            "csp",
+            "default-src",
+            "helmet",
+        ],
+    ),
+    (
+        "x-xss-protection",
+        &["x-xss-protection", "x_xss_protection", "xss", "helmet"],
+    ),
+];
+
+fn push_anchors(anchors: &mut Vec<String>, items: &[&str]) {
+    anchors.extend(items.iter().map(|item| (*item).to_string()));
+}
+
+fn finding_anchors(finding: &Vulnerability) -> Vec<String> {
+    let text = format!(
+        "{} {} {}",
+        finding.title, finding.description, finding.evidence
+    )
+    .to_lowercase();
+    let mut anchors = Vec::new();
+    if finding.is_network_port_finding() {
+        push_anchors(
+            &mut anchors,
+            &[
+                "expose",
+                "listen",
+                "bind",
+                "containerport",
+                "targetport",
+                "port",
+                "ports",
+                "dockerfile",
+                "compose",
+            ],
+        );
+        if let Some(port) = network_port(finding) {
+            anchors.push(format!("expose {port}"));
+            anchors.push(port.to_string());
+        }
+    }
+    for (header, aliases) in HEADER_RELEVANCE {
+        if text.contains(header) {
+            push_anchors(&mut anchors, aliases);
+        }
+    }
+    if text.contains("sql") || text.contains("injeção de sql") {
+        push_anchors(
+            &mut anchors,
+            &[
+                "sql", "select", "insert", "update", "delete", "query", "consulta", "execute",
+                "cursor", "where", "orm",
+            ],
+        );
+    }
+    if text.contains("xss") || text.contains("script entre sites") {
+        push_anchors(
+            &mut anchors,
+            &[
+                "xss",
+                "innerhtml",
+                "dangerouslysetinnerhtml",
+                "sanitize",
+                "escape",
+                "script",
+                "render",
+                "send",
+            ],
+        );
+    }
+    if text.contains("comando") || text.contains("command") {
+        push_anchors(
+            &mut anchors,
+            &[
+                "exec",
+                "spawn",
+                "system",
+                "shell",
+                "command",
+                "comando",
+                "subprocess",
+                "popen",
+            ],
+        );
+    }
+    if text.contains("path traversal") || text.contains("travessia") {
+        push_anchors(
+            &mut anchors,
+            &[
+                "path",
+                "traversal",
+                "join",
+                "normalize",
+                "canonical",
+                "file",
+                "arquivo",
+            ],
+        );
+    }
+    if text.contains("ssrf") {
+        push_anchors(
+            &mut anchors,
+            &["url", "fetch", "request", "http", "redirect", "ssrf"],
+        );
+    }
+    if text.contains("credencial")
+        || text.contains("hardcoded")
+        || text.contains("segredo")
+        || text.contains("password")
+    {
+        push_anchors(
+            &mut anchors,
+            &[
+                "password",
+                "senha",
+                "secret",
+                "token",
+                "api_key",
+                "apikey",
+                "credential",
+                "[redacted]",
+            ],
+        );
+    }
+    if text.contains("csrf") {
+        push_anchors(
+            &mut anchors,
+            &[
+                "csrf",
+                "samesite",
+                "same-site",
+                "origin",
+                "referer",
+                "token",
+            ],
+        );
+    }
+    if text.contains("xxe") || text.contains("xml") {
+        push_anchors(&mut anchors, &["xml", "doctype", "entity", "parser"]);
+    }
+    if text.contains("deserial") {
+        push_anchors(
+            &mut anchors,
+            &[
+                "pickle",
+                "deserialize",
+                "yaml.load",
+                "objectinputstream",
+                "marshal",
+                "unserialize",
+            ],
+        );
+    }
+    if text.contains("upload") || text.contains("upload de arquivo") {
+        push_anchors(
+            &mut anchors,
+            &["upload", "multipart", "file", "extension", "mime"],
+        );
+    }
+    if text.contains("redirect") || text.contains("redirecionamento") {
+        push_anchors(&mut anchors, &["redirect", "returnurl", "next", "url"]);
+    }
+    for token in text
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|token| token.len() >= 5 && !RELEVANCE_STOPWORDS.contains(token))
+    {
+        anchors.push(token.to_string());
+    }
+    anchors.sort();
+    anchors.dedup();
+    anchors
+}
+
+fn location_is_relevant(finding: &Vulnerability, location: &CodeLocation) -> bool {
+    if finding.is_network_port_finding() {
+        let Some(port) = network_port(finding) else {
+            return false;
+        };
+        return line_declares_port(&location.file, &location.snippet, port);
+    }
+    let content = format!(
+        "{} {}",
+        location.file.to_lowercase(),
+        location.snippet.to_lowercase()
+    );
+    let anchors = finding_anchors(finding);
+    anchors.iter().any(|anchor| content.contains(anchor))
+}
+
+/// Extrai a porta de um achado de rede a partir do título ou da evidência.
+fn network_port(finding: &Vulnerability) -> Option<u16> {
+    for text in [&finding.title, &finding.evidence] {
+        let lower = text.to_lowercase();
+        for marker in ["porta ", "porta=", "porta:", "port ", "port=", "port:"] {
+            let Some(position) = lower.find(marker) else {
+                continue;
+            };
+            let digits: String = lower[position + marker.len()..]
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            if let Ok(port) = digits.parse::<u16>() {
+                if port > 0 {
+                    return Some(port);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn file_name(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase()
+}
+
+fn is_dockerfile(path: &str) -> bool {
+    let name = file_name(path);
+    name == "dockerfile" || name.ends_with(".dockerfile")
+}
+
+fn is_compose_manifest(path: &str) -> bool {
+    let name = file_name(path);
+    (name.ends_with(".yml") || name.ends_with(".yaml"))
+        && (name.starts_with("docker-compose") || name.starts_with("compose"))
+}
+
+fn is_yaml_manifest(path: &str) -> bool {
+    let name = file_name(path);
+    name.ends_with(".yml") || name.ends_with(".yaml")
+}
+
+fn is_caddyfile(path: &str) -> bool {
+    let name = file_name(path);
+    name == "caddyfile" || name.starts_with("caddyfile.") || name.ends_with(".caddy")
+}
+
+/// Arquivos que descrevem o projeto, não o configuram: README, documentação e
+/// lockfiles mencionam portas sem fazer bind algum.
+fn is_ignored_port_file(path: &str) -> bool {
+    let name = file_name(path);
+    name.starts_with("readme")
+        || name.ends_with(".md")
+        || name.ends_with(".markdown")
+        || name.ends_with(".rst")
+        || name.ends_with(".lock")
+        || name.ends_with(".sum")
+        || name.ends_with(".min.js")
+        || name.ends_with(".map")
+        || matches!(
+            name.as_str(),
+            "package-lock.json"
+                | "npm-shrinkwrap.json"
+                | "yarn.lock"
+                | "pnpm-lock.yaml"
+                | "go.sum"
+                | "pipfile.lock"
+                | "poetry.lock"
+                | "composer.lock"
+                | "gemfile.lock"
+                | "bun.lockb"
+        )
+}
+
+/// Imports e comentários citam portas em nomes de pacotes e exemplos; não são
+/// o ponto em que o serviço escuta.
+fn is_comment_or_import(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//")
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with("<!--")
+        || trimmed.starts_with("import ")
+        || trimmed.starts_with("import\t")
+        || trimmed.starts_with("from ")
+        || trimmed.starts_with("use ")
+        || trimmed.starts_with("using ")
+        || trimmed.starts_with("export ")
+        || trimmed.starts_with("export\t")
+        || trimmed.contains("require(")
+}
+
+/// `true` se a porta aparece como número inteiro, e não como parte de 30000 ou
+/// 13000.
+fn contains_exact_port(line: &str, port: u16) -> bool {
+    let needle = port.to_string();
+    line.match_indices(&needle).any(|(start, _)| {
+        let before = line[..start].chars().next_back();
+        let after = line[start + needle.len()..].chars().next();
+        !before.is_some_and(|character| character.is_ascii_digit())
+            && !after.is_some_and(|character| character.is_ascii_digit())
+    })
+}
+
+/// `true` se a palavra aparece isolada; evita que `import` case com `port`.
+fn contains_word(line: &str, word: &str) -> bool {
+    line.match_indices(word).any(|(start, _)| {
+        let before = line[..start].chars().next_back();
+        let after = line[start + word.len()..].chars().next();
+        !before.is_some_and(|character| character.is_alphanumeric() || character == '_')
+            && !after.is_some_and(|character| character.is_alphanumeric() || character == '_')
+    })
+}
+
+fn compose_line_declares_port(line: &str, port: u16) -> bool {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix('-') {
+        let item = rest
+            .trim()
+            .trim_matches(|character| character == '"' || character == '\'');
+        let starts_with_port = item.starts_with(&port.to_string());
+        return contains_exact_port(item, port)
+            && (starts_with_port
+                || item.contains(&format!("{port}:"))
+                || item.contains(&format!(":{port}")));
+    }
+    if contains_word(trimmed, "ports") || contains_word(trimmed, "port") {
+        return true;
+    }
+    let quoted_item = trimmed.starts_with('"') || trimmed.starts_with('\'');
+    quoted_item && (trimmed.contains(&format!("{port}:")) || trimmed.contains(&format!(":{port}")))
+}
+
+/// Remove o trecho comentado para que `app.listen(3000); // exemplo` não conte
+/// como bind. `://` em URL não é comentário.
+fn before_comment(line: &str) -> &str {
+    let mut end = line.len();
+    for marker in ["//", "/*", "<!--", "#"] {
+        let mut offset = 0;
+        while let Some(found) = line[offset..].find(marker) {
+            let position = offset + found;
+            if marker == "//" && line[..position].ends_with(':') {
+                offset = position + marker.len();
+                continue;
+            }
+            end = end.min(position);
+            break;
+        }
+    }
+    &line[..end]
+}
+
+/// Só aceita uma linha que cite a porta exata **e** um padrão de bind/expose.
+fn line_declares_port(path: &str, line: &str, port: u16) -> bool {
+    if is_ignored_port_file(path) {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    let code = before_comment(&lower);
+    if is_comment_or_import(code) || !contains_exact_port(code, port) {
+        return false;
+    }
+    if is_compose_manifest(path) {
+        return compose_line_declares_port(code, port);
+    }
+    if is_dockerfile(path) {
+        return code.contains("expose")
+            || contains_word(code, "port")
+            || contains_word(code, "ports");
+    }
+    let pattern = code.contains("expose")
+        || code.contains("listen")
+        || code.contains("bind")
+        || code.contains("containerport")
+        || code.contains("targetport")
+        || contains_word(code, "port")
+        || contains_word(code, "ports");
+    if pattern {
+        return true;
+    }
+    is_caddyfile(path) && code.contains(&format!(":{port}"))
+}
+
+fn port_location_rank(path: &str) -> u8 {
+    if is_dockerfile(path) {
+        0
+    } else if is_compose_manifest(path) {
+        1
+    } else if is_yaml_manifest(path) {
+        2
+    } else {
+        3
+    }
+}
+
+fn port_search_needles(port: u16) -> Vec<String> {
+    vec![
+        format!(":{port}"),
+        format!("={port}"),
+        format!("({port}"),
+        format!(" {port}"),
+        format!("- {port}"),
+        format!("\"{port}\""),
+        format!("'{port}'"),
+        format!("{port}:"),
+    ]
+}
+
+fn best_port_hit(hits: Vec<SearchHit>, port: u16) -> Option<SearchHit> {
+    hits.into_iter()
+        .filter(|hit| line_declares_port(&hit.path, &hit.text, port))
+        .min_by_key(|hit| (port_location_rank(&hit.path), hit.path.clone(), hit.line))
+}
+
+/// Localiza deterministicamente um achado de porta em Dockerfile, compose,
+/// manifesto Kubernetes ou configuração de bind do servidor.
+///
+/// Não usa LLM: só aceita a porta exata junto de `EXPOSE`, `ports`,
+/// `containerPort`, `targetPort`, `listen`, `bind` ou `PORT`. Se não houver
+/// match exato, devolve `None` e o laço normal do agente decide.
+pub fn locate_network_port(workspace: &Workspace, finding: &Vulnerability) -> Option<CodeLocation> {
+    let port = network_port(finding)?;
+    let needles = port_search_needles(port);
+    let terms: Vec<&str> = needles.iter().map(String::as_str).collect();
+    let mut best = workspace
+        .search_any(&terms, 2000)
+        .ok()
+        .and_then(|hits| best_port_hit(hits, port));
+    if best.is_none() {
+        best = workspace
+            .search(&port.to_string(), 2000)
+            .ok()
+            .and_then(|hits| best_port_hit(hits, port));
+    }
+    best.map(|hit| CodeLocation {
+        file: hit.path,
+        line: hit.line,
+        snippet: truncate(&hit.text, 200),
+    })
+}
+
+pub fn locate_network_port_in_project(
+    project_dir: &std::path::Path,
+    finding: &Vulnerability,
+) -> Option<CodeLocation> {
+    let workspace = Workspace::open(project_dir).ok()?;
+    locate_network_port(&workspace, finding)
+}
+
+fn deterministic_location(
+    finding_index: usize,
+    model: &str,
+    provider: &str,
+    location: CodeLocation,
+    finding: &Vulnerability,
+) -> FindingCodeAnalysis {
+    let port = network_port(finding);
+    FindingCodeAnalysis {
+        finding_index,
+        location: Some(location),
+        remediation: port
+            .map(|port| {
+                vec![format!(
+                    "Remova a exposição da porta {port} do Dockerfile ou restrinja o acesso com firewall/proxy."
+                )]
+            })
+            .unwrap_or_default(),
+        reason: None,
+        model: model.to_string(),
+        provider: provider.to_string(),
+        tool_calls: 0,
+        fallback_used: true,
+    }
 }
 
 fn undetermined(
@@ -820,11 +1442,19 @@ fn build_system_prompt(limits: CodeAgentLimits) -> String {
 
 /// Monta as pistas do achado para o modelo, sanitizadas e delimitadas.
 fn build_user_prompt(finding: &Vulnerability) -> String {
+    let port_guidance = if finding.is_network_port_finding() {
+        "\nEste achado é de porta/serviço de rede: procure a porta exata em EXPOSE, ports, \
+         containerPort, targetPort, listen, bind, PORT ou ListenAndServe. Não aceite imports, \
+         comentários, README nem lockfiles como origem do achado.\n"
+    } else {
+        ""
+    };
     format!(
         "Localize a origem deste achado no projeto e explique a correção no código. Use as \
          ferramentas para explorar o projeto antes de responder. A origem procurada é o ponto \
          do próprio achado: quando a evidência indicar arquivo e linha, comece por eles e não \
          os substitua por outra irregularidade encontrada durante a exploração.\n\
+         {port_guidance}\
          \n{HINT_OPEN}\n\
          ferramenta: {}\n\
          alvo: {}\n\
@@ -994,6 +1624,34 @@ mod tests {
         )
     }
 
+    fn project_service(root: &std::path::Path, limits: CodeAgentLimits) -> CodeAnalysisService {
+        CodeAnalysisService::new(
+            LocalToolRegistry::new(Workspace::open(root).unwrap(), limits, Vec::new()),
+            limits,
+        )
+    }
+
+    fn temp_project(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec-agent-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("diretório temporário");
+        dir
+    }
+
+    fn nmap_port(port: u16) -> Vulnerability {
+        let mut finding = finding(
+            &format!("Porta {port} (http) aberta"),
+            &format!("nmap porta={port}/tcp serviço=http produto= versão="),
+        );
+        finding.tool = "Nmap".to_string();
+        finding.source = crate::domain::vulnerability::FindingSource::Real;
+        finding
+    }
+
     #[tokio::test]
     async fn locates_the_origin_after_reading_the_file() {
         let provider = ScriptedProvider::new(
@@ -1084,11 +1742,108 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_network_port_finding_is_not_sent_to_the_code_agent() {
+    async fn a_network_port_with_a_deterministic_anchor_never_reaches_the_llm() {
+        let dir = temp_project("port-deterministico");
+        std::fs::write(
+            dir.join("Dockerfile"),
+            "FROM node\nUSER 65532\nEXPOSE 3000\nCMD [\"node\", \"app.js\"]\n",
+        )
+        .expect("Dockerfile");
+
         let provider = ScriptedProvider::new(Vec::new(), true);
         let requests = Arc::clone(&provider.requests);
-        let mut port = finding("Porta 3000 (ppp) aberta", "nmap porta=3000/tcp servico=ppp");
-        port.tool = "Nmap".to_string();
+        let limits = CodeAgentLimits::default();
+        let report = project_service(&dir, limits)
+            .analyze(
+                &provider,
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[nmap_port(3000)],
+                    progress: None,
+                },
+            )
+            .await;
+
+        let analysis = &report.findings[0];
+        let location = analysis
+            .location
+            .as_ref()
+            .expect("localização determinística");
+        assert_eq!(location.file, "Dockerfile");
+        assert_eq!(location.line, 3);
+        assert!(location.snippet.contains("EXPOSE 3000"), "{location:?}");
+        assert!(analysis.fallback_used);
+        assert!(
+            requests.lock().expect("requisições").is_empty(),
+            "o determinístico não deve gastar turno de LLM"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_network_port_without_anchor_uses_the_agent_and_rejects_an_import() {
+        let dir = temp_project("port-import");
+        std::fs::create_dir_all(dir.join("src")).expect("src");
+        std::fs::write(
+            dir.join("src/server.ts"),
+            "import { ProductModel } from './models/product';\nconst app = express();\n",
+        )
+        .expect("server.ts");
+
+        let provider = ScriptedProvider::new(
+            vec![
+                ToolTurn {
+                    content: String::new(),
+                    tool_calls: vec![tool_call(
+                        "c1",
+                        "read_file",
+                        serde_json::json!({"path": "src/server.ts"}),
+                    )],
+                },
+                ToolTurn {
+                    content: r#"{"localizacao": {"arquivo": "src/server.ts", "linha": 1}, "passos": ["passo"]}"#.to_string(),
+                    tool_calls: Vec::new(),
+                },
+            ],
+            true,
+        );
+        let requests = Arc::clone(&provider.requests);
+        let limits = CodeAgentLimits::default();
+        let report = project_service(&dir, limits)
+            .analyze(
+                &provider,
+                CodeAgentContext {
+                    model: "gpt-4o",
+                    provider_label: "OpenAI",
+                    findings: &[nmap_port(3000)],
+                    progress: None,
+                },
+            )
+            .await;
+
+        let analysis = &report.findings[0];
+        assert!(!analysis.located());
+        assert!(
+            analysis
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("não contém nenhum termo")),
+            "{:?}",
+            analysis.reason
+        );
+        assert_eq!(
+            requests.lock().expect("requisições").len(),
+            2,
+            "sem âncora determinística o laço do agente deve rodar"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_network_port_that_does_not_match_any_anchor_stays_undetermined() {
+        let provider = ScriptedProvider::new(Vec::new(), true);
+        let requests = Arc::clone(&provider.requests);
 
         let report = fixture_service(CodeAgentLimits::default())
             .analyze(
@@ -1096,25 +1851,165 @@ mod tests {
                 CodeAgentContext {
                     model: "gpt-4o",
                     provider_label: "OpenAI",
-                    findings: &[port],
+                    findings: &[nmap_port(3000)],
                     progress: None,
                 },
             )
             .await;
 
         assert!(report.findings[0].location.is_none());
-        assert!(
-            report.findings[0]
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("rede")),
-            "{:?}",
-            report.findings[0].reason
+        assert!(!requests.lock().expect("requisições").is_empty());
+    }
+
+    #[test]
+    fn relevance_rejects_an_import_for_a_port_and_accepts_bind_patterns() {
+        let port = nmap_port(3000);
+        let bad = CodeLocation {
+            file: "server.ts".to_string(),
+            line: 40,
+            snippet: "import { ProductModel } from './models/product'".to_string(),
+        };
+        assert!(!location_is_relevant(&port, &bad));
+
+        for (file, snippet) in [
+            ("Dockerfile", "EXPOSE 3000"),
+            ("src/server.ts", "app.listen(3000);"),
+            ("docker-compose.yml", "      - \"3000:3000\""),
+            ("k8s/deployment.yaml", "        containerPort: 3000"),
+            ("k8s/service.yaml", "        targetPort: 3000"),
+            ("nginx.conf", "  listen 3000;"),
+            ("src/main.go", "http.ListenAndServe(\":3000\", nil)"),
+            (".env", "PORT=3000"),
+        ] {
+            let location = CodeLocation {
+                file: file.to_string(),
+                line: 1,
+                snippet: snippet.to_string(),
+            };
+            assert!(location_is_relevant(&port, &location), "{file}: {snippet}");
+        }
+
+        for (file, snippet) in [
+            ("Dockerfile", "# EXPOSE 3000"),
+            ("src/server.ts", "// app.listen(3000);"),
+            ("src/server.ts", "const x = 1; // app.listen(3000);"),
+            ("src/server.ts", "app.listen(3001);"),
+            ("README.md", "app.listen(3000);"),
+        ] {
+            let location = CodeLocation {
+                file: file.to_string(),
+                line: 1,
+                snippet: snippet.to_string(),
+            };
+            assert!(!location_is_relevant(&port, &location), "{file}: {snippet}");
+        }
+    }
+
+    #[test]
+    fn relevance_accepts_a_feature_policy_line_for_permissions_policy() {
+        let mut header = finding(
+            "Cabeçalho de segurança ausente — permissions-policy",
+            "header ausente",
         );
-        assert!(
-            requests.lock().expect("requisições").is_empty(),
-            "o agente não deve gastar um turno para achar código de uma porta"
+        header.source = crate::domain::vulnerability::FindingSource::Real;
+        let location = CodeLocation {
+            file: "server.ts".to_string(),
+            line: 191,
+            snippet: "app.use(featurePolicy({".to_string(),
+        };
+        assert!(location_is_relevant(&header, &location));
+    }
+
+    #[test]
+    fn relevance_accepts_sql_execution_and_redacted_secret_lines() {
+        let mut sql = finding(
+            "Injeção de SQL em /api/login",
+            "cursor.execute('SELECT ...')",
         );
+        sql.source = crate::domain::vulnerability::FindingSource::Real;
+        for snippet in [
+            "cursor.execute(\"SELECT * FROM users WHERE id = %s\", [user_id])",
+            "sequelize.query(`SELECT * FROM users WHERE id = ${user_id}`)",
+        ] {
+            let location = CodeLocation {
+                file: "src/db.py".to_string(),
+                line: 12,
+                snippet: snippet.to_string(),
+            };
+            assert!(location_is_relevant(&sql, &location), "{snippet}");
+        }
+
+        let mut secret = finding("Segredo hardcoded no código", "token exposto");
+        secret.source = crate::domain::vulnerability::FindingSource::Real;
+        let location = CodeLocation {
+            file: "src/config.py".to_string(),
+            line: 2,
+            snippet: "API_TOKEN = \"[REDACTED]\"".to_string(),
+        };
+        assert!(location_is_relevant(&secret, &location));
+    }
+
+    #[test]
+    fn a_network_port_is_located_in_each_manifest_and_bind_config() {
+        let dir = temp_project("port-formatos");
+        std::fs::create_dir_all(dir.join("src")).expect("src");
+        std::fs::create_dir_all(dir.join("k8s")).expect("k8s");
+        std::fs::write(dir.join("Dockerfile"), "FROM node\nEXPOSE 3001\n").expect("Dockerfile");
+        std::fs::write(
+            dir.join("docker-compose.yml"),
+            "services:\n  app:\n    ports:\n      - \"3002:3002\"\n",
+        )
+        .expect("compose");
+        std::fs::write(
+            dir.join("k8s/deployment.yaml"),
+            "spec:\n  containers:\n    - containerPort: 3003\n",
+        )
+        .expect("k8s");
+        std::fs::write(dir.join("src/server.ts"), "app.listen(3004);\n").expect("server.ts");
+        std::fs::write(dir.join("nginx.conf"), "server {\n  listen 3005;\n}\n").expect("nginx");
+        std::fs::write(dir.join("Caddyfile"), ":3006 {\n}\n").expect("Caddyfile");
+        std::fs::write(dir.join(".env"), "PORT=3007\n").expect(".env");
+        std::fs::write(
+            dir.join("src/main.go"),
+            "http.ListenAndServe(\":3008\", nil)\n",
+        )
+        .expect("main.go");
+
+        for (port, file, expected) in [
+            (3001, "Dockerfile", "EXPOSE 3001"),
+            (3002, "docker-compose.yml", "3002:3002"),
+            (3003, "k8s/deployment.yaml", "containerPort: 3003"),
+            (3004, "src/server.ts", "app.listen(3004)"),
+            (3005, "nginx.conf", "listen 3005"),
+            (3006, "Caddyfile", ":3006"),
+            (3007, ".env", "PORT=3007"),
+            (3008, "src/main.go", "ListenAndServe"),
+        ] {
+            let location = locate_network_port_in_project(&dir, &nmap_port(port))
+                .unwrap_or_else(|| panic!("porta {port} deveria ser localizada em {file}"));
+            assert_eq!(location.file, file, "porta {port}");
+            assert!(location.snippet.contains(expected), "{location:?}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_network_port_is_not_located_in_imports_comments_readmes_or_lockfiles() {
+        let dir = temp_project("port-falsos-positivos");
+        std::fs::create_dir_all(dir.join("src")).expect("src");
+        std::fs::write(
+            dir.join("src/server.ts"),
+            "import { ProductModel } from './models/product'; // porta 3000\nconst related = 13000;\nconst x = 1; // app.listen(3000)\n",
+        )
+        .expect("server.ts");
+        std::fs::write(dir.join("README.md"), "app.listen(3000)\n").expect("README");
+        std::fs::write(dir.join("package-lock.json"), "\"version\": \"3000\"\n").expect("lock");
+        std::fs::write(dir.join("Dockerfile"), "# EXPOSE 3000\n").expect("Dockerfile");
+
+        assert!(locate_network_port_in_project(&dir, &nmap_port(3000)).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1902,7 +2797,7 @@ mod tests {
                 CodeAgentContext {
                     model: "nvidia/nemotron-3-super-120b-a12b",
                     provider_label: "NVIDIA NIM",
-                    findings: &[finding("Segredo no código", "db.py:3 · segredo")],
+                    findings: &[finding("Validação de login", "src/app.py:4 · login")],
                     progress: None,
                 },
             )
