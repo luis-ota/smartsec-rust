@@ -1026,11 +1026,22 @@ impl Orchestrator {
             None => metadata,
         };
         let metadata = metadata.with_agent_trail(self.agent_trail.path());
-        self.rag_explanations
+        let metadata = self
+            .rag_explanations
             .iter()
             .fold(metadata, |metadata, result| {
                 metadata.with_rag_explanation(result)
-            })
+            });
+        let comparison = crate::orchestrator::scan_logger::comparison_with_previous(
+            &self.config.target_url,
+            &self.started_at,
+            &self.scan_id,
+            &self.findings,
+        );
+        crate::orchestrator::scan_logger::ScanMetadata {
+            comparison,
+            ..metadata
+        }
     }
 
     /// Registra uma explicação do detalhe do achado para o log estruturado.

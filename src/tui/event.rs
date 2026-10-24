@@ -348,7 +348,7 @@ fn start_rag_explanation(app: &mut AppState) {
     let Some(index) = app.result_detail_vuln else {
         return;
     };
-    // A explicação da IA é lida na tela "Em linguagem direta"; o detalhe fica
+    // A explicação da IA é lida na tela "Explicação educacional"; o detalhe fica
     // só com a evidência e a correção no código.
     app.didactic_return_focus = FocusTarget::ResultsDetail;
     app.show_didactic = true;

@@ -19,13 +19,17 @@ use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
 fn render_80x24(app: &mut AppState) -> (String, Buffer) {
-    let backend = TestBackend::new(80, 24);
+    render_size(app, 80, 24)
+}
+
+fn render_size(app: &mut AppState, width: u16, height: u16) -> (String, Buffer) {
+    let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| super::render(app, frame)).unwrap();
     let buffer = terminal.backend().buffer().clone();
-    let snapshot = (0..24)
+    let snapshot = (0..height)
         .map(|row| {
-            (0..80)
+            (0..width)
                 .map(|column| buffer[(column, row)].symbol())
                 .collect::<String>()
         })
@@ -410,7 +414,7 @@ fn result_empty_list_detail_and_didactic_match_80x24_snapshots() {
 
     app.show_didactic = true;
     app.focus = FocusTarget::DidacticContent;
-    assert_snapshot(&mut app, &["Explicação didática", "Em linguagem direta"]);
+    assert_snapshot(&mut app, &["Explicação didática", "Explicação educacional"]);
 }
 
 /// A explicação assistida (RAG) mostra o exemplo e o veredito, ou a recusa
@@ -437,35 +441,102 @@ fn finding_didactic_shows_the_rag_explanation_or_the_refusal() {
     let snapshot = assert_snapshot(
         &mut app,
         &[
-            "Em linguagem direta",
-            "gerando explicação em linguagem direta…",
+            "Explicação educacional",
+            "gerando explicação educacional…",
+            "1. O que aconteceu e por que importa",
         ],
     );
-    assert!(snapshot.contains("Explicação da IA"), "{snapshot}");
+    assert!(
+        snapshot.contains("ferramenta  Nuclei"),
+        "o cabeçalho precisa identificar a ferramenta\n{snapshot}"
+    );
 
     app.rag_pending = None;
     app.rag_results.insert(0, rag_result(true));
-    app.didactic_scroll = usize::MAX;
-    let (snapshot, _) = render_80x24(&mut app);
+    app.didactic_scroll = 0;
+    let (snapshot, _) = render_size(&mut app, 100, 40);
     assert!(
         snapshot.contains("A entrada é concatenada na consulta."),
         "{snapshot}"
     );
-    assert!(snapshot.contains("veredito"), "{snapshot}");
-    assert!(snapshot.contains("padrão seguro"), "{snapshot}");
+    assert!(
+        snapshot.contains("2. Do vulnerável ao corrigido"),
+        "{snapshot}"
+    );
     assert!(snapshot.contains("┌─ vulnerável"), "{snapshot}");
     assert!(snapshot.contains("┌─ corrigido"), "{snapshot}");
+    assert!(snapshot.contains("padrão seguro"), "{snapshot}");
+    assert!(snapshot.contains("3. Como verificar"), "{snapshot}");
+    assert!(
+        snapshot.contains("4. Para lembrar · triplas da ontologia"),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains("sem triplas registradas"), "{snapshot}");
+    assert!(snapshot.contains("veredito"), "{snapshot}");
+    assert!(snapshot.contains("Pergunta de fixação"), "{snapshot}");
 
     app.rag_results.insert(0, rag_result(false));
-    app.didactic_scroll = usize::MAX;
-    let (snapshot, _) = render_80x24(&mut app);
+    app.didactic_scroll = 0;
+    let (snapshot, _) = render_size(&mut app, 100, 40);
     assert!(
         snapshot.contains("não consegui explicar isto com segurança."),
         "{snapshot}"
     );
     assert!(snapshot.contains("o provedor falhou"), "{snapshot}");
+    assert!(
+        snapshot.contains("4. Para lembrar · triplas da ontologia"),
+        "{snapshot}"
+    );
     assert!(snapshot.contains("Tentar de novo"), "{snapshot}");
     assert!(snapshot.contains("Resumo determinístico"), "{snapshot}");
+}
+
+/// A tela educacional identifica o achado (severidade, ferramenta e
+/// arquivo:linha) e mantém as triplas da ontologia visíveis.
+#[test]
+fn the_educational_screen_identifies_the_finding_and_shows_the_ontology() {
+    use crate::domain::vulnerability::CodeLocation;
+
+    let mut app = app();
+    app.step = AppStep::Results;
+    let mut item = finding();
+    item.title = "Injeção de SQL no login".to_string();
+    item.tool = "Code Audit".to_string();
+    item.code_location = Some(CodeLocation {
+        file: "src/login.ts".to_string(),
+        line: 34,
+        snippet: "db.query(`SELECT * FROM users WHERE name = '${user}'`);".to_string(),
+    });
+    app.orchestrator.findings = vec![item];
+    app.result_detail_vuln = Some(0);
+    app.show_didactic = true;
+    app.focus = FocusTarget::DidacticContent;
+
+    let mut result = rag_result(true);
+    result.claims = vec![crate::cyberrag::ontology::OntologyClaim {
+        sujeito: "injecao_sql".to_string(),
+        relacao: "expoe".to_string(),
+        objeto: "banco_de_dados".to_string(),
+    }];
+    app.rag_results.insert(0, result);
+
+    let (snapshot, _) = render_size(&mut app, 100, 40);
+
+    assert!(
+        snapshot.contains("CRÍTICA  Injeção de SQL no login"),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains("ferramenta  Code Audit"), "{snapshot}");
+    assert!(snapshot.contains("src/login.ts:34"), "{snapshot}");
+    assert!(
+        snapshot.contains("4. Para lembrar · triplas da ontologia"),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.contains("• injecao_sql → expoe → banco_de_dados"),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains("Pergunta de fixação"), "{snapshot}");
 }
 
 fn rag_result(approved: bool) -> crate::cyberrag::service::ExplanationResult {
@@ -537,6 +608,46 @@ fn finding_detail_shows_long_and_sanitized_evidence() {
         "a linha com credencial é substituída por [REDACTED]\n{scrolled}"
     );
     assert!(!scrolled.contains("token-secreto"), "{scrolled}");
+}
+
+/// A lista identifica cada achado sem abrir o detalhe: severidade, ferramenta,
+/// título e arquivo:linha, nessa ordem, legíveis em 80x24.
+#[test]
+fn the_results_list_identifies_tool_and_location_at_80x24() {
+    use crate::domain::vulnerability::CodeLocation;
+
+    let mut app = app();
+    app.step = AppStep::Results;
+    app.focus = FocusTarget::ResultsList;
+    app.orchestrator.findings = vec![Vulnerability {
+        title: "Injeção de SQL no login".to_string(),
+        severity: Severity::Critical,
+        tool: "Code Audit".to_string(),
+        code_location: Some(CodeLocation {
+            file: "src/login.ts".to_string(),
+            line: 34,
+            snippet: "db.query(query)".to_string(),
+        }),
+        ..finding()
+    }];
+
+    let (snapshot, _) = render_80x24(&mut app);
+    let row = snapshot
+        .lines()
+        .find(|line| line.contains("Injeção de SQL no login"))
+        .expect("a linha do achado precisa estar visível");
+
+    assert!(row.contains("CRÍTICA"), "{snapshot}");
+    assert!(row.contains("Code Audit"), "{snapshot}");
+    assert!(row.contains("login.ts:34"), "{snapshot}");
+    let severity = row.find("CRÍTICA").unwrap();
+    let tool = row.find("Code Audit").unwrap();
+    let title = row.find("Injeção de SQL no login").unwrap();
+    let location = row.find("login.ts:34").unwrap();
+    assert!(
+        severity < tool && tool < title && title < location,
+        "a ordem precisa ser severidade · ferramenta · título · arquivo:linha\n{snapshot}"
+    );
 }
 
 /// REQ15: os críticos ficam no topo, o painel anuncia isso e a cor da
@@ -1022,7 +1133,7 @@ fn the_first_run_screen_lists_what_the_machine_has_at_80x24() {
             "O que encontramos nesta máquina",
             "IA local disponível",
             "llama.cpp responde em http://localhost:8080/v1",
-            "Cofre de segredos disponível",
+            "Armazenamento de credenciais disponível",
             "Podman rootless disponível",
         ],
     );

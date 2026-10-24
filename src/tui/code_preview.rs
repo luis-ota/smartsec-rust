@@ -8,6 +8,7 @@ use crate::code_agent::workspace::{Workspace, WorkspaceError};
 use crate::utils::redaction::sanitize_code_line;
 use ratatui::style::Color;
 use std::path::{Path, PathBuf};
+use unicode_width::UnicodeWidthChar;
 
 pub const PREVIEW_CONTEXT: usize = 2;
 pub const PREVIEW_MAX_LINES: usize = 24;
@@ -259,6 +260,57 @@ impl CodeLanguage {
 
 /// Realce simples de uma linha: comentário, string, número, palavra-chave e
 /// chamada de função. Não é um parser; cobre a leitura de código na TUI.
+/// Quebra uma linha destacada em várias linhas visuais, preservando as cores
+/// dos tokens. Evita o `…` em blocos de código: o conteúdo continua legível.
+pub fn wrap_highlighted_line(
+    tokens: Vec<(String, Color)>,
+    width: usize,
+) -> Vec<Vec<(String, Color)>> {
+    let width = width.max(1);
+    let mut lines: Vec<Vec<(String, Color)>> = vec![Vec::new()];
+    let mut used = 0usize;
+    for (text, color) in tokens {
+        let mut remaining = text.as_str();
+        while !remaining.is_empty() {
+            if used >= width {
+                lines.push(Vec::new());
+                used = 0;
+            }
+            let available = width - used;
+            let mut piece = String::new();
+            let mut piece_width = 0usize;
+            for character in remaining.chars() {
+                let character_width = character.width().unwrap_or(0);
+                if !piece.is_empty() && piece_width + character_width > available {
+                    break;
+                }
+                piece.push(character);
+                piece_width += character_width;
+                if piece_width >= available {
+                    break;
+                }
+            }
+            if piece.is_empty() {
+                if let Some(character) = remaining.chars().next() {
+                    piece.push(character);
+                    piece_width = character.width().unwrap_or(0);
+                }
+            }
+            lines
+                .last_mut()
+                .expect("sempre há uma linha")
+                .push((piece.clone(), color));
+            used += piece_width;
+            remaining = &remaining[piece.len()..];
+            if !remaining.is_empty() {
+                lines.push(Vec::new());
+                used = 0;
+            }
+        }
+    }
+    lines
+}
+
 pub fn highlight_line(line: &str, language: CodeLanguage) -> Vec<(String, Color)> {
     let mut spans = Vec::new();
     let mut index = 0;
@@ -386,6 +438,21 @@ mod tests {
             panic!("traversal não deveria carregar");
         };
         assert!(reason.contains("fora"), "{reason}");
+    }
+
+    #[test]
+    fn long_code_lines_wrap_without_losing_content() {
+        let original =
+            "const resultado = funcaoMuitoLonga(argumentoUm, argumentoDois, argumentoTres);";
+        let tokens = highlight_line(original, CodeLanguage::JavaScript);
+        let wrapped = wrap_highlighted_line(tokens, 18);
+        assert!(wrapped.len() > 1, "{wrapped:?}");
+        let joined: String = wrapped
+            .iter()
+            .flat_map(|line| line.iter())
+            .map(|(text, _)| text.as_str())
+            .collect();
+        assert_eq!(joined, original);
     }
 
     #[test]

@@ -346,6 +346,8 @@ pub struct AppState {
     /// Raiz usada para ler a prévia; separada do config para o replay não
     /// misturar o projeto atual com o projeto do scan aberto.
     pub results_project_dir: Option<PathBuf>,
+    /// Diferença em relação à execução anterior do mesmo alvo.
+    pub scan_comparison: crate::orchestrator::scan_logger::ScanComparison,
     /// Explicação RAG por achado, exibida no detalhe (issue #109).
     pub rag_results: std::collections::BTreeMap<usize, crate::cyberrag::service::ExplanationResult>,
     /// Achado com explicação em andamento.
@@ -543,6 +545,7 @@ impl AppState {
             result_detail_vuln: None,
             detail_code_preview: None,
             results_project_dir: None,
+            scan_comparison: crate::orchestrator::scan_logger::ScanComparison::default(),
             detail_scroll: 0,
             detail_max_scroll: 0,
             md_exported: false,
@@ -737,19 +740,47 @@ impl AppState {
         &mut self,
         metadata: crate::orchestrator::scan_logger::ScanMetadata,
     ) -> anyhow::Result<()> {
+        let legacy_project_dir = if metadata.code_project_dir.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(&metadata.code_project_dir))
+        };
+        let stored_comparison = metadata.comparison.clone();
         let mut findings = Vec::with_capacity(metadata.findings.len());
         for value in metadata.findings {
             let mut finding: Vulnerability = serde_json::from_value(value).map_err(|error| {
                 anyhow::anyhow!("achado inválido no scan {}: {error}", metadata.scan_id)
             })?;
             // Logs antigos podem ter uma localização alucinada para porta/serviço
-            // de rede; a origem não existe no projeto, então não a exibimos.
-            if finding.is_network_port_finding() && finding.code_location.is_some() {
-                finding.code_location = None;
-                finding.code_remediation.clear();
+            // de rede. Reencontra a origem apenas em EXPOSE/ports do Docker; sem
+            // match exato, é melhor não mostrar nada do que mostrar um import.
+            if finding.is_network_port_finding() {
+                finding.code_location = legacy_project_dir.as_deref().and_then(|dir| {
+                    crate::code_agent::agent::locate_network_port_in_project(dir, &finding)
+                });
+                finding.code_remediation = if finding.code_location.is_some() {
+                    vec![
+                        "Remova a exposição da porta no Dockerfile ou restrinja o acesso com firewall/proxy."
+                            .to_string(),
+                    ]
+                } else {
+                    Vec::new()
+                };
             }
             findings.push(finding);
         }
+        self.scan_comparison = if stored_comparison.has_previous() {
+            stored_comparison
+        } else {
+            // Logs antigos não têm a comparação gravada: recalcula a partir do
+            // histórico, que é somente leitura.
+            crate::orchestrator::scan_logger::comparison_with_previous(
+                &metadata.target_url,
+                &metadata.started_at,
+                &metadata.scan_id,
+                &findings,
+            )
+        };
         self.config.target_url = metadata.target_url.clone();
         if !metadata.code_project_dir.is_empty() {
             self.config.project_dir = Some(metadata.code_project_dir.clone());
@@ -1181,6 +1212,7 @@ impl AppState {
                     audit_log,
                 } => {
                     self.orchestrator = *orchestrator;
+                    self.scan_comparison = Default::default();
                     let agent_history = self.orchestrator.agent.execution_history.clone();
                     for detail in &agent_history {
                         let detail = crate::utils::redaction::sanitize_text(detail);
@@ -1214,6 +1246,13 @@ impl AppState {
                                 "[auditoria] Log salvo em {}",
                                 path.display()
                             ));
+                            // A comparação é a que ficou gravada no arquivo: ler
+                            // de lá evita divergir do que o replay mostrará.
+                            if let Ok(metadata) =
+                                crate::orchestrator::scan_logger::load_scan_log_from_file(&path)
+                            {
+                                self.scan_comparison = metadata.comparison;
+                            }
                             self.audit_log_path = Some(path);
                         }
                         Err(error) => {
@@ -2624,6 +2663,11 @@ fn restore_rag_example(result: &mut crate::cyberrag::service::ExplanationResult)
     let Some(example) = result.example.as_mut() else {
         return;
     };
+    // Exemplos autorais/persistidos com código já preenchido são preservados;
+    // o corpus só reconstrói quando o log veio sem o código (sanitizado).
+    if example.vulneravel.is_some() || example.corrigido.is_some() {
+        return;
+    }
     let Some(entry) = crate::cyberrag::corpus::Corpus::shared().get(&example.id) else {
         result.example = None;
         return;

@@ -182,6 +182,211 @@ pub struct ScanMetadata {
     /// Explicações completas, para reabrir sem gastar tokens de novo.
     #[serde(default)]
     pub rag_explanations: Vec<crate::cyberrag::service::ExplanationResult>,
+    /// Diferença em relação à execução anterior do mesmo alvo.
+    #[serde(default)]
+    pub comparison: ScanComparison,
+}
+
+/// Achado que entrou ou saiu entre duas execuções.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ComparedFinding {
+    pub title: String,
+    pub severity: Severity,
+    pub tool: String,
+    pub target: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<usize>,
+}
+
+impl ComparedFinding {
+    fn from_vulnerability(finding: &Vulnerability) -> Self {
+        Self {
+            title: finding.title.clone(),
+            severity: finding.severity,
+            tool: finding.tool.clone(),
+            target: finding.target.clone(),
+            file: finding
+                .code_location
+                .as_ref()
+                .map(|location| location.file.clone()),
+            line: finding.code_location.as_ref().map(|location| location.line),
+        }
+    }
+
+    fn sanitized(&self) -> Self {
+        Self {
+            title: crate::utils::redaction::sanitize_text(&self.title),
+            severity: self.severity,
+            tool: crate::utils::redaction::sanitize_text(&self.tool),
+            target: crate::utils::redaction::sanitize_url(&self.target),
+            file: self
+                .file
+                .as_deref()
+                .map(crate::utils::redaction::sanitize_text),
+            line: self.line,
+        }
+    }
+}
+
+/// Resultado da comparação com a execução anterior do mesmo alvo.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScanComparison {
+    #[serde(default)]
+    pub previous_scan_id: String,
+    #[serde(default)]
+    pub previous_completed_at: String,
+    #[serde(default)]
+    pub previous_count: usize,
+    #[serde(default)]
+    pub current_count: usize,
+    #[serde(default)]
+    pub fixed: Vec<ComparedFinding>,
+    #[serde(default)]
+    pub new: Vec<ComparedFinding>,
+    #[serde(default)]
+    pub persisting: usize,
+}
+
+impl ScanComparison {
+    pub fn between(
+        previous_scan_id: &str,
+        previous_completed_at: &str,
+        previous: &[Vulnerability],
+        current: &[Vulnerability],
+    ) -> Self {
+        let previous_keys: Vec<String> = previous.iter().map(finding_key).collect();
+        let current_keys: Vec<String> = current.iter().map(finding_key).collect();
+        let mut fixed = previous
+            .iter()
+            .filter(|finding| !current_keys.contains(&finding_key(finding)))
+            .map(ComparedFinding::from_vulnerability)
+            .collect::<Vec<_>>();
+        let mut new = current
+            .iter()
+            .filter(|finding| !previous_keys.contains(&finding_key(finding)))
+            .map(ComparedFinding::from_vulnerability)
+            .collect::<Vec<_>>();
+        sort_comparison(&mut fixed);
+        sort_comparison(&mut new);
+        let persisting = current_keys
+            .iter()
+            .filter(|key| previous_keys.contains(key))
+            .count();
+        Self {
+            previous_scan_id: previous_scan_id.to_string(),
+            previous_completed_at: previous_completed_at.to_string(),
+            previous_count: previous.len(),
+            current_count: current.len(),
+            fixed,
+            new,
+            persisting,
+        }
+    }
+
+    pub fn has_previous(&self) -> bool {
+        !self.previous_scan_id.is_empty()
+    }
+
+    pub fn sanitized(&self) -> Self {
+        Self {
+            previous_scan_id: crate::utils::redaction::sanitize_text(&self.previous_scan_id),
+            previous_completed_at: self.previous_completed_at.clone(),
+            previous_count: self.previous_count,
+            current_count: self.current_count,
+            fixed: self.fixed.iter().map(ComparedFinding::sanitized).collect(),
+            new: self.new.iter().map(ComparedFinding::sanitized).collect(),
+            persisting: self.persisting,
+        }
+    }
+}
+
+fn severity_order(severity: Severity) -> u8 {
+    match severity {
+        Severity::Critical => 0,
+        Severity::High => 1,
+        Severity::Medium => 2,
+        Severity::Low => 3,
+        Severity::Info => 4,
+    }
+}
+
+fn sort_comparison(findings: &mut [ComparedFinding]) {
+    findings.sort_by(|left, right| {
+        severity_order(left.severity)
+            .cmp(&severity_order(right.severity))
+            .then(left.title.cmp(&right.title))
+    });
+}
+
+fn normalize_comparison_text(value: &str) -> String {
+    value
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_comparison_target(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_lowercase()
+}
+
+fn finding_key(finding: &Vulnerability) -> String {
+    format!(
+        "{}|{}|{}",
+        normalize_comparison_text(&finding.tool),
+        normalize_comparison_text(&finding.title),
+        normalize_comparison_target(&finding.target)
+    )
+}
+
+/// Compara a execução atual com a última execução do mesmo alvo iniciada antes
+/// dela. Não grava nada; é chamado ao montar o log e no replay de logs antigos.
+pub fn comparison_with_previous(
+    target_url: &str,
+    current_started_at: &str,
+    current_scan_id: &str,
+    current: &[Vulnerability],
+) -> ScanComparison {
+    let Ok(history) = list_scan_logs_from_dir(&scans_dir()) else {
+        return ScanComparison::default();
+    };
+    let target = normalize_comparison_target(&crate::utils::redaction::sanitize_url(target_url));
+    let mut candidates = history
+        .records
+        .into_iter()
+        .filter(|record| {
+            record.scan_id != current_scan_id
+                && normalize_comparison_target(&record.target_url) == target
+                && (current_started_at.is_empty()
+                    || record.started_at.as_str() < current_started_at)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .started_at
+            .cmp(&left.started_at)
+            .then(right.completed_at.cmp(&left.completed_at))
+    });
+    for record in candidates {
+        let Ok(previous) = load_scan_log_from_file(&record.file_path) else {
+            continue;
+        };
+        let previous_findings = previous
+            .findings
+            .iter()
+            .filter_map(|value| serde_json::from_value::<Vulnerability>(value.clone()).ok())
+            .collect::<Vec<_>>();
+        return ScanComparison::between(
+            &previous.scan_id,
+            &previous.completed_at,
+            &previous_findings,
+            current,
+        );
+    }
+    ScanComparison::default()
 }
 
 /// Contagem de achados por severidade usada na listagem do histórico.
@@ -355,6 +560,7 @@ impl ScanMetadata {
             rag_failure_reason: None,
             rag_explanations_count: 0,
             rag_explanations: Vec::new(),
+            comparison: ScanComparison::default(),
         }
     }
 
@@ -516,6 +722,7 @@ impl ScanMetadata {
                 .iter()
                 .map(crate::cyberrag::service::ExplanationResult::sanitized)
                 .collect(),
+            comparison: self.comparison.sanitized(),
         }
     }
 }
@@ -1033,6 +1240,169 @@ mod tests {
                 .unwrap_or_else(|error| panic!("sem `serde(default)`, {field} quebra: {error}"));
             assert_eq!(restored.llm_provider, "OpenAI", "{field}");
         }
+    }
+
+    #[test]
+    fn scan_comparison_classifies_fixed_new_and_persisting_findings() {
+        let finding = |title: &str, severity: Severity| Vulnerability {
+            title: title.to_string(),
+            severity,
+            description: String::new(),
+            tool: "Nuclei".to_string(),
+            recommendation: String::new(),
+            didactic: String::new(),
+            source: FindingSource::Real,
+            target: "http://alvo.local/".to_string(),
+            evidence: String::new(),
+            detected_at: "2026-10-24T10:00:00Z".to_string(),
+            ..Default::default()
+        };
+        let previous = vec![
+            finding("Cabeçalho ausente", Severity::High),
+            finding("Versão exposta", Severity::Low),
+            finding("Painel aberto", Severity::Critical),
+        ];
+        let current = vec![
+            finding("Cabeçalho ausente", Severity::High),
+            finding("Painel aberto", Severity::Critical),
+            finding("Segredo no código", Severity::Medium),
+        ];
+
+        let comparison =
+            ScanComparison::between("scan_anterior", "2026-10-24T09:00:00Z", &previous, &current);
+
+        assert!(comparison.has_previous());
+        assert_eq!(comparison.previous_scan_id, "scan_anterior");
+        assert_eq!(comparison.previous_completed_at, "2026-10-24T09:00:00Z");
+        assert_eq!(comparison.previous_count, 3);
+        assert_eq!(comparison.current_count, 3);
+        assert_eq!(comparison.persisting, 2);
+        assert_eq!(
+            comparison
+                .fixed
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Versão exposta"],
+            "o achado que sumiu é o corrigido"
+        );
+        assert_eq!(
+            comparison
+                .new
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Segredo no código"],
+            "o achado inédito é o novo"
+        );
+
+        let unchanged = ScanComparison::between("scan_anterior", "", &previous, &previous);
+        assert!(unchanged.fixed.is_empty());
+        assert!(unchanged.new.is_empty());
+        assert_eq!(unchanged.persisting, previous.len());
+    }
+
+    /// A ordenação do painel é por severidade mesmo quando os títulos chegam
+    /// fora de ordem; é ela que garante que o corrigido crítico apareça antes
+    /// do informativo.
+    #[test]
+    fn scan_comparison_orders_fixed_findings_by_severity() {
+        let finding = |title: &str, severity: Severity| Vulnerability {
+            title: title.to_string(),
+            severity,
+            tool: "Nuclei".to_string(),
+            target: "http://alvo.local".to_string(),
+            ..Default::default()
+        };
+        let previous = vec![
+            finding("Zeta informativo", Severity::Info),
+            finding("Alfa crítico", Severity::Critical),
+            finding("Beta médio", Severity::Medium),
+        ];
+
+        let comparison = ScanComparison::between("scan_anterior", "", &previous, &[]);
+
+        assert_eq!(
+            comparison
+                .fixed
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alfa crítico", "Beta médio", "Zeta informativo"]
+        );
+    }
+
+    /// A comparação também é conteúdo do log: título e alvo precisam sair
+    /// sanitizados, como os demais campos que sobrevivem ao scan.
+    #[test]
+    fn the_scan_comparison_is_sanitized_before_persistence() {
+        let metadata = ScanMetadata {
+            scan_id: "scan_comparacao".to_string(),
+            target_url: "https://alvo.local".to_string(),
+            started_at: "2026-10-24T10:00:00Z".to_string(),
+            completed_at: "2026-10-24T10:05:00Z".to_string(),
+            execution_type: "Auto".to_string(),
+            llm_provider: "Ollama".to_string(),
+            findings: Vec::new(),
+            agent_analysis: String::new(),
+            comparison: ScanComparison {
+                previous_scan_id: "scan_anterior".to_string(),
+                previous_completed_at: "2026-10-24T09:00:00Z".to_string(),
+                previous_count: 1,
+                current_count: 0,
+                fixed: vec![ComparedFinding {
+                    title: "api_key exposta".to_string(),
+                    severity: Severity::High,
+                    tool: "TruffleHog".to_string(),
+                    target: "https://alvo.local/path?token=secret".to_string(),
+                    file: Some("src/app.py".to_string()),
+                    line: Some(12),
+                }],
+                new: Vec::new(),
+                persisting: 0,
+            },
+            ..Default::default()
+        };
+
+        let sanitized = metadata.sanitized();
+
+        assert_eq!(sanitized.comparison.fixed[0].title, "[REDACTED]");
+        assert_eq!(
+            sanitized.comparison.fixed[0].target,
+            "https://alvo.local/path"
+        );
+        assert_eq!(sanitized.comparison.fixed[0].line, Some(12));
+        assert_eq!(sanitized.comparison.previous_scan_id, "scan_anterior");
+    }
+
+    /// Log gravado antes da comparação não tem a chave: precisa continuar
+    /// carregando, e o campo ausente vira "sem execução anterior".
+    #[test]
+    fn a_scan_log_written_before_the_comparison_still_loads() {
+        let mut metadata = ScanMetadata::new(
+            "scan-sem-comparacao".to_string(),
+            "http://alvo.local".to_string(),
+            "2026-10-24T10:00:00Z".to_string(),
+            "2026-10-24T10:05:00Z".to_string(),
+            "Auto".to_string(),
+            "Ollama".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "Análise concluída".to_string(),
+        );
+        metadata.comparison = ScanComparison::between("scan_anterior", "", &[], &[]);
+        let mut legacy = serde_json::to_value(&metadata).unwrap();
+        legacy
+            .as_object_mut()
+            .expect("metadado serializado")
+            .remove("comparison");
+
+        let restored: ScanMetadata =
+            serde_json::from_value(legacy).expect("histórico sem comparação");
+
+        assert!(!restored.comparison.has_previous());
+        assert!(restored.comparison.fixed.is_empty());
+        assert_eq!(restored.scan_id, "scan-sem-comparacao");
     }
 
     #[test]
