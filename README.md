@@ -88,7 +88,7 @@ Instalado, o comando e `smartsec`. A partir do repositorio:
 # TUI interativa
 cargo run
 
-# Cadastrar, conferir e remover a chave do provedor remoto no cofre do sistema
+# Cadastrar, conferir e remover a chave do provedor remoto em auth.json 0600
 cargo run -- auth set
 cargo run -- auth status
 cargo run -- auth remove
@@ -191,7 +191,7 @@ src/
   llm/             Provedores LLM (openai, llama.cpp, nvidia-nim)
   domain/          Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/          Persistencia de configuracao (~/.config/smartsec/)
-  auth.rs          Cadastro da chave da API no cofre do sistema
+  auth.rs          Cadastro da chave da API em auth.json 0600
   report/          Gerador de relatorio Markdown e PDF
 ```
 
