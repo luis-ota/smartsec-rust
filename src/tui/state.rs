@@ -1126,7 +1126,7 @@ impl AppState {
                     self.ai_activity = AiActivity::PlanningNuclei;
                     self.push_ai_timeline(
                         AiTimelineOrigin::Planning,
-                        "planejando o uso do Nuclei…",
+                        "planejando o Nuclei (aguardando resposta)",
                     );
                 }
                 RunEvent::AiDecisionFinished(decision) => {
@@ -2728,11 +2728,33 @@ fn decision_summary(record: &DecisionRecord) -> String {
         DecisionSource::Ai => "a IA decidiu",
         DecisionSource::Fallback => "a política local decidiu",
     };
-    format!(
-        "plano do Nuclei definido: {author} · motivo: {} · {} argumento(s)",
-        record.justification,
-        record.parameters.len()
-    )
+    let templates = record
+        .parameters
+        .get("templates")
+        .map(String::as_str)
+        .unwrap_or("(padrão)");
+    let concurrency = record
+        .parameters
+        .get("concurrency")
+        .map(String::as_str)
+        .unwrap_or("?");
+    let timeout = record
+        .parameters
+        .get("timeout_seconds")
+        .map(String::as_str)
+        .unwrap_or("?");
+    let mut summary = format!(
+        "plano do Nuclei definido: {author}\n\
+         motivo: {}\n\
+         templates: {templates}\n\
+         concorrência: {concurrency} · timeout: {timeout}s",
+        record.justification
+    );
+    if !record.evidence.is_empty() {
+        summary.push_str("\nevidências: ");
+        summary.push_str(&record.evidence.join(" · "));
+    }
+    summary
 }
 
 /// Conta as linhas visuais de entradas que saíram do log, usando a mesma
@@ -3228,18 +3250,15 @@ mod tests {
             .iter()
             .map(|entry| entry.text.as_str())
             .collect();
-        assert_eq!(texts[0], "planejando o uso do Nuclei…");
+        assert_eq!(texts[0], "planejando o Nuclei (aguardando resposta)");
         assert!(
             texts[1].contains("plano do Nuclei definido"),
             "{}",
             texts[1]
         );
         assert!(texts[1].contains(&decision.justification), "{}", texts[1]);
-        assert!(
-            texts[1].contains(&format!("{} argumento(s)", decision.parameters.len())),
-            "{}",
-            texts[1]
-        );
+        assert!(texts[1].contains("templates:"), "{}", texts[1]);
+        assert!(texts[1].contains("concorrência:"), "{}", texts[1]);
         assert_eq!(texts[2], "análise em andamento (10s)");
         assert_eq!(texts[3], "ferramenta read_file no achado #1");
         assert_eq!(texts[4], "read_file ok · 4 | raise ValueError");

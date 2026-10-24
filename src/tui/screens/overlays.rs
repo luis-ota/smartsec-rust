@@ -1,5 +1,5 @@
 use crate::tui::chrome::{
-    ACCENT, MUTED, SUCCESS, SURFACE, SURFACE_ACTIVE, SURFACE_HOVER, TEXT, WARNING,
+    ACCENT, MUTED, SUCCESS, SURFACE, SURFACE_ACTIVE, SURFACE_HOVER, TEXT, TEXT_SOFT, WARNING,
 };
 use crate::tui::commands::command_items;
 use crate::tui::interaction::SemanticAction;
@@ -285,7 +285,7 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(5),
+        Constraint::Length(8),
         Constraint::Length(1),
     ])
     .split(inner);
@@ -353,7 +353,7 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
                     ),
                     Span::styled(
                         crate::tui::chrome::truncate_width(
-                            &entry.text,
+                            entry.text.lines().next().unwrap_or(""),
                             rows[1].width.saturating_sub(24) as usize,
                         ),
                         row_style.fg(TEXT),
@@ -371,18 +371,31 @@ pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
         );
     }
 
-    let detail = app
+    let mut detail_lines = vec![Line::styled(
+        "Detalhe completo da ação selecionada",
+        Style::default().fg(ACCENT).bold(),
+    )];
+    if let Some(entry) = app
         .ai_timeline
         .get(detail_index)
         .or_else(|| app.ai_timeline.last())
-        .map(|entry| format!("{} {} — {}", entry.time, entry.origin.label(), entry.text))
-        .unwrap_or_else(|| "nenhuma ação registrada ainda".to_string());
-    let detail_block = Paragraph::new(vec![
-        Line::styled("Detalhe da ação", Style::default().fg(ACCENT).bold()),
-        Line::from(detail),
-    ])
-    .wrap(Wrap { trim: false })
-    .style(Style::default().fg(TEXT).bg(SURFACE));
+    {
+        detail_lines.push(Line::styled(
+            format!("{} · {}", entry.time, entry.origin.label()),
+            Style::default().fg(TEXT_SOFT),
+        ));
+        for line in entry.text.lines() {
+            detail_lines.push(Line::styled(line.to_string(), Style::default().fg(TEXT)));
+        }
+    } else {
+        detail_lines.push(Line::styled(
+            "nenhuma ação registrada ainda".to_string(),
+            Style::default().fg(TEXT_SOFT),
+        ));
+    }
+    let detail_block = Paragraph::new(detail_lines)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(TEXT).bg(SURFACE));
     frame.render_widget(detail_block, rows[2]);
 
     app.register_hit_region(rows[3], SemanticAction::Back);

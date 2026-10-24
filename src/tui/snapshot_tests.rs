@@ -839,14 +839,13 @@ fn ai_timeline_overlay_matches_80x24_snapshots() {
         AiTimelineEntry {
             time: "14:02:10".to_string(),
             origin: AiTimelineOrigin::Planning,
-            text: "planejando o uso do Nuclei…".to_string(),
+            text: "planejando o Nuclei (aguardando resposta)".to_string(),
         },
         AiTimelineEntry {
             time: "14:02:14".to_string(),
             origin: AiTimelineOrigin::Planning,
-            text:
-                "plano do Nuclei definido: a IA decidiu · motivo: Plano aceito pela política segura"
-                    .to_string(),
+            text: "plano do Nuclei definido: a IA decidiu\nmotivo: Plano aceito pela política segura\ntemplates: http/misconfiguration/\nconcorrência: 20 · timeout: 5s"
+                .to_string(),
         },
         AiTimelineEntry {
             time: "14:03:41".to_string(),
@@ -867,7 +866,7 @@ fn ai_timeline_overlay_matches_80x24_snapshots() {
         &[
             "Atividade da IA",
             "4 ação(ões) registradas",
-            "14:02:10 planejamento planejando o uso do Nuclei…",
+            "14:02:10 planejamento planejando o Nuclei (aguardando resposta)",
             "14:02:14 planejamento plano do Nuclei definido",
             "fechar",
         ],
@@ -906,6 +905,40 @@ fn ai_timeline_overlay_matches_80x24_snapshots() {
         ],
     );
     assert!(snapshot.contains("agente de código"), "{snapshot}");
+}
+
+#[test]
+fn ai_timeline_detail_shows_the_full_decision() {
+    let mut app = app();
+    app.step = AppStep::Execution;
+    app.ai_timeline = vec![AiTimelineEntry {
+        time: "14:02:14".to_string(),
+        origin: AiTimelineOrigin::Planning,
+        text: "plano do Nuclei definido: a IA decidiu\nmotivo: Plano aceito pela política segura\ntemplates: http/misconfiguration/\nconcorrência: 20 · timeout: 5s"
+            .to_string(),
+    }];
+    app.show_ai_timeline = true;
+    app.ai_timeline_follow = false;
+    app.ai_timeline_scroll = 0;
+    app.focus = FocusTarget::AiTimelineClose;
+
+    let (snapshot, _) = render_size(&mut app, 100, 40);
+    assert!(
+        snapshot.contains("Detalhe completo da ação selecionada"),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.contains("motivo: Plano aceito pela política segura"),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.contains("templates: http/misconfiguration/"),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.contains("concorrência: 20 · timeout: 5s"),
+        "{snapshot}"
+    );
 }
 
 #[test]
