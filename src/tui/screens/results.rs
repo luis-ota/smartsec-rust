@@ -75,7 +75,13 @@ fn render_overview(app: &mut AppState, frame: &mut Frame, area: Rect) {
     render_summary(app, frame, rows[0]);
     // O painel de corrigidos só aparece quando há o que listar e nunca come a
     // lista inteira: em 80x24 o resumo e os achados continuam visíveis.
-    let panel_height = fixed_panel_height(app).min(rows[1].height.saturating_sub(5));
+    // Em 80x24 o painel de corrigidos comeria a lista; nesse tamanho o
+    // Resumo já mostra a comparação e a lista completa fica priorizada.
+    let panel_height = if area.width >= 90 && area.height >= 24 {
+        fixed_panel_height(app).min(rows[1].height.saturating_sub(5))
+    } else {
+        0
+    };
     let list_area = if panel_height >= 3 {
         let split =
             Layout::vertical([Constraint::Length(panel_height), Constraint::Min(1)]).split(rows[1]);
@@ -1707,18 +1713,26 @@ mod tests {
                 screen.contains("scan_anterior"),
                 "o id da execução anterior sumiu em {width}x{height}: {screen}"
             );
-            assert!(
-                screen.contains("Corrigidos desde a execução anterior"),
-                "painel ausente em {width}x{height}: {screen}"
-            );
-            assert!(
-                screen.contains("✔ CRÍTICA"),
-                "o corrigido crítico não aparece em {width}x{height}: {screen}"
-            );
-            assert!(
-                screen.contains("Painel administrativo exposto"),
-                "título do corrigido truncado em {width}x{height}: {screen}"
-            );
+            if width >= 90 {
+                assert!(
+                    screen.contains("Corrigidos desde a execução anterior"),
+                    "painel ausente em {width}x{height}: {screen}"
+                );
+                assert!(
+                    screen.contains("✔ CRÍTICA"),
+                    "o corrigido crítico não aparece em {width}x{height}: {screen}"
+                );
+                assert!(
+                    screen.contains("Painel administrativo exposto"),
+                    "título do corrigido truncado em {width}x{height}: {screen}"
+                );
+            } else {
+                assert!(
+                    !screen.contains("Corrigidos desde a execução anterior"),
+                    "o painel não deve tirar espaço da lista em {width}x{height}: {screen}"
+                );
+                assert!(screen.contains("Achados"), "{screen}");
+            }
             assert!(
                 screen.contains("auditoria"),
                 "a comparação empurrou a auditoria para fora em {width}x{height}: {screen}"
@@ -1756,7 +1770,7 @@ mod tests {
             ..Default::default()
         };
 
-        let screen = draw(&mut app, 80, 24);
+        let screen = draw(&mut app, 100, 30);
 
         assert_eq!(screen.matches('✔').count(), 3, "{screen}");
         assert!(
