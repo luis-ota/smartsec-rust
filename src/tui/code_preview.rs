@@ -8,7 +8,7 @@ use crate::code_agent::workspace::{Workspace, WorkspaceError};
 use crate::utils::redaction::sanitize_code_line;
 use ratatui::style::Color;
 use std::path::{Path, PathBuf};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub const PREVIEW_CONTEXT: usize = 2;
 pub const PREVIEW_MAX_LINES: usize = 24;
@@ -275,6 +275,15 @@ pub fn wrap_highlighted_line(
             if used >= width {
                 lines.push(Vec::new());
                 used = 0;
+            }
+            let available = width - used;
+            // Um token que cabe em uma linha inteira não é cortado no meio:
+            // começa na linha seguinte. Só tokens maiores que a largura são
+            // divididos por caractere.
+            if used > 0 && remaining.width() > available && remaining.width() <= width {
+                lines.push(Vec::new());
+                used = 0;
+                continue;
             }
             let available = width - used;
             let mut piece = String::new();

@@ -309,7 +309,7 @@ fn print_help() {
     println!("  smartsec auth status         Mostra provedor, modelo e final mascarado");
     println!("  smartsec auth remove         Remove a chave do arquivo local");
     println!("  A chave nunca vai para o TOML; SMARTSEC_API_KEY é só override de");
-    println!("  sessão/CI e não substitui o cadastro no cofre.");
+    println!("  sessão/CI e não substitui o cadastro no auth.json local.");
     println!();
     println!("Erros de uso:");
     println!("  ferramenta desconhecida  Ferramenta fora do catálogo registrado");

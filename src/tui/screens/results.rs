@@ -42,7 +42,7 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         format!("{} achados · {} críticos", vulnerabilities.len(), critical)
     };
     let title = if app.show_didactic {
-        "Explicação didática"
+        "Explicação educacional"
     } else if app.result_detail_vuln.is_some() {
         "Detalhe do achado"
     } else {
