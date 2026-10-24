@@ -49,7 +49,7 @@ fn auth_help_documents_the_three_actions_and_the_stdin_contract() {
     assert!(stdout.contains("smartsec auth status"), "{stdout}");
     assert!(stdout.contains("smartsec auth remove"), "{stdout}");
     assert!(stdout.contains("--stdin"), "{stdout}");
-    assert!(stdout.contains("Secret Service"), "{stdout}");
+    assert!(stdout.contains("auth.json"), "{stdout}");
     assert!(stdout.contains("SMARTSEC_API_KEY"), "{stdout}");
 }
 
@@ -61,7 +61,7 @@ fn bare_auth_shows_help_instead_of_opening_the_tui() {
 
     assert_eq!(output.status.code(), Some(0));
     assert!(
-        stdout_of(&output).contains("Chave da API no cofre do sistema"),
+        stdout_of(&output).contains("Chave da API"),
         "{}",
         stdout_of(&output)
     );
@@ -78,7 +78,7 @@ fn auth_set_help_is_the_auth_help() {
 
     assert_eq!(output.status.code(), Some(0));
     assert!(
-        stdout_of(&output).contains("Chave da API no cofre do sistema"),
+        stdout_of(&output).contains("Chave da API"),
         "{}",
         stdout_of(&output)
     );
@@ -125,5 +125,5 @@ fn global_help_lists_the_auth_command() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = stdout_of(&output);
     assert!(stdout.contains("smartsec auth"), "{stdout}");
-    assert!(stdout.contains("Secret Service"), "{stdout}");
+    assert!(stdout.contains("auth.json"), "{stdout}");
 }

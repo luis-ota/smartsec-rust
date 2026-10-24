@@ -174,18 +174,9 @@ impl SystemOnboardingProbe {
     }
 
     async fn detect_keyring(&self) -> KeyringAvailability {
-        // `NoEntry` significa que o serviço existe e só não há chave ainda: o
-        // cofre está disponível, que é o que a tela precisa saber.
-        match keyring::Entry::new(
-            crate::config::persistence::KEYRING_SERVICE,
-            crate::config::persistence::KEYRING_USERNAME,
-        ) {
-            Ok(entry) => match entry.get_password() {
-                Ok(_) | Err(keyring::Error::NoEntry) => KeyringAvailability::Available,
-                Err(error) => KeyringAvailability::Unavailable(error.to_string()),
-            },
-            Err(error) => KeyringAvailability::Unavailable(error.to_string()),
-        }
+        // O SmartSec persiste a chave em arquivo 0600 (auth.json), como
+        // OpenCode/Codex/Claude Code. O cofre do sistema não é mais requisito.
+        KeyringAvailability::Available
     }
 
     async fn detect_podman(&self) -> PodmanMode {

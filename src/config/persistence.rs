@@ -55,22 +55,36 @@ pub fn config_path() -> PathBuf {
     base.join("smartsec").join("config.toml")
 }
 
-/// Caminho do fallback local, usado apenas quando o Secret Service está
-/// bloqueado e o usuário pede `auth set --file`.
+/// Arquivo de autenticação do SmartSec.
+///
+/// Mesmo modelo do OpenCode/Codex/Claude Code: um JSON privado (0600) no
+/// diretório de configuração, sem depender de um prompt gráfico do keyring.
+/// O keyring não participa mais do caminho de salvamento.
 pub fn api_key_file_path() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("smartsec").join("auth.json")
+}
+
+fn legacy_api_key_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("smartsec").join("api_key")
 }
 
 pub fn api_key_file_exists() -> bool {
-    api_key_file_path().is_file()
+    api_key_file_path().is_file() || legacy_api_key_path().is_file()
 }
 
-/// Grava a chave em arquivo privado (0600 no Unix).
-///
-/// É um fallback explícito para TTY/SSH sem prompt de keyring. O arquivo não é
-/// cifrado; a proteção é a permissão 0600 e o diretório 0700.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredAuth {
+    version: u8,
+    key: String,
+}
+
+/// Grava a chave no arquivo privado (0600 no Unix).
 pub fn save_api_key_file(key: &str) -> std::io::Result<()> {
+    if key.trim().is_empty() {
+        return delete_api_key_file();
+    }
     let path = api_key_file_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -80,6 +94,11 @@ pub fn save_api_key_file(key: &str) -> std::io::Result<()> {
             let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
         }
     }
+    let content = serde_json::to_string_pretty(&StoredAuth {
+        version: 1,
+        key: key.to_string(),
+    })
+    .map_err(std::io::Error::other)?;
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -90,48 +109,83 @@ pub fn save_api_key_file(key: &str) -> std::io::Result<()> {
             .truncate(true)
             .mode(0o600)
             .open(&path)?;
-        file.write_all(key.as_bytes())?;
+        file.write_all(content.as_bytes())?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-        Ok(())
     }
     #[cfg(not(unix))]
     {
-        fs::write(&path, key)
+        fs::write(&path, content)?;
+    }
+    // Migra o fallback antigo (texto puro) para o JSON novo.
+    let _ = fs::remove_file(legacy_api_key_path());
+    Ok(())
+}
+
+fn secured_metadata(path: &std::path::Path) -> std::io::Result<bool> {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("o arquivo {} não está com permissão 0600", path.display()),
+                    ));
+                }
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
 fn load_api_key_file() -> std::io::Result<Option<String>> {
-    let path = api_key_file_path();
-    let metadata = match fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    #[cfg(unix)]
+    #[cfg(test)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "o arquivo local da chave não está com permissão 0600",
-            ));
-        }
+        // Os testes não podem depender da chave real do usuário.
+        return Ok(None);
     }
-    let key = fs::read_to_string(&path)?;
-    let key = key.trim();
-    if key.is_empty() {
+    #[cfg(not(test))]
+    {
+        let path = api_key_file_path();
+        if secured_metadata(&path)? {
+            let content = fs::read_to_string(&path)?;
+            let stored: StoredAuth = serde_json::from_str(&content).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("auth.json inválido: {error}"),
+                )
+            })?;
+            let key = stored.key.trim();
+            return Ok((!key.is_empty()).then(|| key.to_string()));
+        }
+
+        let legacy = legacy_api_key_path();
+        if secured_metadata(&legacy)? {
+            let key = fs::read_to_string(&legacy)?;
+            let key = key.trim();
+            if key.is_empty() {
+                return Ok(None);
+            }
+            // Migra na próxima leitura; se falhar, a chave ainda é usada nesta sessão.
+            let _ = save_api_key_file(key);
+            return Ok(Some(key.to_string()));
+        }
         Ok(None)
-    } else {
-        Ok(Some(key.to_string()))
     }
 }
 
 fn delete_api_key_file() -> std::io::Result<()> {
-    match fs::remove_file(api_key_file_path()) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+    for path in [api_key_file_path(), legacy_api_key_path()] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
     }
+    Ok(())
 }
 
 /// Carrega a configuração global: arquivo ausente devolve os padrões; TOML
@@ -212,103 +266,25 @@ pub fn save_config_file(cfg: &PersistedConfig) -> std::io::Result<()> {
     }
 }
 
-pub(crate) const KEYRING_SERVICE: &str = "smartsec";
-pub(crate) const KEYRING_USERNAME: &str = "llm-api-key";
-
 pub fn config_file_exists_at(path: &std::path::Path) -> bool {
     path.exists()
 }
 
-/// Cofre usado pelo SmartSec no Linux.
-///
-/// O `Login` é o keyring que o PAM desbloqueia no login/SSH; o `Default
-/// keyring` é o cofre histórico do SmartSec. A leitura tenta os dois, então uma
-/// chave antiga no Default continua funcionando quando ele está desbloqueado.
-fn login_keyring_entry() -> Result<keyring::Entry, keyring::Error> {
-    #[cfg(target_os = "linux")]
-    {
-        keyring::Entry::new_with_target("Login", KEYRING_SERVICE, KEYRING_USERNAME)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)
-    }
-}
-
-fn default_keyring_entry() -> Result<keyring::Entry, keyring::Error> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)
-}
-
-fn keyring_candidates() -> Result<Vec<keyring::Entry>, keyring::Error> {
-    #[cfg(target_os = "linux")]
-    {
-        Ok(vec![login_keyring_entry()?, default_keyring_entry()?])
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(vec![default_keyring_entry()?])
-    }
-}
-
 pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
-    let entries = keyring_candidates()?;
-    if key.is_empty() {
-        let mut last_error = None;
-        for entry in &entries {
-            match entry.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(error) => last_error = Some(error),
-            }
-        }
-        return match last_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        };
-    }
-    let mut last_error = None;
-    for entry in &entries {
-        match entry.set_password(key) {
-            Ok(()) => return Ok(()),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or(keyring::Error::NoEntry))
+    save_api_key_file(key).map_err(|error| keyring::Error::PlatformFailure(Box::new(error)))
 }
 
 pub fn load_api_key() -> Result<String, keyring::Error> {
-    let entries = keyring_candidates()?;
-    let mut last_error = None;
-    for entry in &entries {
-        match entry.get_password() {
-            Ok(key) => return Ok(key),
-            Err(keyring::Error::NoEntry) => {}
-            Err(error) => last_error = Some(error),
-        }
-    }
     match load_api_key_file() {
         Ok(Some(key)) => Ok(key),
-        Ok(None) => Err(last_error.unwrap_or(keyring::Error::NoEntry)),
-        Err(error) => {
-            Err(last_error.unwrap_or_else(|| keyring::Error::PlatformFailure(Box::new(error))))
-        }
+        Ok(None) => Err(keyring::Error::NoEntry),
+        Err(error) => Err(keyring::Error::PlatformFailure(Box::new(error))),
     }
 }
 
 /// Remove a chave. Ausência não é erro: `auth remove` é idempotente.
 pub fn delete_api_key() -> Result<(), keyring::Error> {
-    let entries = keyring_candidates()?;
-    let mut last_error = None;
-    for entry in &entries {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(error) => last_error = Some(error),
-        }
-    }
-    let file_result = delete_api_key_file();
-    match last_error {
-        Some(error) => Err(error),
-        None => file_result.map_err(|error| keyring::Error::PlatformFailure(Box::new(error))),
-    }
+    delete_api_key_file().map_err(|error| keyring::Error::PlatformFailure(Box::new(error)))
 }
 
 /// Distingue chave ausente de cofre bloqueado ou indisponível.

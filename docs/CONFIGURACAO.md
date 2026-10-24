@@ -12,7 +12,7 @@ com schema mínimo está em [`smartsec.example.toml`](../smartsec.example.toml).
 | O quê | Onde |
 |---|---|
 | Opções da IA e do scan | `~/.config/smartsec/config.toml` |
-| Chave de provedor remoto | **keyring do sistema** — nunca no TOML |
+| Chave de provedor remoto | `~/.config/smartsec/auth.json` (0600) — nunca no TOML |
 | Logs estruturados de cada execução | `~/.config/smartsec/scans/<scan_id>.json` |
 
 A chave fora do TOML é deliberada: `llm.api_key` é `#[serde(skip)]`, então
@@ -20,89 +20,34 @@ mesmo alguém com acesso ao arquivo de configuração não lê a credencial dali
 
 ### Cadastrar, conferir e remover a chave pela CLI
 
-O caminho principal é o cofre do sistema, e o próprio SmartSec é a interface para
-ele. Não é preciso `opencode auth export`, `auth.json` nem outra CLI:
+O caminho principal é um arquivo JSON privado (0600), o mesmo modelo adotado
+por OpenCode, Codex e Claude Code. O SmartSec é a interface para ele e **não
+depende de keyring, Secret Service ou prompt gráfico**:
 
 ```bash
 smartsec auth set      # entrada oculta, sem eco no terminal
-smartsec auth status   # provedor, modelo, tamanho e final mascarado
-smartsec auth remove   # apaga a chave do cofre
+smartsec auth status   # provedor, modelo, tamanho, final e fonte
+smartsec auth remove   # apaga o auth.json
 ```
 
-`auth set` valida que a chave não está vazia, não tem quebra de linha e grava no
-Secret Service via `keyring`. Em CI, a chave entra pela entrada padrão:
+`auth set` valida que a chave não está vazia, não tem quebra de linha e grava em
+`~/.config/smartsec/auth.json` com permissão `0600`. Em CI, a chave entra pela
+entrada padrão:
 
 ```bash
 smartsec auth set --stdin < /run/secrets/smartsec-api-key
 ```
 
-### Sessão SSH/TTY sem prompt gráfico
-
-Em SSH ou TTY puro não existe janela para o `gcr-prompter`. O SmartSec procura
-a chave primeiro no keyring **Login** (o que o PAM desbloqueia) e depois no
-`Default keyring` histórico. Se a chave antiga só existe no Default, ela
-continua válida quando o Default está desbloqueado; no SSH, o caminho prático é
-cadastrar de novo no Login — o Default antigo não é apagado.
-
-Para destravar o Login sem ambiente gráfico:
-
-```bash
-printf 'Senha do login/keyring: '
-read -rs K
-echo
-systemctl --user stop gnome-keyring-daemon.service gnome-keyring-daemon.socket
-printf '%s\n' "$K" | gnome-keyring-daemon --unlock --daemonize --components=secrets
-unset K
-smartsec auth status
-```
-
-Se o `auth status` continuar dizendo que o cofre está bloqueado, a senha do
-keyring é diferente da senha de login; nesse caso use o override de sessão
-abaixo ou recrie o keyring em um ambiente gráfico.
-
-### Fallback local 0600 (keyring bloqueado)
-
-Quando o Secret Service está bloqueado e não há como abrir o prompt, o SmartSec
-tem um fallback explícito em `~/.config/smartsec/api_key`, com permissão `0600`.
-Ele **não é cifrado**; use só enquanto o keyring não estiver disponível.
-
-```bash
-# com a chave vinda do seu gerenciador/OpenCode, sem imprimir:
-key=$(opencode auth export 2>/dev/null | jq -r '[.[] | select(.integrationID=="openai" and .value.type=="key")][0].value.key')
-printf '%s' "$key" | smartsec auth set --stdin --file
-unset key
-smartsec auth status
-```
-
-O status mostra `fonte: arquivo local 0600`. O TUI e o RAG leem esse arquivo
-quando o keyring não entrega a chave. Para remover:
-
-```bash
-smartsec auth remove
-```
-
-Se o keyring estiver bloqueado, o `auth remove` pode avisar que não conseguiu
-limpar o cofre antigo; o arquivo local é removido de qualquer forma.
-
-O `--stdin` é recusado quando a entrada é um terminal, justamente para não ecoar
-a digitação. A chave não é aceita como argumento de linha de comando e nunca é
-impressa inteira: `auth status` mostra apenas o tamanho e os últimos quatro
-caracteres, e chaves com até quatro caracteres aparecem totalmente mascaradas.
-O código de saída de `status` é `0` quando há chave utilizável (cofre ou override
-de sessão), `1` quando não há chave e `2` quando o cofre está bloqueado ou
-indisponível. `set` e `remove` retornam `0` em sucesso e `2` em falha.
-
-Se o cofre estiver bloqueado ou indisponível, a mensagem pede para desbloquear o
-Secret Service do sistema (por exemplo, gnome-keyring ou KWallet) e executar o
-comando de novo. Nada é gravado no TOML em nenhum dos caminhos.
+O arquivo não é cifrado; a proteção é a permissão `0600` e o diretório `0700`.
+Isso é equivalente ao `auth.json` do OpenCode. O TOML continua sem a chave.
+O status mostra `fonte: arquivo local 0600` e nunca falha com “keyring
+bloqueado”. O `--file` antigo continua aceito como compatibilidade, mas não é
+mais necessário.
 
 ### Override de sessão/CI (`SMARTSEC_API_KEY`)
 
 `SMARTSEC_API_KEY` existe **apenas** como override explícito de CI/sessão, não
-como caminho principal. Quando o cofre do sistema está bloqueado ou não existe
-(CI, container, TTY sem prompt gráfico), a chave pode vir da variável:
-
-Prefira o cofre, inclusive na TUI:
+como caminho principal. Prefira o arquivo local, inclusive na TUI:
 
 ```bash
 smartsec auth set
@@ -117,11 +62,11 @@ shell:
 smartsec scan --target http://169.254.1.2:3000
 ```
 
-Essa chave **não é gravada** no TOML nem no keyring: vale só para o processo.
-Ela tem precedência sobre a chave do keyring e é removida do ambiente dos
-processos filhos (Podman, `run_command` do agente e `git`), para não vazar para
-os scanners. Na TUI, o resumo mostra `chave da sessão (SMARTSEC_API_KEY)`. Para
-persistir, use `smartsec auth set` com o keyring desbloqueado.
+Essa chave **não é gravada** no TOML nem no `auth.json`: vale só para o
+processo. Ela tem precedência sobre o arquivo local e é removida do ambiente
+dos processos filhos (Podman, `run_command` do agente e `git`), para não vazar
+para os scanners. Na TUI, o resumo mostra `chave da sessão
+(SMARTSEC_API_KEY)`. Para persistir, use `smartsec auth set`.
 
 ## Arquivo de configuração TOML
 
@@ -158,18 +103,16 @@ exige:
 
 1. **Ambiente.** Antes de perguntar qualquer coisa, o SmartSec verifica se há
    servidor de IA local respondendo (`localhost:8080` para llama.cpp,
-   `localhost:11434` para Ollama), se o cofre de segredos do sistema está
-   disponível e se o Podman está presente e rootless. Cada item diz o que foi
-   achado e o que aquilo significa. A verificação acontece uma vez, em task
-   assíncrona com timeout curto; nada é consultado durante a renderização de um
-   quadro. Sem cofre de segredos, o caminho remoto é fechado na hora com aviso
-   explícito, porque uma chave que não pode ser salva não sobrevive à próxima
-   sessão.
+   `localhost:11434` para Ollama) e se o Podman está presente e rootless. Cada
+   item diz o que foi achado e o que aquilo significa. A verificação acontece
+   uma vez, em task assíncrona com timeout curto; nada é consultado durante a
+   renderização de um quadro. A chave é persistida em arquivo 0600, sem
+   depender de keyring.
 2. **Provedor.** A escolha usa os mesmos campos, o mesmo rascunho e a mesma
    validação da tela `Configurar IA` — inclusive o botão para abri-la e ajustar
    o que falta.
 3. **Credencial.** Só para provedor remoto, e mascarada na tela. A chave vai
-   para o keyring; ela nunca passa pelo arquivo de configuração.
+   para `~/.config/smartsec/auth.json` (0600); ela nunca passa pelo TOML.
 4. **Consentimento.** Só para provedor remoto. O texto diz o que sai da máquina:
    alvo, logs das ferramentas, achados com suas evidências e o código do projeto
    escolhido. Recusar não deixa o fluxo inválido: o assistente volta para o
@@ -198,10 +141,9 @@ coluna (`←`/`→`), `Enter` abre o campo para digitar, troca o provedor ou aci
 a opcao em foco, `Espaco` alterna opcoes liga/desliga, `Esc` sai do campo em
 edicao ou descarta o rascunho e `Ctrl+U` limpa o campo atual. Valores invalidos
 mantem a tela aberta com uma mensagem que diz o que corrigir. Chaves ficam no
-keyring do sistema e nunca sao gravadas no TOML. No Linux o keyring usa o
-Secret Service (por exemplo, gnome-keyring ou KWallet), que precisa estar ativo
-para salvar e ler chaves de provedores remotos. A evidencia visual do desenho
-esta em `docs/evidence/tui-config-ia/`.
+arquivo local 0600 (`~/.config/smartsec/auth.json`) e nunca sao gravadas no
+TOML. Nao ha dependencia de keyring, Secret Service ou prompt grafico. A
+evidencia visual do desenho esta em `docs/evidence/tui-config-ia/`.
 
 ## Retentativas e limite de uso
 
@@ -265,6 +207,18 @@ Regras de seguranca e de robustez:
   sumirem em silencio; abre-los falha com mensagem acionavel em portugues.
 - Registros gravados por versoes anteriores do formato, sem os campos mais
   novos, continuam legiveis.
+
+### Comparação com a execução anterior
+
+Cada registro leva também a diferença em relação à última execução do **mesmo
+alvo**: achados que sumiram (corrigidos), que apareceram (novos) e quantos
+persistem. A comparação usa ferramenta, título e alvo normalizados, é sanitizada
+como o resto do log e aparece no Resumo (`vs. última -N corrigidos · +N novos ·
+N persistem`) e em um painel compacto acima da lista, com até três corrigidos.
+
+O cálculo é somente leitura e não repete a varredura. Logs antigos, gravados
+antes desse campo, continuam abrindo: ao fazer replay, a comparação é
+recalculada a partir do histórico disponível.
 
 Para ver o comportamento com um registro corrompido semeado de proposito:
 

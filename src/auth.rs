@@ -1,7 +1,8 @@
 //! Subcomando `smartsec auth`: cadastro, consulta e remoção da chave da API.
 //!
-//! A chave fica apenas no Secret Service do sistema. Ela não é aceita como
-//! argumento, não é gravada no TOML e nunca é impressa inteira.
+//! A chave fica em um arquivo privado 0600 (`auth.json`), como OpenCode/Codex.
+//! Ela não é aceita como argumento, não é gravada no TOML e nunca é impressa
+//! inteira. O keyring do sistema não é requisito.
 
 use crate::config::persistence::{
     self, ApiKeyStatus, CredentialStore, CredentialStoreError, SystemCredentialStore,
@@ -94,27 +95,22 @@ impl AuthArgs {
 }
 
 pub fn print_help() {
-    println!("SmartSec — Chave da API no cofre do sistema");
+    println!("SmartSec — Chave da API (arquivo privado 0600)");
     println!();
     println!("Uso:");
-    println!(
-        "  smartsec auth set [--stdin] [--file]  Lê a chave sem eco e grava no Secret Service"
-    );
+    println!("  smartsec auth set [--stdin]  Lê a chave sem eco e grava em ~/.config/smartsec/auth.json (0600)");
     println!("  smartsec auth status         Mostra se há chave, provedor, modelo e final");
-    println!("  smartsec auth remove         Remove a chave do cofre");
+    println!("  smartsec auth remove         Remove a chave do arquivo local");
     println!("  smartsec auth --help         Mostra esta ajuda");
     println!();
     println!("A chave nunca é gravada no TOML, não passa por argumentos de processo");
     println!("e não aparece em logs. Sem `--stdin`, a digitação é oculta no terminal.");
-    println!("Com `--file`, grava em ~/.config/smartsec/api_key (0600) quando o keyring");
+    println!("O armazenamento é um JSON privado (0600), como OpenCode/Codex/Claude Code;");
+    println!("não depende de keyring nem de prompt gráfico. Com `--stdin`:");
     println!("  smartsec auth set --stdin < /run/secrets/smartsec-api-key");
-    println!("  smartsec auth set --stdin --file  # fallback local 0600");
     println!();
-    println!("SMARTSEC_API_KEY é apenas um override explícito de sessão/CI: tem");
-    println!("precedência sobre o cofre, não é gravada e não substitui `auth set`.");
-    println!();
-    println!("Se o cofre estiver bloqueado, desbloqueie o Secret Service do sistema");
-    println!("(por exemplo, gnome-keyring ou KWallet) e execute o comando de novo.");
+    println!("SMARTSEC_API_KEY é um override explícito de sessão/CI: tem precedência");
+    println!("sobre o arquivo, não é gravada e não substitui `auth set`.");
 }
 
 pub fn run(args: AuthArgs) -> Result<i32> {
@@ -125,7 +121,7 @@ pub fn run(args: AuthArgs) -> Result<i32> {
         }
         AuthAction::Set {
             from_stdin,
-            to_file,
+            to_file: _,
         } => {
             let key = if from_stdin {
                 read_stdin_key()?
@@ -133,20 +129,12 @@ pub fn run(args: AuthArgs) -> Result<i32> {
                 read_hidden_key()?
             };
             let key = normalize_key(&key)?;
-            if to_file {
-                persistence::save_api_key_file(&key)?;
-                println!(
-                    "Chave da API gravada no fallback local ({}), com permissão 0600.",
-                    persistence::api_key_file_path().display()
-                );
-                println!(
-                    "O arquivo não é cifrado; use apenas enquanto o keyring estiver bloqueado."
-                );
-            } else {
-                ensure_store_available(&SystemCredentialStore, "set")?;
-                run_set(&SystemCredentialStore, &key)?;
-                println!("Chave da API gravada no cofre de segredos do sistema (Secret Service).");
-            }
+            ensure_store_available(&SystemCredentialStore, "set")?;
+            run_set(&SystemCredentialStore, &key)?;
+            println!(
+                "Chave da API gravada em {} (0600).",
+                persistence::api_key_file_path().display()
+            );
             println!("Ela não foi gravada no TOML. Confira com: smartsec auth status");
             warn_about_env_override();
             Ok(AUTH_EXIT_OK)
@@ -171,7 +159,7 @@ pub fn run(args: AuthArgs) -> Result<i32> {
         }
         AuthAction::Remove => {
             run_remove(&SystemCredentialStore)?;
-            println!("Chave da API removida do cofre de segredos do sistema.");
+            println!("Chave da API removida do arquivo local.");
             warn_about_env_override();
             Ok(AUTH_EXIT_OK)
         }
@@ -258,7 +246,7 @@ pub fn run_status(
     writeln!(out)?;
     writeln!(
         out,
-        "  O cofre é o Secret Service do sistema; a chave nunca vai para o TOML."
+        "  O armazenamento é ~/.config/smartsec/auth.json (0600); a chave nunca vai para o TOML."
     )?;
     Ok(status_exit_code(&status, env_override))
 }
@@ -345,10 +333,10 @@ fn actionable_error(action: &str, error: CredentialStoreError) -> anyhow::Error 
             "{reason}. Desbloqueie o cofre de segredos do sistema (por exemplo, gnome-keyring ou KWallet) e execute `smartsec auth {action}` de novo. Em SSH/TTY sem prompt gráfico, use `smartsec auth set --file` ou SMARTSEC_API_KEY."
         ),
         CredentialStoreError::Unavailable(reason) => anyhow::anyhow!(
-            "{reason}. Verifique se o Secret Service está em execução, desbloqueie o cofre do sistema e execute `smartsec auth {action}` de novo."
+            "{reason}. Verifique as permissões de ~/.config/smartsec/auth.json e execute `smartsec auth {action}` de novo."
         ),
         CredentialStoreError::Missing => anyhow::anyhow!(
-            "nenhuma chave da API está cadastrada no cofre do sistema; cadastre com `smartsec auth set`."
+            "nenhuma chave da API está cadastrada; cadastre com `smartsec auth set`."
         ),
     }
 }
@@ -374,7 +362,7 @@ fn env_key_present() -> bool {
 fn warn_about_env_override() {
     if env_key_present() {
         println!(
-            "Atenção: SMARTSEC_API_KEY está definida e tem precedência nesta sessão; o cofre só será usado quando a variável não estiver definida."
+            "Atenção: SMARTSEC_API_KEY está definida e tem precedência nesta sessão; o arquivo local só será usado quando a variável não estiver definida."
         );
     }
 }

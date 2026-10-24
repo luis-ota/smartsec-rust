@@ -302,12 +302,12 @@ fn print_help() {
     println!("  show <SCAN_ID>    Mostra o detalhe de uma execução.");
     println!("  trace <SCAN_ID>   Mostra as ações que a IA executou na execução.");
     println!("  replay <SCAN_ID>  Abre a TUI nos resultados de uma execução concluída.");
-    println!("  auth              Gerencia a chave da API no cofre do sistema.");
+    println!("  auth              Gerencia a chave da API no arquivo local 0600.");
     println!();
     println!("Chave da API:");
-    println!("  smartsec auth set [--stdin]  Lê sem eco e grava no Secret Service");
+    println!("  smartsec auth set [--stdin]  Lê sem eco e grava em ~/.config/smartsec/auth.json");
     println!("  smartsec auth status         Mostra provedor, modelo e final mascarado");
-    println!("  smartsec auth remove         Remove a chave do cofre");
+    println!("  smartsec auth remove         Remove a chave do arquivo local");
     println!("  A chave nunca vai para o TOML; SMARTSEC_API_KEY é só override de");
     println!("  sessão/CI e não substitui o cadastro no cofre.");
     println!();
