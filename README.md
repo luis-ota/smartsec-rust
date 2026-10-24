@@ -121,27 +121,23 @@ O arquivo TOML e as flags sao detalhados em
 
 ## Chave da API
 
-O caminho principal e o cofre de segredos do sistema (Secret Service, via
-`keyring`). O proprio SmartSec cadastra, consulta e remove a chave; nao ha
-dependencia de `opencode auth export`, de `~/.local/share/opencode/auth.json`
-nem de qualquer outra CLI.
+O caminho principal é um arquivo JSON privado (0600), o mesmo modelo do
+OpenCode, Codex e Claude Code. O SmartSec cadastra, consulta e remove a chave
+sem keyring, sem Secret Service e sem prompt gráfico:
 
 ```bash
-smartsec auth set      # digite a chave; a entrada nao aparece no terminal
-smartsec auth status   # provedor, modelo, tamanho e final mascarado
-smartsec auth remove   # apaga a chave do cofre
+smartsec auth set      # digite a chave; a entrada não aparece no terminal
+smartsec auth status   # provedor, modelo, tamanho, final e fonte
+smartsec auth remove   # apaga ~/.config/smartsec/auth.json
 ```
 
-Em CI, `smartsec auth set --stdin < /run/secrets/smartsec-api-key` le a chave da
-entrada padrao, sem prompt e sem coloca-la em argumentos de processo. O comando
-recusa `--stdin` em terminal para nao ecoar a digitacao.
+Em CI, `smartsec auth set --stdin < /run/secrets/smartsec-api-key` lê a chave da
+entrada padrão, sem prompt e sem colocá-la em argumentos de processo.
 
-A chave **nunca** vai para o TOML, para logs ou para arquivos do SmartSec.
-`SMARTSEC_API_KEY` continua existindo apenas como override explicito de
-CI/sessao: tem precedencia sobre o cofre, nao e gravada e e removida do ambiente
-dos scanners. Se o cofre estiver bloqueado, `auth set` e `auth status` dizem para
-desbloquear o Secret Service (por exemplo, gnome-keyring ou KWallet) e tentar de
-novo.
+A chave **nunca** vai para o TOML, para logs ou para os scans; ela fica apenas
+em `~/.config/smartsec/auth.json` (0600). `SMARTSEC_API_KEY` continua existindo
+apenas como override explícito de CI/sessão: tem precedência sobre o arquivo,
+não é gravada e é removida do ambiente dos scanners.
 
 ## Relatorios
 

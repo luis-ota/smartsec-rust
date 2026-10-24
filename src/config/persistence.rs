@@ -372,21 +372,23 @@ pub fn config_file_exists_at(path: &std::path::Path) -> bool {
     path.exists()
 }
 
-pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
-    save_api_key_file(key).map_err(|error| keyring::Error::PlatformFailure(Box::new(error)))
+pub fn save_api_key(key: &str) -> std::io::Result<()> {
+    save_api_key_file(key)
 }
 
-pub fn load_api_key() -> Result<String, keyring::Error> {
-    match load_api_key_file() {
-        Ok(Some(key)) => Ok(key),
-        Ok(None) => Err(keyring::Error::NoEntry),
-        Err(error) => Err(keyring::Error::PlatformFailure(Box::new(error))),
-    }
+pub fn load_api_key() -> std::io::Result<Option<String>> {
+    load_api_key_file()
 }
 
 /// Remove a chave. Ausência não é erro: `auth remove` é idempotente.
-pub fn delete_api_key() -> Result<(), keyring::Error> {
-    delete_api_key_file().map_err(|error| keyring::Error::PlatformFailure(Box::new(error)))
+pub fn delete_api_key() -> std::io::Result<()> {
+    delete_api_key_file()
+}
+
+fn credential_file_error(error: std::io::Error) -> CredentialStoreError {
+    CredentialStoreError::Unavailable(format!(
+        "não foi possível acessar o arquivo local de credenciais: {error}"
+    ))
 }
 
 /// Distingue chave ausente de cofre bloqueado ou indisponível.
@@ -422,10 +424,7 @@ impl std::fmt::Display for CredentialStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Missing => {
-                write!(
-                    formatter,
-                    "nenhuma chave da API está cadastrada no cofre do sistema"
-                )
+                write!(formatter, "nenhuma chave da API está cadastrada")
             }
             Self::Locked(reason) | Self::Unavailable(reason) => write!(formatter, "{reason}"),
         }
@@ -434,28 +433,22 @@ impl std::fmt::Display for CredentialStoreError {
 
 impl std::error::Error for CredentialStoreError {}
 
-impl From<keyring::Error> for CredentialStoreError {
-    fn from(error: keyring::Error) -> Self {
-        match error {
-            keyring::Error::NoEntry => Self::Missing,
-            error => {
-                let detail = error
-                    .to_string()
-                    .replace("Platform secure storage failure: ", "");
-                Self::Unavailable(format!(
-                    "não foi possível acessar o arquivo local de credenciais: {detail}"
-                ))
-            }
-        }
-    }
-}
-
 fn status_from_load(result: Result<String, CredentialStoreError>) -> ApiKeyStatus {
     match result {
         Ok(key) if !key.trim().is_empty() => ApiKeyStatus::Available(key),
         Ok(_) | Err(CredentialStoreError::Missing) => ApiKeyStatus::Missing,
         Err(CredentialStoreError::Locked(reason)) => ApiKeyStatus::Locked(reason),
         Err(CredentialStoreError::Unavailable(reason)) => ApiKeyStatus::Unavailable(reason),
+    }
+}
+
+fn status_from_file(result: std::io::Result<Option<String>>) -> ApiKeyStatus {
+    match result {
+        Ok(Some(key)) if !key.trim().is_empty() => ApiKeyStatus::Available(key),
+        Ok(_) => ApiKeyStatus::Missing,
+        Err(error) => ApiKeyStatus::Unavailable(format!(
+            "não foi possível acessar o arquivo local de credenciais: {error}"
+        )),
     }
 }
 
@@ -478,15 +471,19 @@ pub struct SystemCredentialStore;
 
 impl CredentialStore for SystemCredentialStore {
     fn save(&self, key: &str) -> Result<(), CredentialStoreError> {
-        save_api_key(key).map_err(CredentialStoreError::from)
+        save_api_key(key).map_err(credential_file_error)
     }
 
     fn load(&self) -> Result<String, CredentialStoreError> {
-        load_api_key().map_err(CredentialStoreError::from)
+        match load_api_key() {
+            Ok(Some(key)) if !key.trim().is_empty() => Ok(key),
+            Ok(_) => Err(CredentialStoreError::Missing),
+            Err(error) => Err(credential_file_error(error)),
+        }
     }
 
     fn delete(&self) -> Result<(), CredentialStoreError> {
-        delete_api_key().map_err(CredentialStoreError::from)
+        delete_api_key().map_err(credential_file_error)
     }
 
     fn status(&self) -> ApiKeyStatus {
@@ -495,7 +492,7 @@ impl CredentialStore for SystemCredentialStore {
 }
 
 pub fn api_key_status() -> ApiKeyStatus {
-    status_from_load(load_api_key().map_err(CredentialStoreError::from))
+    status_from_file(load_api_key())
 }
 
 #[cfg(test)]
@@ -785,13 +782,5 @@ mod tests {
         store.save("   ").expect("a gravação deve funcionar");
 
         assert_eq!(store.status(), ApiKeyStatus::Missing);
-    }
-
-    #[test]
-    fn no_entry_from_the_keyring_becomes_missing() {
-        assert_eq!(
-            CredentialStoreError::from(keyring::Error::NoEntry),
-            CredentialStoreError::Missing
-        );
     }
 }
