@@ -134,8 +134,8 @@ O workflow consome **um** secret, opcional:
 |---|---|
 | `SMARTSEC_LLM_API_KEY` | habilitaria o provedor de IA remoto |
 
-A chave tem dois caminhos: o **keyring** do sistema operacional (persistente,
-padrão) e `SMARTSEC_API_KEY` (somente a sessão). O secret do workflow ainda não
+A chave tem dois caminhos: `~/.config/smartsec/auth.json` (persistente, 0600,
+como OpenCode/Codex) e `SMARTSEC_API_KEY` (somente a sessão). O secret do workflow ainda não
 é repassado com esse nome, então o CI continua em `--llm ollama` (loopback) e,
 como não há Ollama no runner, o agente cai no **fallback determinístico local**
 (`local_analysis` em `src/ai/agent.rs`): a análise sai em português, sem
@@ -188,20 +188,6 @@ pelo workflow, e nenhum deles era previsível lendo o código:
   (`Failed(Some(125))`), porque o executor usa a mesma flag de rede. É um bug de
   ambiente pré-existente a esta issue, agora resolvido no CI.
 
-- **Headers do D-Bus.** O `keyring` usa a feature `sync-secret-service` no
-  Linux, que puxa `libdbus-sys`; o build script dele chama
-  `pkg-config --libs --cflags 'dbus-1 >= 1.6'`. O runner não traz os headers de
-  desenvolvimento, então sem `libdbus-1-dev` o build morre com exit `101` antes
-  de chegar ao clippy.
-
-- **Barramento D-Bus disponível durante o scan.** O crun do runner usa o systemd
-  como gerenciador de cgroup e precisa do barramento da sessão para subir o
-  container. Desabilitar `DBUS_SESSION_BUS_ADDRESS` para evitar a leitura da
-  chave no keyring faz o scan falhar com
-  `crun: sd-bus call: Interactive authentication required` e exit `125`. A
-  leitura da chave já é tolerante: sem Secret Service ela falha e o código
-  segue, sem prompt e sem espera.
-
 Outras limitações que continuam valendo:
 
 - **Rede de saída.** O runner hospedado tem acesso à internet. O `podman pull`
@@ -209,8 +195,8 @@ Outras limitações que continuam valendo:
   smoke test falha com mensagem de rede explícita antes da varredura. O
   container também ganha acesso de saída — o TCC não permite fechar isso sem
   alterar `src/orchestrator/sandbox.rs`, que fixa `--network pasta`.
-- **Keyring.** Não há Secret Service no runner, então provedores remotos de IA
-  não funcionam (ver *Secrets*).
+- **Credencial persistida.** O runner não mantém `auth.json`; provedores
+  remotos usam `SMARTSEC_API_KEY` apenas na sessão (ver *Secrets*).
 - **Templates do Nuclei.** O Nuclei exige um checkout Git de templates no commit
   configurado; o CI não faz esse checkout e por isso roda apenas com
   `--tools Nmap`. Para incluir o Nuclei, é preciso clonar
