@@ -728,7 +728,10 @@ fn field_value(app: &AppState, field: SettingsField) -> (String, bool) {
                     false,
                 )
             } else {
-                ("•••••••• · guardada no keyring".to_string(), false)
+                (
+                    "•••••••• · guardada no arquivo local 0600".to_string(),
+                    false,
+                )
             }
         }
         SettingsField::Model => {
@@ -845,7 +848,7 @@ fn field_help(field: SettingsField) -> (&'static str, &'static str) {
             "https://integrate.api.nvidia.com/v1",
         ),
         SettingsField::ApiKey => (
-            "Chave de acesso do provedor, como uma senha; fica no keyring do sistema.",
+            "Chave de acesso do provedor, como uma senha; fica no arquivo local 0600 (auth.json).",
             "nvapi-… (NVIDIA) ou sk-… (OpenAI); copie a chave do site do provedor",
         ),
         SettingsField::Model => (

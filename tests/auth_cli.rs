@@ -3,8 +3,9 @@
 //! Nenhum teste deste arquivo toca no keyring real: `set`, `status` e `remove`
 //! contra o cofre do sistema vivem em testes com `CredentialStore` em memória.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn isolated_root(label: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -82,6 +83,48 @@ fn auth_set_help_is_the_auth_help() {
         "{}",
         stdout_of(&output)
     );
+}
+
+#[test]
+fn auth_set_writes_private_auth_json_without_keyring() {
+    let root = isolated_root("arquivo-local");
+    let mut child = command_in(&root)
+        .args(["auth", "set", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("processo");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"sk-teste-auth-json")
+        .expect("chave");
+    let output = child.wait_with_output().expect("saida");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+
+    let path = root.join("smartsec/auth.json");
+    let content = std::fs::read_to_string(&path).expect("auth.json");
+    assert!(content.contains("sk-teste-auth-json"), "{content}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    let status = command_in(&root).args(["auth", "status"]).output().unwrap();
+    let text = stdout_of(&status);
+    assert!(text.contains("cadastrada"), "{text}");
+    assert!(text.contains("auth.json"), "{text}");
+    assert!(!text.to_lowercase().contains("bloqueado"), "{text}");
+
+    let remove = command_in(&root).args(["auth", "remove"]).output().unwrap();
+    assert_eq!(remove.status.code(), Some(0));
+    assert!(!path.exists());
 }
 
 #[test]

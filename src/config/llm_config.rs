@@ -222,7 +222,7 @@ impl LlmConfig {
             if self.api_key.trim().is_empty() {
                 if let Some(reason) = self.credential_error.as_deref() {
                     return Err(format!(
-                        "Credenciais indisponíveis: {reason}. Desbloqueie o cofre de segredos do sistema e reabra a configuração."
+                        "Credenciais indisponíveis: {reason}. Verifique o arquivo local de credenciais e reabra a configuração."
                     ));
                 }
                 return Err(
