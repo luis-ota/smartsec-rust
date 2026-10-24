@@ -2250,8 +2250,8 @@ impl AppState {
             .or(self.config_warning.as_deref())
     }
 
-    /// Relê a chave ao abrir Configurar IA; o cofre pode ter sido desbloqueado.
-    pub(crate) fn reload_api_key_from_keyring(&mut self) {
+    /// Relê a chave ao abrir Configurar IA; o arquivo pode ter sido atualizado.
+    pub(crate) fn reload_api_key_from_store(&mut self) {
         if !self.config.llm.api_key.trim().is_empty() || !self.config.llm.is_remote() {
             return;
         }

@@ -262,7 +262,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
                 app.focus
             };
             if !from_onboarding {
-                app.reload_api_key_from_keyring();
+                app.reload_api_key_from_store();
                 app.reset_settings_draft();
             }
             app.settings_editing = None;

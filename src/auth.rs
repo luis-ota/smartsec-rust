@@ -140,15 +140,16 @@ pub fn run(args: AuthArgs) -> Result<i32> {
         }
         AuthAction::Status => {
             let mut stdout = io::stdout().lock();
+            let env_override = env_key_present();
             let code = run_status(
                 &SystemCredentialStore,
                 &configured_llm(),
-                env_key_present(),
+                env_override,
                 &mut stdout,
             )?;
             stdout.flush()?;
             drop(stdout);
-            if persistence::api_key_file_exists() {
+            if !env_override && persistence::api_key_file_exists() {
                 println!(
                     "  fonte:    arquivo local 0600 ({})",
                     persistence::api_key_file_path().display()
