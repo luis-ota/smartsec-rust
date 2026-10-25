@@ -10,6 +10,11 @@ use crate::orchestrator::decision::{decide_nuclei_plan, DecisionRecord};
 use crate::orchestrator::enrichment::{correlate_and_enrich, EnrichmentSummary};
 use crate::orchestrator::nvd::NvdClient;
 use crate::orchestrator::sandbox::{self, ExecutionResult, ExecutionStatus, PodmanExecutor};
+use crate::orchestrator::scan_logger::{
+    AiCheckpoint, CheckpointHandle, CodeAnalysisCheckpoint, CodeCheckpoint, ScanRuntime,
+    ToolCheckpoint, MAX_CHECKPOINT_OUTPUT_BYTES, PHASE_ANALYSIS, PHASE_CANCELLED, PHASE_CODE,
+    PHASE_COMPLETED, PHASE_RAG, PHASE_TOOLS, TOOL_STATUS_RUNNING,
+};
 use crate::orchestrator::tmpfs;
 use crate::tools::nmap::NmapTool;
 use crate::tools::nuclei::{NucleiTool, NUCLEI_TEMPLATES_COMMIT};
@@ -63,6 +68,13 @@ pub struct Orchestrator {
     /// Explicações RAG geradas no detalhe do achado (issue #109); o log
     /// estruturado guarda o veredito da mais recente e a contagem.
     pub rag_explanations: Vec<crate::cyberrag::service::ExplanationResult>,
+    /// Estado incremental compartilhado com os hooks de streaming e de código.
+    runtime: std::sync::Arc<std::sync::Mutex<ScanRuntime>>,
+    /// Serializa as gravações do checkpoint, para um flush de streaming não
+    /// intercalar com a gravação completa do orquestrador.
+    checkpoint_write_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    /// Diretório do log; `None` usa [`crate::orchestrator::scan_logger::scans_dir`].
+    checkpoint_dir: Option<PathBuf>,
 }
 
 impl Orchestrator {
@@ -101,7 +113,31 @@ impl Orchestrator {
             code_audit: None,
             last_code_report: None,
             rag_explanations: Vec::new(),
+            runtime: std::sync::Arc::new(std::sync::Mutex::new(ScanRuntime::default())),
+            checkpoint_write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            checkpoint_dir: None,
         }
+    }
+
+    /// Redireciona os checkpoints para um diretório específico.
+    ///
+    /// O fluxo real usa o diretório padrão de scans; a opção existe para que os
+    /// testes não escrevam no diretório de configuração do usuário.
+    #[allow(dead_code)]
+    pub fn with_checkpoint_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.checkpoint_dir = Some(dir.into());
+        self
+    }
+
+    /// Reutiliza o `scan_id` de outra instância do orquestrador.
+    ///
+    /// A TUI cria um orquestrador para a tela e outro para a task; sem herdar o
+    /// identificador, cada um gravaria uma trilha de IA e um checkpoint com o
+    /// mesmo scan em arquivos diferentes.
+    pub fn adopt_scan_id(mut self, scan_id: impl Into<String>) -> Self {
+        self.scan_id = scan_id.into();
+        self.agent_trail = agent_trail_for(&self.scan_id);
+        self
     }
 
     pub fn agent_handle(&self) -> AIAgent {
@@ -133,11 +169,24 @@ impl Orchestrator {
     /// container pelo canal compartilhado, ele é encerrado com `podman stop` e
     /// removido com `podman rm --force`, sem depender de `abort()` da task.
     pub fn cancel_execution(&mut self) {
+        self.request_cancel();
+        // A auditoria do que já existe é gravada antes de a task de execução
+        // encerrar; um processo morto depois disto preserva este checkpoint.
+        let _ = self.persist_checkpoint_with_reason("cancelado");
+    }
+
+    /// Cancela pelo canal **sem** gravar o checkpoint.
+    ///
+    /// A TUI usa esta forma quando a task do scan está viva: quem possui o
+    /// estado real é a task, e ela grava o parcial ao encerrar o laço. Gravar
+    /// daqui com o estado da tela apagaria achados já persistidos.
+    pub fn request_cancel(&mut self) {
         if self.control.is_cancelled() {
             return;
         }
         self.record_interruption(InterruptionReason::user_cancelled());
         self.control.cancel();
+        self.set_runtime_phase(PHASE_CANCELLED);
     }
 
     /// Solicita a pausa da ferramenta em execução (`podman pause`).
@@ -174,6 +223,176 @@ impl Orchestrator {
         self.control.is_cancelled()
     }
 
+    /// Diretório em que o log estruturado desta execução é gravado.
+    pub fn scan_log_dir(&self) -> PathBuf {
+        self.checkpoint_dir
+            .clone()
+            .unwrap_or_else(crate::orchestrator::scan_logger::scans_dir)
+    }
+
+    /// Grava o estado parcial desta execução no arquivo do scan atual.
+    ///
+    /// Pode ser chamado a qualquer momento pela TUI (por exemplo, ao solicitar
+    /// cancelamento): não exige que o scan tenha terminado e não apaga o que já
+    /// está no arquivo. O arquivo é criado desde o primeiro checkpoint, com
+    /// permissão 0600.
+    #[allow(dead_code)]
+    pub fn persist_checkpoint(&self) -> anyhow::Result<PathBuf> {
+        self.persist_checkpoint_with_reason(self.checkpoint_reason())
+    }
+
+    /// Variante que registra um motivo explícito (`em execução`, `cancelado`).
+    pub fn persist_checkpoint_with_reason(&self, reason: &str) -> anyhow::Result<PathBuf> {
+        let _guard = self
+            .checkpoint_write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let metadata = self.checkpoint_metadata(reason);
+        self.save_metadata(&metadata)
+    }
+
+    fn save_metadata(
+        &self,
+        metadata: &crate::orchestrator::scan_logger::ScanMetadata,
+    ) -> anyhow::Result<PathBuf> {
+        match &self.checkpoint_dir {
+            Some(dir) => crate::orchestrator::scan_logger::save_scan_log_to_dir(metadata, dir),
+            None => crate::orchestrator::scan_logger::save_scan_log(metadata),
+        }
+    }
+
+    fn checkpoint_reason(&self) -> &'static str {
+        if self.control.is_cancelled() {
+            "cancelado"
+        } else {
+            "em execução"
+        }
+    }
+
+    fn checkpoint_metadata(&self, reason: &str) -> crate::orchestrator::scan_logger::ScanMetadata {
+        let timestamp = now_iso8601();
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if self.control.is_cancelled() {
+                runtime.phase = PHASE_CANCELLED.to_string();
+            }
+            runtime.last_checkpoint_at = timestamp;
+            runtime.checkpoint_reason = reason.to_string();
+        }
+        let mut metadata = self.base_scan_metadata();
+        // Um checkpoint não é um scan concluído: deixar `completed_at` vazio
+        // impede que o histórico apresente uma execução em andamento como
+        // limpa. A gravação final preenche o horário.
+        metadata.completed_at.clear();
+        metadata
+    }
+
+    fn runtime_snapshot(&self) -> ScanRuntime {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn set_runtime_phase(&mut self, phase: &str) {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .phase = phase.to_string();
+    }
+
+    fn checkpoint_handle(&self) -> Option<CheckpointHandle> {
+        let path = crate::orchestrator::scan_logger::scan_log_path_in_dir(
+            &self.scan_id,
+            &self.scan_log_dir(),
+        )
+        .ok()?;
+        Some(CheckpointHandle::new(
+            path,
+            std::sync::Arc::clone(&self.runtime),
+            std::sync::Arc::clone(&self.checkpoint_write_lock),
+        ))
+    }
+
+    fn begin_tool_checkpoint(&mut self, manifest: &ToolManifest, target: &str) {
+        let mut runtime = self
+            .runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        runtime.phase = PHASE_TOOLS.to_string();
+        runtime.current_tool = Some(ToolCheckpoint {
+            tool_name: manifest.name.clone(),
+            arguments: vec![manifest.name.clone(), target.to_string()],
+            started_at: now_iso8601(),
+            status: TOOL_STATUS_RUNNING.to_string(),
+            output_bytes: 0,
+            output_partial: String::new(),
+            finished_at: String::new(),
+        });
+        drop(runtime);
+        let _ = self.persist_checkpoint_with_reason(self.checkpoint_reason());
+    }
+
+    fn finish_tool_checkpoint(&mut self, execution: &SecurityTool) {
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(tool) = runtime.current_tool.as_mut() {
+                tool.status = execution.status.clone();
+                tool.output_bytes = execution.output.len();
+                tool.finished_at = now_iso8601();
+                let final_output = capped_checkpoint_text(&execution.output);
+                if tool.output_partial.is_empty() || execution.status == "succeeded" {
+                    tool.output_partial = final_output;
+                } else {
+                    // Falha, timeout e cancelamento preservam o log que já tinha
+                    // sido transmitido, além da mensagem final do executor.
+                    append_checkpoint_output(&mut tool.output_partial, &final_output);
+                }
+            }
+            if self.control.is_cancelled() {
+                runtime.phase = PHASE_CANCELLED.to_string();
+            }
+        }
+        let _ = self.persist_checkpoint_with_reason(self.checkpoint_reason());
+    }
+
+    fn begin_ai_checkpoint(&mut self, summary: &str) {
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.ai_in_progress = Some(AiCheckpoint {
+                started_at: now_iso8601(),
+                provider: self.config.provider_mode.clone(),
+                model: self.agent.model.clone(),
+                prompt_summary: summarize_checkpoint_prompt(summary),
+                findings_count: self.findings.len(),
+            });
+        }
+        let _ = self.persist_checkpoint_with_reason(self.checkpoint_reason());
+    }
+
+    fn finish_ai_checkpoint(&mut self) {
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.ai_in_progress = None;
+            if self.control.is_cancelled() {
+                runtime.phase = PHASE_CANCELLED.to_string();
+            }
+        }
+        let _ = self.persist_checkpoint_with_reason(self.checkpoint_reason());
+    }
+
     fn podman_executor(&self) -> PodmanExecutor {
         let executor =
             PodmanExecutor::new(Duration::from_secs(15 * 60)).with_control(&self.control);
@@ -196,6 +415,58 @@ impl Orchestrator {
     }
 
     pub async fn execute_tool(&mut self, manifest: &ToolManifest, target: &str) -> SecurityTool {
+        self.begin_tool_checkpoint(manifest, target);
+        // O trace do Podman é a única saída disponível enquanto o container
+        // roda. Ele é duplicado para o checkpoint a cada poucas linhas, sem
+        // impedir que a TUI/headless continue recebendo o fluxo ao vivo.
+        let original_sink = self.trace_sink.take();
+        let (trace_tx, mut trace_rx) = mpsc::unbounded_channel::<String>();
+        let forward = original_sink.clone();
+        let stream_checkpoint = self.checkpoint_handle();
+        let stream_task = tokio::spawn(async move {
+            let mut pending = 0usize;
+            loop {
+                match tokio::time::timeout(Duration::from_secs(2), trace_rx.recv()).await {
+                    Ok(Some(line)) => {
+                        if let Some(checkpoint) = &stream_checkpoint {
+                            checkpoint.append_tool_log(&line);
+                        }
+                        if let Some(sink) = &forward {
+                            let _ = sink.send(line);
+                        }
+                        pending += 1;
+                        if pending >= 40 {
+                            if let Some(checkpoint) = &stream_checkpoint {
+                                let _ = checkpoint.flush();
+                            }
+                            pending = 0;
+                        }
+                    }
+                    Ok(None) => break,
+                    // Ferramenta silenciosa: ainda assim o parcial é gravado,
+                    // para o último checkpoint não ficar parado no início.
+                    Err(_) if pending > 0 => {
+                        if let Some(checkpoint) = &stream_checkpoint {
+                            let _ = checkpoint.flush();
+                        }
+                        pending = 0;
+                    }
+                    Err(_) => {}
+                }
+            }
+            if let Some(checkpoint) = &stream_checkpoint {
+                let _ = checkpoint.flush();
+            }
+        });
+        self.trace_sink = Some(trace_tx);
+        let execution = self.execute_tool_inner(manifest, target).await;
+        self.trace_sink = original_sink;
+        let _ = stream_task.await;
+        self.finish_tool_checkpoint(&execution);
+        execution
+    }
+
+    async fn execute_tool_inner(&mut self, manifest: &ToolManifest, target: &str) -> SecurityTool {
         let registered = match self.registry.find(&manifest.name) {
             Some(registered) => registered.clone(),
             None => {
@@ -613,6 +884,16 @@ impl Orchestrator {
     /// nos dois modos. O serviço é campo do orquestrador, e não instância por
     /// chamada, para os dois receberem a mesma configuração de prazo.
     pub async fn analyze_findings(&mut self) -> AnalysisResult {
+        self.set_runtime_phase(PHASE_ANALYSIS);
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.current_tool = None;
+        }
+        let summary = checkpoint_prompt_summary(&self.findings);
+        self.begin_ai_checkpoint(&summary);
         self.agent_trail.record_analysis_started(
             &self.config.provider_mode,
             &self.agent.model,
@@ -622,9 +903,11 @@ impl Orchestrator {
             .analysis_service
             .analyze(&mut self.agent, &self.findings)
             .await;
+        self.finish_ai_checkpoint();
         self.agent_trail.record_analysis_finished(&result);
         self.last_log = result.text.clone();
         self.last_analysis_result = Some(result.clone());
+        let _ = self.persist_checkpoint_with_reason(self.checkpoint_reason());
         result
     }
 
@@ -660,6 +943,18 @@ impl Orchestrator {
         &mut self,
         progress: Option<&crate::code_agent::progress::EventSender>,
     ) -> CodeAnalysisReport {
+        self.set_runtime_phase(PHASE_CODE);
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.partial_code_analyses.clear();
+            runtime.code_in_progress = None;
+            runtime.current_tool = None;
+            runtime.ai_in_progress = None;
+        }
+        let _ = self.persist_checkpoint_with_reason(self.checkpoint_reason());
         let project_dir = self.config.effective_project_dir();
         let report = match CodeAnalysisService::open(
             &project_dir,
@@ -696,15 +991,73 @@ impl Orchestrator {
                             }
                         }
                     });
+                    // O relatório final chega tarde demais para a auditoria de
+                    // um scan interrompido: cada achado é gravado assim que
+                    // termina, no mesmo runtime do checkpoint.
+                    let titles = self
+                        .findings
+                        .iter()
+                        .map(|finding| finding.title.clone())
+                        .collect::<Vec<_>>();
+                    let runtime = std::sync::Arc::clone(&self.runtime);
+                    let control = self.control.clone();
+                    // O laço do agente precisa enxergar o mesmo canal que o
+                    // hook usa: o botão Cancelar chega ao turno do provedor e à
+                    // chamada de ferramenta, não só ao container.
+                    let agent_control = self.control.clone();
+                    let checkpoint = self.checkpoint_handle();
+                    let hook = move |event: crate::code_agent::agent::AnalysisEvent<'_>| {
+                        {
+                            let mut runtime =
+                                runtime.lock().unwrap_or_else(|error| error.into_inner());
+                            runtime.phase = if control.is_cancelled() {
+                                PHASE_CANCELLED
+                            } else {
+                                PHASE_CODE
+                            }
+                            .to_string();
+                            match event {
+                                crate::code_agent::agent::AnalysisEvent::FindingStarted {
+                                    finding_index,
+                                    finding_title,
+                                } => {
+                                    runtime.code_in_progress = Some(CodeCheckpoint {
+                                        finding_index,
+                                        finding_title: finding_title.to_string(),
+                                        file: None,
+                                        line: None,
+                                        started_at: now_iso8601(),
+                                    });
+                                }
+                                crate::code_agent::agent::AnalysisEvent::FindingFinished(
+                                    analysis,
+                                ) => {
+                                    let title = titles
+                                        .get(analysis.finding_index)
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    runtime.partial_code_analyses.push(
+                                        CodeAnalysisCheckpoint::from_analysis(&title, analysis),
+                                    );
+                                    runtime.code_in_progress = None;
+                                }
+                            }
+                        }
+                        if let Some(checkpoint) = &checkpoint {
+                            let _ = checkpoint.flush();
+                        }
+                    };
                     let report = service
-                        .analyze(
+                        .analyze_with_hook(
                             self.agent.provider_handle(),
                             crate::code_agent::agent::CodeAgentContext {
                                 model: &model,
                                 provider_label: &label,
                                 findings: &self.findings,
                                 progress: Some(&tx),
+                                control: Some(&agent_control),
                             },
+                            Some(&hook),
                         )
                         .await;
                     // Sem esta espera a última linha pode não ter sido gravada.
@@ -725,8 +1078,19 @@ impl Orchestrator {
                 CodeAnalysisReport::unavailable(&project_dir, &reason)
             }
         };
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.code_in_progress = None;
+            if self.control.is_cancelled() {
+                runtime.phase = PHASE_CANCELLED.to_string();
+            }
+        }
         self.apply_code_report(&report);
         self.last_code_report = Some(report);
+        let _ = self.persist_checkpoint_with_reason(self.checkpoint_reason());
         self.last_code_report.clone().unwrap_or_default()
     }
 
@@ -750,9 +1114,13 @@ impl Orchestrator {
             target,
             self.latest_nmap_output.as_deref().unwrap_or_default(),
         );
-        self.analysis_service
+        self.begin_ai_checkpoint(&format!("planejamento do Nuclei para {target}"));
+        let result = self
+            .analysis_service
             .request(&mut self.agent, &prompt)
-            .await
+            .await;
+        self.finish_ai_checkpoint();
+        result
     }
 
     /// Constrói os achados reais a partir da execução dos scanners.
@@ -908,6 +1276,11 @@ impl Orchestrator {
             let _exec = self.execute_tool(tool, &target).await;
         }
 
+        if self.control.is_cancelled() {
+            self.set_runtime_phase(PHASE_CANCELLED);
+            let _ = self.persist_checkpoint_with_reason("cancelado");
+        }
+
         self.build_findings();
         self.correlate_and_enrich_findings().await;
 
@@ -944,8 +1317,16 @@ impl Orchestrator {
         std::sync::Arc::clone(&self.agent_trail)
     }
 
+    /// Gravação final: o runtime passa a `completed` (ou `cancelled`) e
+    /// `completed_at` recebe o horário real do encerramento.
     pub fn persist_scan_log(&self) -> anyhow::Result<std::path::PathBuf> {
-        crate::orchestrator::scan_logger::save_scan_log(&self.scan_metadata())
+        let _guard = self
+            .checkpoint_write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut metadata = self.scan_metadata();
+        metadata.runtime = self.final_runtime();
+        self.save_metadata(&metadata)
     }
 
     /// Log estruturado da execução, ainda não gravado.
@@ -953,6 +1334,21 @@ impl Orchestrator {
     /// Separado da gravação para que um teste possa conferir o conteúdo sem
     /// escrever no diretório de configuração do usuário.
     pub fn scan_metadata(&self) -> crate::orchestrator::scan_logger::ScanMetadata {
+        let mut metadata = self.base_scan_metadata();
+        metadata.comparison = crate::orchestrator::scan_logger::comparison_with_previous(
+            &self.config.target_url,
+            &self.started_at,
+            &self.scan_id,
+            &self.findings,
+        );
+        metadata
+    }
+
+    /// Metadados sem a comparação com execuções anteriores.
+    ///
+    /// A comparação lê o diretório inteiro de histórico; fazê-la a cada
+    /// checkpoint deixaria a gravação incremental mais cara que o próprio scan.
+    fn base_scan_metadata(&self) -> crate::orchestrator::scan_logger::ScanMetadata {
         let scan_id = self.scan_id.clone();
         let tools_executed = self
             .execution_history
@@ -1032,21 +1428,52 @@ impl Orchestrator {
             .fold(metadata, |metadata, result| {
                 metadata.with_rag_explanation(result)
             });
-        let comparison = crate::orchestrator::scan_logger::comparison_with_previous(
-            &self.config.target_url,
-            &self.started_at,
-            &self.scan_id,
-            &self.findings,
-        );
         crate::orchestrator::scan_logger::ScanMetadata {
-            comparison,
+            runtime: self.runtime_snapshot(),
             ..metadata
         }
+    }
+
+    /// Estado final do runtime, coerente com o motivo da interrupção.
+    fn final_runtime(&self) -> ScanRuntime {
+        let mut runtime = self.runtime_snapshot();
+        let cancelled = self.control.is_cancelled();
+        runtime.phase = if cancelled {
+            PHASE_CANCELLED
+        } else {
+            PHASE_COMPLETED
+        }
+        .to_string();
+        if cancelled {
+            // O cancelamento preserva o que estava em andamento: zerar aqui
+            // esconderia a ferramenta e o log parcial justamente no registro
+            // que sobrevive ao encerramento.
+            if let Some(tool) = runtime.current_tool.as_mut() {
+                if tool.status == TOOL_STATUS_RUNNING {
+                    tool.status = "cancelled".to_string();
+                    tool.finished_at = now_iso8601();
+                }
+            }
+        } else {
+            runtime.current_tool = None;
+            runtime.ai_in_progress = None;
+            runtime.code_in_progress = None;
+        }
+        runtime.last_checkpoint_at = now_iso8601();
+        runtime.checkpoint_reason = if cancelled {
+            "cancelado".to_string()
+        } else if self.control.interruption().is_some() {
+            "interrompido".to_string()
+        } else {
+            "concluído".to_string()
+        };
+        runtime
     }
 
     /// Registra uma explicação do detalhe do achado para o log estruturado.
     pub fn record_rag_explanation(&mut self, result: &crate::cyberrag::service::ExplanationResult) {
         self.rag_explanations.push(result.clone());
+        self.set_runtime_phase(PHASE_RAG);
     }
 }
 
@@ -1189,6 +1616,59 @@ fn validate_templates(path: &std::path::Path, expected: Option<&str>) -> anyhow:
         }
     }
     Ok(())
+}
+
+/// Recorte inicial usado quando o log final de uma ferramenta vira checkpoint.
+fn capped_checkpoint_text(text: &str) -> String {
+    if text.len() <= MAX_CHECKPOINT_OUTPUT_BYTES {
+        return text.to_string();
+    }
+    let end = text
+        .char_indices()
+        .take_while(|(index, _)| *index < MAX_CHECKPOINT_OUTPUT_BYTES)
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    format!("{}\n[... saída limitada no checkpoint ...]", &text[..end])
+}
+
+/// Anexa o desfecho ao log parcial, mantendo o fim (o trecho mais recente).
+fn append_checkpoint_output(existing: &mut String, text: &str) {
+    if !existing.is_empty() {
+        existing.push('\n');
+    }
+    existing.push_str(text);
+    if existing.len() <= MAX_CHECKPOINT_OUTPUT_BYTES {
+        return;
+    }
+    let mut start = existing.len() - MAX_CHECKPOINT_OUTPUT_BYTES;
+    while !existing.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = existing[start..].to_string();
+    *existing = format!("[... trecho inicial descartado ...]\n{tail}");
+}
+
+/// Resumo do turno da IA: quantidade e alguns títulos, nunca o prompt inteiro.
+fn checkpoint_prompt_summary(findings: &[Vulnerability]) -> String {
+    let titles = findings
+        .iter()
+        .take(5)
+        .map(|finding| crate::utils::redaction::sanitize_text(&finding.title))
+        .collect::<Vec<_>>()
+        .join("; ");
+    summarize_checkpoint_prompt(&format!(
+        "análise de {} achado(s): {titles}",
+        findings.len()
+    ))
+}
+
+fn summarize_checkpoint_prompt(summary: &str) -> String {
+    let sanitized = crate::utils::redaction::sanitize_text(summary);
+    if sanitized.chars().count() <= 300 {
+        return sanitized;
+    }
+    sanitized.chars().take(300).collect::<String>() + "…"
 }
 
 #[cfg(test)]
@@ -1461,6 +1941,232 @@ mod tests {
         assert!(restored.interruption.is_none());
     }
 
+    fn checkpoint_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec-checkpoint-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn checkpoint_orchestrator(label: &str) -> (Orchestrator, PathBuf) {
+        let dir = checkpoint_dir(label);
+        let mut orchestrator =
+            Orchestrator::new(make_config()).expect("configuração de teste válida");
+        // Ids válidos são `scan_<dígitos>`; o log usa o id para o histórico.
+        orchestrator.scan_id = Orchestrator::novo_scan_id();
+        let orchestrator = orchestrator.with_checkpoint_dir(dir.clone());
+        (orchestrator, dir)
+    }
+
+    #[test]
+    fn a_checkpoint_written_before_the_end_is_valid_and_reloads() {
+        let (mut orchestrator, dir) = checkpoint_orchestrator("parcial");
+        orchestrator.findings = vec![critical_finding("Nuclei", "Achado crítico")];
+        let manifest = ToolManifest {
+            name: "Nuclei".to_string(),
+            ..ToolManifest::default()
+        };
+        orchestrator.begin_tool_checkpoint(&manifest, "http://test.local");
+
+        let path = orchestrator
+            .persist_checkpoint()
+            .expect("checkpoint antes do fim");
+
+        assert!(path.exists());
+        let loaded = crate::orchestrator::scan_logger::load_scan_log_from_file(&path)
+            .expect("o JSON parcial precisa reler");
+        assert_eq!(loaded.scan_id, orchestrator.scan_id);
+        assert_eq!(loaded.runtime.phase, PHASE_TOOLS);
+        assert!(
+            loaded.completed_at.is_empty(),
+            "checkpoint não pode parecer scan concluído"
+        );
+        let tool = loaded.runtime.current_tool.expect("ferramenta atual");
+        assert_eq!(tool.tool_name, "Nuclei");
+        assert_eq!(tool.status, TOOL_STATUS_RUNNING);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_running_tool_and_the_cancellation_keep_status_and_partial_log() {
+        let (mut orchestrator, dir) = checkpoint_orchestrator("cancelado");
+        let manifest = ToolManifest {
+            name: "Nuclei".to_string(),
+            ..ToolManifest::default()
+        };
+        orchestrator.begin_tool_checkpoint(&manifest, "http://test.local");
+        let handle = orchestrator
+            .checkpoint_handle()
+            .expect("handle de checkpoint");
+        handle.append_tool_log("linha já transmitida pelo scanner");
+        handle.append_tool_log("outra linha antes do cancelamento");
+        handle.flush().expect("flush do streaming");
+
+        orchestrator.control.cancel();
+        orchestrator.set_runtime_phase(PHASE_CANCELLED);
+        let path = orchestrator
+            .persist_checkpoint_with_reason("cancelado")
+            .expect("checkpoint de cancelamento");
+
+        let loaded = crate::orchestrator::scan_logger::load_scan_log_from_file(&path)
+            .expect("o JSON cancelado precisa reler");
+        assert_eq!(loaded.runtime.phase, PHASE_CANCELLED);
+        assert_eq!(loaded.runtime.checkpoint_reason, "cancelado");
+        let tool = loaded
+            .runtime
+            .current_tool
+            .expect("ferramenta em andamento");
+        assert_eq!(tool.status, TOOL_STATUS_RUNNING);
+        assert!(
+            tool.output_partial
+                .contains("outra linha antes do cancelamento"),
+            "o log parcial precisa sobreviver: {}",
+            tool.output_partial
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A gravação final de um scan cancelado não pode apagar a ferramenta que
+    /// estava rodando nem transformar o arquivo em um scan limpo.
+    #[test]
+    fn the_final_log_of_a_cancelled_scan_preserves_the_in_flight_tool() {
+        let (mut orchestrator, dir) = checkpoint_orchestrator("cancelado-final");
+        let manifest = ToolManifest {
+            name: "Nuclei".to_string(),
+            ..ToolManifest::default()
+        };
+        orchestrator.begin_tool_checkpoint(&manifest, "http://test.local");
+        orchestrator
+            .checkpoint_handle()
+            .expect("handle de checkpoint")
+            .append_tool_log("evidência parcial antes do cancelamento");
+        orchestrator.control.cancel();
+
+        let path = orchestrator
+            .persist_scan_log()
+            .expect("log final do cancelamento");
+        let loaded = crate::orchestrator::scan_logger::load_scan_log_from_file(&path)
+            .expect("o JSON final precisa reler");
+
+        assert_eq!(loaded.runtime.phase, PHASE_CANCELLED);
+        assert_eq!(loaded.runtime.checkpoint_reason, "cancelado");
+        assert!(!loaded.completed_at.is_empty());
+        let tool = loaded
+            .runtime
+            .current_tool
+            .expect("a ferramenta em andamento não some no cancelamento");
+        assert_eq!(tool.status, "cancelled");
+        assert!(tool
+            .output_partial
+            .contains("evidência parcial antes do cancelamento"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_ai_turn_in_progress_is_recorded_before_the_response() {
+        let (mut orchestrator, dir) = checkpoint_orchestrator("ia");
+        orchestrator.findings = vec![critical_finding("Nuclei", "Achado crítico")];
+        orchestrator.set_runtime_phase(PHASE_ANALYSIS);
+        orchestrator.begin_ai_checkpoint("análise de 1 achado: Achado crítico");
+
+        let path = orchestrator.persist_checkpoint().expect("checkpoint da IA");
+        let loaded = crate::orchestrator::scan_logger::load_scan_log_from_file(&path)
+            .expect("o JSON da IA precisa reler");
+
+        let ai = loaded.runtime.ai_in_progress.expect("turno em andamento");
+        assert_eq!(ai.provider, orchestrator.config.provider_mode);
+        assert_eq!(ai.model, orchestrator.agent.model);
+        assert_eq!(ai.findings_count, 1);
+        assert!(ai.prompt_summary.contains("análise de 1 achado"));
+        assert!(!ai.prompt_summary.contains("sk-"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_of_many_code_analyses_is_visible_before_the_phase_ends() {
+        use crate::code_agent::agent::FindingCodeAnalysis;
+
+        let (mut orchestrator, dir) = checkpoint_orchestrator("codigo");
+        orchestrator.findings = vec![
+            critical_finding("Nuclei", "Primeiro achado"),
+            critical_finding("Nuclei", "Segundo achado"),
+        ];
+        orchestrator.set_runtime_phase(PHASE_CODE);
+        let first = FindingCodeAnalysis {
+            finding_index: 0,
+            location: Some(crate::domain::vulnerability::CodeLocation {
+                file: "src/app.py".to_string(),
+                line: 4,
+                snippet: "raise ValueError".to_string(),
+            }),
+            remediation: vec!["Valide o usuário".to_string()],
+            reason: None,
+            model: "gpt-4o".to_string(),
+            provider: "OpenAI".to_string(),
+            tool_calls: 1,
+            fallback_used: false,
+        };
+        {
+            let mut runtime = orchestrator
+                .runtime
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            runtime.partial_code_analyses.push(
+                crate::orchestrator::scan_logger::CodeAnalysisCheckpoint::from_analysis(
+                    "Primeiro achado",
+                    &first,
+                ),
+            );
+            runtime.code_in_progress = Some(CodeCheckpoint {
+                finding_index: 1,
+                finding_title: "Segundo achado".to_string(),
+                file: None,
+                line: None,
+                started_at: "2026-10-24T10:00:00Z".to_string(),
+            });
+        }
+
+        let path = orchestrator
+            .persist_checkpoint()
+            .expect("checkpoint do código parcial");
+        let loaded = crate::orchestrator::scan_logger::load_scan_log_from_file(&path)
+            .expect("o JSON do código precisa reler");
+
+        assert_eq!(loaded.runtime.partial_code_analyses.len(), 1);
+        let partial = &loaded.runtime.partial_code_analyses[0];
+        assert_eq!(partial.finding_index, 0);
+        assert_eq!(partial.file.as_deref(), Some("src/app.py"));
+        assert_eq!(partial.line, Some(4));
+        assert!(partial.located);
+        assert_eq!(
+            loaded
+                .runtime
+                .code_in_progress
+                .as_ref()
+                .map(|code| code.finding_index),
+            Some(1),
+            "o achado seguinte continua marcado como em andamento"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A fase do agente de código grava a origem no achado sem reordenar a lista
     /// nem reclassificar a severidade.
     ///
@@ -1555,6 +2261,69 @@ mod tests {
         // A severidade do scanner não muda.
         assert_eq!(orch.findings[0].severity, crate::domain::Severity::High);
         assert_eq!(orch.findings[1].severity, crate::domain::Severity::Info);
+    }
+
+    /// O canal de controle chega ao laço do agente: cancelar antes da fase não
+    /// abre nenhum turno e devolve os achados marcados, sem bloquear o scan.
+    #[tokio::test]
+    async fn a_cancelled_control_reaches_the_code_loop_and_returns_partial() {
+        let mut config = make_config();
+        // Provedor local: o teste quer exercitar o cancelamento, não a regra de
+        // consentimento remoto (RNF10), que bloquearia antes do laço.
+        config.llm = crate::config::llm_config::LlmConfig {
+            provider: crate::config::llm_config::LlmProviderKind::LlamaCpp,
+            base_url: "http://127.0.0.1:11434/v1".to_string(),
+            model: "modelo-local".to_string(),
+            ..crate::config::llm_config::LlmConfig::default()
+        };
+        config.project_dir = Some(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/codebase")
+                .display()
+                .to_string(),
+        );
+        let mut orch = Orchestrator::new(config).expect("configuração de teste válida");
+        orch.findings = vec![Vulnerability {
+            title: "Autenticação fraca".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "Descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            recommendation: "Revise".to_string(),
+            didactic: "Explicação".to_string(),
+            source: crate::domain::vulnerability::FindingSource::Real,
+            target: "http://alvo.local/api/login".to_string(),
+            evidence: "matched-at: /api/login".to_string(),
+            detected_at: "2026-09-30T12:00:00Z".to_string(),
+            ..Default::default()
+        }];
+        orch.control.cancel();
+
+        let report = orch.analyze_code(None).await;
+
+        assert!(
+            report.tool_calls.is_empty(),
+            "nenhuma ferramenta pode rodar"
+        );
+        assert_eq!(report.findings.len(), 1);
+        assert!(
+            report.findings[0]
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("cancelado pelo usuário")),
+            "{:?}",
+            report.findings[0].reason
+        );
+    }
+
+    #[test]
+    fn adopting_a_scan_id_keeps_one_trail_for_the_scan() {
+        let orchestrator = Orchestrator::new(make_config()).expect("configuração válida");
+        let adopted = Orchestrator::new(make_config())
+            .expect("configuração válida")
+            .adopt_scan_id(orchestrator.scan_id.clone());
+
+        assert_eq!(adopted.scan_id, orchestrator.scan_id);
+        assert_eq!(adopted.agent_trail.path(), orchestrator.agent_trail.path());
     }
 
     /// Um `--project` que não existe não pode derrubar o scan: a fase registra

@@ -60,10 +60,11 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
 
 fn render_overview(app: &mut AppState, frame: &mut Frame, area: Rect) {
     // Altura do resumo com o aviso de indisponibilidade do CVE/NVD: métricas (2)
-    // + alvo e projeto (1) + IA (1) + auditoria (1) + comparação (1), mais uma
-    // quando o aviso existe. Encolher faria a auditoria sumir em 80x24, que
-    // RNF07 exige.
+    // + alvo e projeto (1) + IA (1) + auditoria (1) + tempo total (1), mais uma
+    // quando há comparação e outra quando o aviso existe. Encolher faria a
+    // auditoria ou o tempo sumirem em 80x24, que RNF07 exige.
     let summary_height: u16 = 7
+        + u16::from(app.scan_total_duration_secs().is_some())
         + u16::from(app.scan_comparison.has_previous())
         + u16::from(app.enrichment_warning.is_some());
     let rows = Layout::vertical([
@@ -219,13 +220,24 @@ fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
         ),
         Span::styled(ai_hint, Style::default().fg(ACCENT).bold()),
     ]);
+    let total_time = app.scan_total_duration_label().map(|duration| {
+        Line::from(vec![
+            Span::styled("tempo total  ", Style::default().fg(TEXT_SOFT)),
+            Span::styled(duration, Style::default().fg(ACCENT).bold()),
+        ])
+    });
     let mut ai_line_index = None;
     let mut severity_line_indices = Vec::new();
     let lines = if app.has_run_issues() {
         let mut lines = Vec::new();
-        let issue_budget = inner
-            .height
-            .saturating_sub(4 + u16::from(comparison_present)) as usize;
+        // Vagas para ocorrências depois de reservar métricas, IA, tempo total,
+        // comparação e aviso da NVD. O "+N" também ocupa uma linha.
+        let available = (inner.height as usize)
+            .saturating_sub(3)
+            .saturating_sub(usize::from(total_time.is_some()))
+            .saturating_sub(usize::from(comparison_present))
+            .saturating_sub(usize::from(app.enrichment_warning.is_some()));
+        let issue_budget = available.saturating_sub(1);
         for issue in app.run_issues.iter().take(issue_budget) {
             let color = if issue.scope.is_warning() {
                 WARNING
@@ -252,12 +264,15 @@ fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
         severity_line_indices.push(lines.len());
         lines.push(severities[1].clone());
         // Com ocorrências, o caminho da auditoria continua acessível no
-        // relatório, no log estruturado e na tela de rastreabilidade (f2).
+        // relatório e no log estruturado.
         ai_line_index = Some(lines.len());
         lines.push(ai);
+        if let Some(time) = &total_time {
+            lines.push(time.clone());
+        }
         lines
     } else if vulnerabilities.is_empty() {
-        vec![
+        let mut lines = vec![
             Line::styled(
                 "Nenhum achado identificado.",
                 Style::default().fg(SUCCESS).bold(),
@@ -266,14 +281,18 @@ fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 "Exporte o relatório ou inicie uma nova análise.",
                 Style::default().fg(TEXT_SOFT),
             ),
-        ]
+        ];
+        if let Some(time) = &total_time {
+            lines.push(time.clone());
+        }
+        lines
     } else {
         // "alvo  " ocupa 7 colunas e "  código " ocupa 9; o que sobra divide-se
         // entre os dois paths, com folga para a borda direita.
         let path_budget = ((inner.width as usize).saturating_sub(18)) / 2;
         severity_line_indices.extend([0, 1]);
         ai_line_index = Some(3);
-        vec![
+        let mut lines = vec![
             severities[0].clone(),
             severities[1].clone(),
             // Alvo e projeto dividem a mesma linha: em 80x24 uma linha extra
@@ -299,7 +318,11 @@ fn render_summary(app: &mut AppState, frame: &mut Frame, area: Rect) {
                 ),
                 Style::default().fg(TEXT_SOFT),
             ),
-        ]
+        ];
+        if let Some(time) = &total_time {
+            lines.push(time.clone());
+        }
+        lines
     };
     if severity_line_indices.len() == 2 {
         let y1 = inner.y + severity_line_indices[0] as u16;

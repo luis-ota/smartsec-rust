@@ -1,13 +1,17 @@
 use serde_json::Value;
 
 const SENSITIVE_KEYS: &[&str] = &[
+    "access-key-id",
     "api-key",
     "apikey",
     "authorization",
+    "client-secret",
     "cookie",
     "password",
+    "private-key",
     "proxy-authorization",
     "secret",
+    "secret-access-key",
     "set-cookie",
     "token",
 ];
@@ -370,6 +374,20 @@ mod tests {
         assert!(!sanitized.contains(":\"secret\""));
         assert!(!sanitized.contains("Bearer secret"));
         assert!(!sanitized.contains("?token="));
+    }
+
+    #[test]
+    fn masks_aws_access_key_and_secret_in_code_previews() {
+        for line in [
+            "AWS_ACCESS_KEY_ID = \"AKIAQ7Z3X5V2N4M6P8R2\"",
+            "AWS_SECRET_ACCESS_KEY = \"kR9mQ2xT7vL4pN8sW3yB6cF1hJ5dG0zA\"",
+        ] {
+            let sanitized = sanitize_code_line(line);
+            assert!(
+                !sanitized.contains("AKIAQ7Z3") && !sanitized.contains("kR9mQ2xT"),
+                "{sanitized}"
+            );
+        }
     }
 
     #[test]

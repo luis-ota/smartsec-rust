@@ -45,9 +45,13 @@ fn assert_snapshot(app: &mut AppState, expected: &[&str]) -> String {
         snapshot.lines().all(|line| line.width() <= 80),
         "{snapshot}"
     );
-    assert!(snapshot.contains("SmartSec"), "{snapshot}");
-    assert!(snapshot.contains("f1 ajuda"), "{snapshot}");
-    assert!(snapshot.contains("ctrl+p comandos"), "{snapshot}");
+    // A revisão da IA é modal em tela cheia: ela substitui o chrome, então o
+    // rodapé global e a marca do shell não existem nesse estado.
+    if !app.show_ai_timeline {
+        assert!(snapshot.contains("SmartSec"), "{snapshot}");
+        assert!(snapshot.contains("f1 ajuda"), "{snapshot}");
+        assert!(snapshot.contains("ctrl+p comandos"), "{snapshot}");
+    }
     for text in expected {
         assert!(snapshot.contains(text), "texto ausente: {text}\n{snapshot}");
     }
@@ -701,6 +705,60 @@ fn critical_findings_lead_the_list_and_keep_their_color_when_selected() {
 /// O resumo de Resultados também agrega as ocorrências e mostra o resumo real
 /// devolvido pelo agente de IA.
 #[test]
+fn results_summary_shows_total_time_for_replay_and_both_duration_formats() {
+    let metadata: crate::orchestrator::scan_logger::ScanMetadata =
+        serde_json::from_value(serde_json::json!({
+            "scan_id": "scan_tempo",
+            "target_url": "https://alvo.local",
+            "started_at": "2026-10-22T12:00:00Z",
+            "completed_at": "2026-10-22T12:05:30Z",
+            "execution_type": "Assistido",
+            "llm_provider": "OpenAI",
+            "tools_executed": [],
+            "findings_count": 1,
+            "critical_count": 1,
+            "high_count": 0,
+            "medium_count": 0,
+            "low_count": 0,
+            "findings": [serde_json::to_value(finding()).unwrap()],
+            "agent_analysis": "resumo da IA"
+        }))
+        .expect("log de replay válido");
+
+    let mut app = app();
+    app.load_replayed_scan(metadata).expect("replay válido");
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "tempo total  05:30",
+            "auditoria  scan_tempo.json",
+            "Achados",
+            "Achado de teste",
+        ],
+    );
+    assert!(snapshot.contains("alvo  https://alvo.local"), "{snapshot}");
+
+    // Mais de uma hora usa HH:MM:SS, sem perder a auditoria nem a lista.
+    app.scan_started_at_wall = Some(local_timestamp("2026-10-22T12:00:00Z"));
+    app.scan_completed_at_wall = Some(local_timestamp("2026-10-22T13:02:03Z"));
+    let snapshot = assert_snapshot(
+        &mut app,
+        &[
+            "tempo total  01:02:03",
+            "auditoria  scan_tempo.json",
+            "Achados",
+        ],
+    );
+    assert!(snapshot.contains("Achado de teste"), "{snapshot}");
+}
+
+fn local_timestamp(value: &str) -> chrono::DateTime<chrono::Local> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .expect("timestamp ISO-8601 do teste")
+        .with_timezone(&chrono::Local)
+}
+
+#[test]
 fn results_summary_aggregates_occurrences_and_shows_the_ai_summary() {
     let mut app = app();
     app.step = AppStep::Results;
@@ -754,69 +812,6 @@ fn export_path_and_report_viewer_match_80x24_snapshots() {
 }
 
 #[test]
-fn traceability_overlay_matches_80x24_snapshots() {
-    let mut app = app();
-    app.step = AppStep::Results;
-    app.show_trace_overlay = true;
-    app.focus = FocusTarget::TraceClose;
-    assert_snapshot(
-        &mut app,
-        &[
-            "Rastreabilidade",
-            "UC01",
-            "RNF01",
-            "REQ06",
-            "REQ09",
-            "REQ10",
-            "REQ14",
-            "REQ05",
-            "REQ16",
-            "0/8 verificados",
-        ],
-    );
-
-    app.config.target_url = "http://169.254.1.2:3000".to_string();
-    app.orchestrator.execution_history.push({
-        let mut execution =
-            crate::domain::security_tool::SecurityTool::new("Nmap", "nmap -Pn -sT -sV");
-        execution.status = "succeeded".to_string();
-        execution.duration_ms = 11_500;
-        execution.podman_trace = vec![
-            "[15:54:54] $ podman info".to_string(),
-            "[15:54:55] podman rootless verificado".to_string(),
-        ];
-        execution
-    });
-    app.audit_log_path = Some(std::path::PathBuf::from(
-        "/home/user/.config/smartsec/scans/scan_1.json",
-    ));
-    let snapshot = assert_snapshot(
-        &mut app,
-        &[
-            "4/8 verificados",
-            "alvo validado",
-            "rootless confirmado",
-            "Nmap ok",
-            "scan_1.json",
-            "f2 reabre",
-        ],
-    );
-    assert!(snapshot.contains("○ REQ10"), "{snapshot}");
-    assert!(snapshot.contains("○ REQ14"), "{snapshot}");
-    assert!(snapshot.contains("○ REQ05"), "{snapshot}");
-    // REQ16 fica pendente porque a fase de código ainda não rodou: é isso que
-    // distingue "análise de código não executou" de "executou e não achou
-    // origem", e a linha precisa dizer qual dos dois é o caso.
-    assert!(snapshot.contains("○ REQ16"), "{snapshot}");
-    assert!(
-        snapshot.contains("aguardando análise de código"),
-        "{snapshot}"
-    );
-}
-
-/// O bloco de IA da Execução anuncia o atalho e é clicável: é a porta de
-/// entrada do painel ao vivo enquanto uma ferramenta demora.
-#[test]
 fn the_execution_ai_block_offers_the_live_timeline() {
     let mut app = app();
     app.step = AppStep::Execution;
@@ -866,25 +861,37 @@ fn ai_timeline_overlay_matches_80x24_snapshots() {
         &[
             "Atividade da IA",
             "4 ação(ões) registradas",
-            "14:02:10 planejamento planejando o Nuclei (aguardando resposta)",
-            "14:02:14 planejamento plano do Nuclei definido",
-            "fechar",
+            "planejamento 2",
+            "IA 1",
+            "código 1",
+            "Evento selecionado",
+            "esc fecha",
         ],
     );
-    // Cada entrada sai como `HH:MM:SS origem texto`, com a origem da etapa.
+    // Cada entrada sai como `HH:MM:SS  origem  texto`, com a origem da etapa.
     for (time, origin, text) in [
+        (
+            "14:02:10",
+            "planejamento",
+            "planejando o Nuclei (aguardando resposta)",
+        ),
+        ("14:02:14", "planejamento", "plano do Nuclei definido"),
         ("14:03:41", "IA", "análise em andamento (10s)"),
         ("14:04:02", "código", "ferramenta read_file no achado #1"),
     ] {
         let line = snapshot
             .lines()
-            .find(|line| line.contains(time))
+            .find(|line| line.contains(time) && line.contains(origin))
             .unwrap_or_else(|| panic!("linha de {time} ausente\n{snapshot}"));
         assert!(
-            line.contains(origin) && line.contains(text),
-            "formato inesperado: {line}"
+            line.contains(text),
+            "formato inesperado para {time}: {line}"
         );
     }
+    assert!(
+        snapshot.contains("> 14:04:02"),
+        "ao abrir, o último evento precisa estar selecionado\n{snapshot}"
+    );
     assert!(
         app.hit_regions
             .iter()
@@ -908,6 +915,84 @@ fn ai_timeline_overlay_matches_80x24_snapshots() {
 }
 
 #[test]
+fn ai_timeline_list_and_detail_match_80x24_and_100x40_snapshots() {
+    let mut app = app();
+    app.step = AppStep::Results;
+    app.focus = FocusTarget::ResultsList;
+    app.ai_timeline = (0..18)
+        .map(|index| AiTimelineEntry {
+            time: format!("14:02:{:02}", index % 60),
+            origin: match index % 3 {
+                0 => AiTimelineOrigin::Planning,
+                1 => AiTimelineOrigin::Ai,
+                _ => AiTimelineOrigin::Code,
+            },
+            text: format!(
+                "evento {index}: decisão registrada para auditoria\nmotivo: política segura aplicada\ncontexto: achado #{} do alvo local\n{}",
+                index + 1,
+                (0..30)
+                    .map(|line| format!("linha de evidência {line:02}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        })
+        .collect();
+    app.show_ai_timeline = true;
+    app.focus = FocusTarget::AiTimelineClose;
+
+    for (width, height) in [(80, 24), (100, 40), (110, 34)] {
+        let (snapshot, _) = render_size(&mut app, width, height);
+        assert!(
+            snapshot.lines().all(|line| line.width() <= width as usize),
+            "linha larga demais em {width}x{height}\n{snapshot}"
+        );
+        assert!(snapshot.contains("Atividade da IA · revisão"), "{snapshot}");
+        assert!(snapshot.contains("18 ação(ões) registradas"), "{snapshot}");
+        assert!(snapshot.contains("planejamento 6"), "{snapshot}");
+        assert!(snapshot.contains("IA 6"), "{snapshot}");
+        assert!(snapshot.contains("código 6"), "{snapshot}");
+        assert!(snapshot.contains("Evento selecionado"), "{snapshot}");
+        assert!(
+            snapshot.contains("↑↓ rolar · ") && snapshot.contains(" de 18"),
+            "a lista precisa do indicador de janela\n{snapshot}"
+        );
+        assert!(
+            snapshot.contains("> 14:02:17"),
+            "o último evento precisa abrir selecionado\n{snapshot}"
+        );
+        assert!(snapshot.contains("enter abre · esc fecha"), "{snapshot}");
+    }
+
+    // O detalhe em tela cheia quebra o texto completo e mostra a janela rolada.
+    app.ai_timeline_selected = 4;
+    app.ai_timeline_detail_open = true;
+    app.ai_timeline_detail_scroll = 0;
+    for (width, height) in [(80, 24), (100, 40)] {
+        let (snapshot, _) = render_size(&mut app, width, height);
+        assert!(
+            snapshot.lines().all(|line| line.width() <= width as usize),
+            "detalhe largo demais em {width}x{height}\n{snapshot}"
+        );
+        assert!(snapshot.contains("Atividade da IA · detalhe"), "{snapshot}");
+        assert!(snapshot.contains("Evento 5 de 18"), "{snapshot}");
+        assert!(snapshot.contains("Texto completo"), "{snapshot}");
+        assert!(
+            snapshot.contains("evento 4: decisão registrada para auditoria"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("motivo: política segura aplicada"),
+            "{snapshot}"
+        );
+        assert!(snapshot.contains("esc volta à lista"), "{snapshot}");
+        assert!(
+            snapshot.contains("↑↓ rolar · ") && snapshot.contains(" de "),
+            "o detalhe precisa do indicador de rolagem\n{snapshot}"
+        );
+    }
+}
+
+#[test]
 fn ai_timeline_detail_shows_the_full_decision() {
     let mut app = app();
     app.step = AppStep::Execution;
@@ -924,7 +1009,7 @@ fn ai_timeline_detail_shows_the_full_decision() {
 
     let (snapshot, _) = render_size(&mut app, 100, 40);
     assert!(
-        snapshot.contains("Detalhe completo da ação selecionada"),
+        snapshot.contains("Evento selecionado · planejamento · 14:02:14"),
         "{snapshot}"
     );
     assert!(
@@ -939,6 +1024,7 @@ fn ai_timeline_detail_shows_the_full_decision() {
         snapshot.contains("concorrência: 20 · timeout: 5s"),
         "{snapshot}"
     );
+    assert!(snapshot.contains("enter abre"), "{snapshot}");
 }
 
 #[test]

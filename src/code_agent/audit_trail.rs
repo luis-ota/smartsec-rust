@@ -136,6 +136,13 @@ impl AgentAuditTrail {
                     "chamadas": tool_calls,
                 }),
             ),
+            CodeAgentEvent::BudgetExhausted { reason } => (
+                "agente de codigo",
+                "orcamento esgotado",
+                json!({
+                    "motivo": sanitize(reason),
+                }),
+            ),
             CodeAgentEvent::Finished {
                 located,
                 total,

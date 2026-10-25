@@ -7,4 +7,3 @@ pub mod results;
 pub mod settings;
 pub mod splash;
 pub mod tools;
-pub mod traceability;

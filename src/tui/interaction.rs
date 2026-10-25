@@ -38,7 +38,6 @@ pub enum FocusTarget {
     HelpClose,
     CommandList,
     ReportClose,
-    TraceClose,
     /// Botão de fechar do painel "Atividade da IA".
     AiTimelineClose,
 }
@@ -90,7 +89,6 @@ pub enum SemanticAction {
     OpenHistoryRecord(usize),
     OpenRecentScan(usize),
     OpenReportViewer,
-    OpenTraceability,
     OpenCommandPalette,
     ExecuteCommand(usize),
     /// Abre o painel ao vivo "Atividade da IA" na tela de Execução.

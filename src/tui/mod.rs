@@ -38,8 +38,6 @@ pub fn render(app: &mut AppState, frame: &mut Frame) {
         screens::overlays::render_command_palette(app, frame, area);
     } else if app.show_report_viewer {
         screens::overlays::render_report_viewer(app, frame, area);
-    } else if app.show_trace_overlay {
-        screens::traceability::render(app, frame, area);
     } else if app.show_ai_timeline {
         screens::overlays::render_ai_timeline(app, frame, area);
     }

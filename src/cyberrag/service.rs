@@ -248,6 +248,16 @@ impl ExplanationService {
             return self.refuse(context, finding_index, reason, "lexical");
         }
 
+        if is_generic_unexplainable(finding) {
+            return self.refuse(
+                context,
+                finding_index,
+                "o achado é genérico e não traz contexto suficiente para uma explicação \
+                 educacional segura; confirme a evidência no alvo antes de corrigir",
+                "lexical",
+            );
+        }
+
         let snippet = finding
             .code_location
             .as_ref()
@@ -718,6 +728,24 @@ fn suggested_concept(finding: &Vulnerability) -> Option<&'static str> {
     None
 }
 
+/// Achados genéricos de scanner, sem localização no código, não têm contexto
+/// suficiente para uma explicação específica. Recusar é melhor que inventar.
+fn is_generic_unexplainable(finding: &Vulnerability) -> bool {
+    if finding.code_location.is_some() {
+        return false;
+    }
+    let title = finding.title.to_lowercase();
+    [
+        "this might be interesting",
+        "potentially interesting backup/cert file",
+        "uncommon header",
+        "robots.txt\" contains",
+        "retrieved access-control-allow-origin header",
+    ]
+    .iter()
+    .any(|marker| title.contains(marker))
+}
+
 fn build_prompt(
     finding: &Vulnerability,
     snippet: Option<&str>,
@@ -1104,6 +1132,19 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn generic_scanner_finding_without_code_is_not_explainable() {
+        let mut generic = finding();
+        generic.code_location = None;
+        generic.title =
+            "Achado Nikto nikto:001675 osvdb:3092 — This might be interesting.".to_string();
+        assert!(is_generic_unexplainable(&generic));
+
+        let mut specific = finding();
+        specific.title = "Injeção de SQL no login".to_string();
+        assert!(!is_generic_unexplainable(&specific));
     }
 
     #[test]

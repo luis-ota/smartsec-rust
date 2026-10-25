@@ -48,6 +48,10 @@ fn stage_state(app: &AppState) -> (String, Option<f64>) {
             format!("gerando orientações · {}s", app.analysis_wait_secs),
             None,
         ),
+        AnalysisPhase::Cancelling => (
+            "cancelamento solicitado · aguardando a task encerrar".to_string(),
+            None,
+        ),
         AnalysisPhase::Complete => ("concluída".to_string(), Some(1.0)),
     }
 }

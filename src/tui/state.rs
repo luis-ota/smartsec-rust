@@ -70,6 +70,8 @@ pub enum AnalysisPhase {
     Correlating,
     /// A chamada de análise por IA está em andamento.
     Generating,
+    /// O cancelamento foi solicitado e a task ainda está encerrando.
+    Cancelling,
     Complete,
 }
 
@@ -307,6 +309,11 @@ pub struct AppState {
     pub exec_tick: u64,
     /// Início da execução atual; `None` fora de uma varredura.
     pub run_started_at: Option<std::time::Instant>,
+    /// Início e conclusão reais do scan, em horário local, usados para o tempo
+    /// total no Resumo. Separados de `run_started_at` porque o replay não tem
+    /// `Instant` e precisa dos timestamps gravados no log.
+    pub scan_started_at_wall: Option<chrono::DateTime<chrono::Local>>,
+    pub scan_completed_at_wall: Option<chrono::DateTime<chrono::Local>>,
     /// Buffer do log de execução; toda mutação passa por `push_exec_log`,
     /// `set_exec_logs` ou `clear_exec_logs` para as medidas seguirem alinhadas.
     exec_logs: Vec<String>,
@@ -338,6 +345,16 @@ pub struct AppState {
     pub ai_timeline_max_scroll: usize,
     /// Auto-follow do fim do painel; desligado quando o usuário rola para cima.
     pub ai_timeline_follow: bool,
+    /// Evento destacado na lista; independente do offset de rolagem.
+    pub ai_timeline_selected: usize,
+    /// Altura visível da lista na última renderização, usada para manter a
+    /// seleção dentro da janela sem depender do desenho do frame.
+    pub ai_timeline_visible_height: usize,
+    /// Modo detalhe em tela cheia dentro do painel.
+    pub ai_timeline_detail_open: bool,
+    pub ai_timeline_detail_scroll: usize,
+    /// Limite de rolagem do texto completo, medido na renderização.
+    pub ai_timeline_detail_max_scroll: usize,
     pub result_cursor: usize,
     pub result_scroll: usize,
     pub severity_filter: Option<crate::domain::Severity>,
@@ -362,7 +379,6 @@ pub struct AppState {
     pub report_content: String,
     pub report_scroll: usize,
     pub report_max_scroll: usize,
-    pub show_trace_overlay: bool,
     pub show_didactic: bool,
     pub didactic_scroll: usize,
     pub didactic_max_scroll: usize,
@@ -520,6 +536,8 @@ impl AppState {
             exec_current: 0,
             exec_tick: 0,
             run_started_at: None,
+            scan_started_at_wall: None,
+            scan_completed_at_wall: None,
             exec_logs: Vec::new(),
             log_rows: Vec::new(),
             log_rows_total: 0,
@@ -539,6 +557,11 @@ impl AppState {
             ai_timeline_scroll: 0,
             ai_timeline_max_scroll: 0,
             ai_timeline_follow: true,
+            ai_timeline_selected: 0,
+            ai_timeline_visible_height: 8,
+            ai_timeline_detail_open: false,
+            ai_timeline_detail_scroll: 0,
+            ai_timeline_detail_max_scroll: 0,
             result_cursor: 0,
             result_scroll: 0,
             severity_filter: None,
@@ -555,7 +578,6 @@ impl AppState {
             report_content: String::new(),
             report_scroll: 0,
             report_max_scroll: 0,
-            show_trace_overlay: false,
             show_didactic: false,
             didactic_scroll: 0,
             didactic_max_scroll: 0,
@@ -662,7 +684,7 @@ impl AppState {
         self.show_help_overlay
             || self.show_command_palette
             || self.show_report_viewer
-            || self.show_trace_overlay
+            || self.show_ai_timeline
     }
 
     fn pointer_within(&self, area: Rect) -> bool {
@@ -740,6 +762,8 @@ impl AppState {
         &mut self,
         metadata: crate::orchestrator::scan_logger::ScanMetadata,
     ) -> anyhow::Result<()> {
+        self.scan_started_at_wall = parse_scan_timestamp(&metadata.started_at);
+        self.scan_completed_at_wall = parse_scan_timestamp(&metadata.completed_at);
         let legacy_project_dir = if metadata.code_project_dir.is_empty() {
             None
         } else {
@@ -848,6 +872,10 @@ impl AppState {
         }
         self.ai_timeline_follow = true;
         self.ai_timeline_scroll = 0;
+        self.ai_timeline_selected = self.ai_timeline.len().saturating_sub(1);
+        self.ai_timeline_detail_open = false;
+        self.ai_timeline_detail_scroll = 0;
+        self.ai_timeline_detail_max_scroll = 0;
         self.step = AppStep::Results;
         self.focus = FocusTarget::ResultsList;
         self.result_cursor = 0;
@@ -1047,6 +1075,20 @@ impl AppState {
         )
     }
 
+    /// Tempo total do scan a partir dos timestamps reais. Sem conclusão
+    /// registrada, usa o relógio atual sobre o início — nunca o tick da TUI.
+    pub fn scan_total_duration_secs(&self) -> Option<u64> {
+        let start = self.scan_started_at_wall?;
+        let end = self
+            .scan_completed_at_wall
+            .unwrap_or_else(chrono::Local::now);
+        Some((end - start).num_seconds().max(0) as u64)
+    }
+
+    pub fn scan_total_duration_label(&self) -> Option<String> {
+        self.scan_total_duration_secs().map(format_elapsed)
+    }
+
     pub fn tick(&mut self) {
         self.tick += 1;
         self.spinner_idx = (self.spinner_idx + 1) % 10;
@@ -1082,7 +1124,6 @@ impl AppState {
             || self.show_help_overlay
             || self.show_command_palette
             || self.show_report_viewer
-            || self.show_trace_overlay
             || self.show_ai_timeline
     }
 
@@ -1211,6 +1252,7 @@ impl AppState {
                     orchestrator,
                     audit_log,
                 } => {
+                    self.scan_completed_at_wall = Some(chrono::Local::now());
                     self.orchestrator = *orchestrator;
                     self.scan_comparison = Default::default();
                     let agent_history = self.orchestrator.agent.execution_history.clone();
@@ -1513,6 +1555,15 @@ impl AppState {
         if self.step != AppStep::ToolSelect || !self.tools.iter().any(|tool| tool.selected) {
             return;
         }
+        // A task anterior pode ainda estar encerrando (cancelamento cooperativo):
+        // iniciar outra sobrescreveria `run_task` e `run_receiver` e dois scans
+        // disputariam o mesmo estado da tela.
+        if self.run_task.is_some() {
+            self.push_exec_log(
+                "Aguarde o encerramento da execução anterior antes de iniciar outra".to_string(),
+            );
+            return;
+        }
         self.step = AppStep::Execution;
         self.focus = FocusTarget::ExecutionLogs;
         self.init_execution();
@@ -1527,6 +1578,8 @@ impl AppState {
         self.exec_current = 0;
         self.exec_tick = 0;
         self.run_started_at = Some(std::time::Instant::now());
+        self.scan_started_at_wall = Some(chrono::Local::now());
+        self.scan_completed_at_wall = None;
         self.results_project_dir = Some(self.config.effective_project_dir());
         self.detail_code_preview = None;
         self.clear_exec_logs();
@@ -1536,6 +1589,10 @@ impl AppState {
         self.exec_paused = false;
         let registry = self.orchestrator.registry.clone();
         self.orchestrator = Orchestrator::with_registry(self.config.clone(), registry.clone());
+        // A task cria outro orquestrador; ele herda este `scan_id` para que
+        // trilha da IA e checkpoint não sejam gravados duas vezes com o mesmo
+        // scan em arquivos distintos.
+        let scan_id = self.orchestrator.scan_id.clone();
         // A task de execução e a TUI compartilham o mesmo canal de controle,
         // para que a pausa e o cancelamento atinjam o container real.
         let control = self.orchestrator.control.clone();
@@ -1552,6 +1609,11 @@ impl AppState {
         self.ai_timeline_scroll = 0;
         self.ai_timeline_max_scroll = 0;
         self.ai_timeline_follow = true;
+        self.ai_timeline_selected = 0;
+        self.ai_timeline_visible_height = 8;
+        self.ai_timeline_detail_open = false;
+        self.ai_timeline_detail_scroll = 0;
+        self.ai_timeline_detail_max_scroll = 0;
         self.show_ai_timeline = false;
         self.log_drop_counter.store(0, Ordering::Relaxed);
 
@@ -1572,7 +1634,8 @@ impl AppState {
         self.run_receiver = Some(receiver);
         let dropped = Arc::clone(&self.log_drop_counter);
         self.run_task = Some(tokio::spawn(async move {
-            let mut orchestrator = Orchestrator::with_registry(config, registry);
+            let mut orchestrator =
+                Orchestrator::with_registry(config, registry).adopt_scan_id(scan_id);
             // A task precisa do MESMO canal da TUI: cada `Orchestrator::new`
             // criaria o seu, e a pausa da tela nunca chegaria ao container.
             orchestrator.control = control.clone();
@@ -1743,8 +1806,11 @@ impl AppState {
             });
             // A fase do agente de código roda depois da análise de logs, como no
             // headless: os achados precisam existir e estar classificados. O
-            // heartbeat continua vivo para a TUI não parecer travada.
-            orchestrator.analyze_code(Some(&code_tx)).await;
+            // heartbeat continua vivo para a TUI não parecer travada. Um
+            // cancelamento pedido durante a análise não abre mais nenhum turno.
+            if !orchestrator.is_cancelled() {
+                orchestrator.analyze_code(Some(&code_tx)).await;
+            }
             drop(code_tx);
             heartbeat.abort();
             let audit_log = orchestrator
@@ -1840,6 +1906,16 @@ impl AppState {
                     )),
                 }
             }
+            Event::BudgetExhausted { reason } => {
+                self.code_agent_current = None;
+                self.push_exec_log(format!(
+                    "[ia/codigo] orçamento esgotado: {reason}; devolvendo resultado parcial"
+                ));
+                self.push_ai_timeline(
+                    AiTimelineOrigin::Code,
+                    format!("orçamento esgotado: {reason}"),
+                );
+            }
         }
 
         if self.code_agent_trail.len() >= CODE_TRAIL_LIMIT {
@@ -1858,13 +1934,151 @@ impl AppState {
             text: text.into(),
         });
         let overflow = self.ai_timeline.len().saturating_sub(AI_TIMELINE_LIMIT);
-        if overflow == 0 {
+        if overflow > 0 {
+            self.ai_timeline.drain(..overflow);
+        }
+        if self.ai_timeline_follow {
+            self.ai_timeline_selected = self.ai_timeline.len().saturating_sub(1);
+        } else {
+            // O descarte do topo desloca os índices: a seleção e o offset
+            // acompanham para não pular para outro evento no meio da leitura.
+            self.ai_timeline_scroll = self.ai_timeline_scroll.saturating_sub(overflow);
+            self.ai_timeline_selected = self.ai_timeline_selected.saturating_sub(overflow);
+            self.ai_timeline_selected = self
+                .ai_timeline_selected
+                .min(self.ai_timeline.len().saturating_sub(1));
+        }
+    }
+
+    /// Contagem de eventos por origem exibida no cabeçalho da revisão.
+    pub fn ai_timeline_origin_counts(&self) -> (usize, usize, usize) {
+        let mut planning = 0;
+        let mut ai = 0;
+        let mut code = 0;
+        for entry in &self.ai_timeline {
+            match entry.origin {
+                AiTimelineOrigin::Planning => planning += 1,
+                AiTimelineOrigin::Ai => ai += 1,
+                AiTimelineOrigin::Code => code += 1,
+            }
+        }
+        (planning, ai, code)
+    }
+
+    /// Mantém o evento selecionado dentro da janela visível da lista.
+    pub(crate) fn ai_timeline_reveal_selection(&mut self) {
+        let length = self.ai_timeline.len();
+        if length == 0 {
+            self.ai_timeline_selected = 0;
+            self.ai_timeline_scroll = 0;
             return;
         }
-        self.ai_timeline.drain(..overflow);
-        if !self.ai_timeline_follow {
-            self.ai_timeline_scroll = self.ai_timeline_scroll.saturating_sub(overflow);
+        let visible = self.ai_timeline_visible_height.max(1);
+        let max_scroll = length.saturating_sub(visible);
+        self.ai_timeline_selected = self.ai_timeline_selected.min(length - 1);
+        if self.ai_timeline_selected < self.ai_timeline_scroll {
+            self.ai_timeline_scroll = self.ai_timeline_selected;
+        } else if self.ai_timeline_selected >= self.ai_timeline_scroll.saturating_add(visible) {
+            self.ai_timeline_scroll = self
+                .ai_timeline_selected
+                .saturating_add(1)
+                .saturating_sub(visible);
         }
+        self.ai_timeline_scroll = self.ai_timeline_scroll.min(max_scroll);
+    }
+
+    /// Move a seleção da lista. `amount` é usado pelas teclas de página.
+    pub fn ai_timeline_move_selection(&mut self, down: bool, amount: usize) {
+        let length = self.ai_timeline.len();
+        if length == 0 {
+            self.ai_timeline_selected = 0;
+            self.ai_timeline_scroll = 0;
+            return;
+        }
+        let last = length - 1;
+        self.ai_timeline_selected = if down {
+            self.ai_timeline_selected.saturating_add(amount).min(last)
+        } else {
+            self.ai_timeline_selected.saturating_sub(amount)
+        };
+        self.ai_timeline_reveal_selection();
+        self.ai_timeline_follow = self.ai_timeline_selected == last;
+    }
+
+    pub fn ai_timeline_select_first(&mut self) {
+        self.ai_timeline_selected = 0;
+        self.ai_timeline_reveal_selection();
+        self.ai_timeline_follow = self.ai_timeline.len() <= 1;
+    }
+
+    pub fn ai_timeline_select_last(&mut self) {
+        let length = self.ai_timeline.len();
+        self.ai_timeline_selected = length.saturating_sub(1);
+        let visible = self.ai_timeline_visible_height.max(1);
+        self.ai_timeline_scroll = length.saturating_sub(visible);
+        self.ai_timeline_follow = true;
+    }
+
+    /// Roda a janela da lista sem mover a seleção além do necessário para ela
+    /// continuar visível; é o gesto da roda do mouse.
+    pub fn ai_timeline_scroll_list(&mut self, down: bool, amount: usize) {
+        let length = self.ai_timeline.len();
+        let visible = self.ai_timeline_visible_height.max(1);
+        let max_scroll = length.saturating_sub(visible);
+        self.ai_timeline_scroll = if down {
+            self.ai_timeline_scroll
+                .saturating_add(amount)
+                .min(max_scroll)
+        } else {
+            self.ai_timeline_scroll.saturating_sub(amount)
+        };
+        self.ai_timeline_follow = self.ai_timeline_scroll >= max_scroll;
+        if self.ai_timeline_follow {
+            self.ai_timeline_selected = length.saturating_sub(1);
+        } else {
+            let first = self.ai_timeline_scroll;
+            let last_visible = first
+                .saturating_add(visible)
+                .saturating_sub(1)
+                .min(length.saturating_sub(1));
+            self.ai_timeline_selected = self.ai_timeline_selected.clamp(first, last_visible);
+        }
+    }
+
+    pub fn ai_timeline_open_detail(&mut self) {
+        if self.ai_timeline.is_empty() {
+            return;
+        }
+        self.ai_timeline_selected = self.ai_timeline_selected.min(self.ai_timeline.len() - 1);
+        self.ai_timeline_detail_open = true;
+        self.ai_timeline_detail_scroll = 0;
+        // Ler um evento em detalhe congela a seleção mesmo que cheguem novos
+        // eventos ao vivo.
+        self.ai_timeline_follow = false;
+    }
+
+    pub fn ai_timeline_close_detail(&mut self) {
+        self.ai_timeline_detail_open = false;
+        self.ai_timeline_detail_scroll = 0;
+        self.ai_timeline_detail_max_scroll = 0;
+    }
+
+    pub fn ai_timeline_scroll_detail(&mut self, down: bool, amount: usize) {
+        self.ai_timeline_detail_scroll = if down {
+            self.ai_timeline_detail_scroll
+                .saturating_add(amount)
+                .min(self.ai_timeline_detail_max_scroll)
+        } else {
+            self.ai_timeline_detail_scroll.saturating_sub(amount)
+        };
+    }
+
+    pub fn ai_timeline_detail_home(&mut self) {
+        self.ai_timeline_detail_scroll = 0;
+    }
+
+    pub fn ai_timeline_detail_end(&mut self) {
+        self.ai_timeline_detail_scroll = self.ai_timeline_detail_max_scroll;
     }
 
     pub fn code_agent_rows(
@@ -1944,6 +2158,13 @@ impl AppState {
                         label(format!(" · {tool_calls} chamada(s)")),
                     ]));
                 }
+                Event::BudgetExhausted { reason } => rows.push(Line::from(vec![
+                    label("  fase  ".into()),
+                    bad(crate::tui::chrome::truncate_width(
+                        &format!("orçamento esgotado · {reason}"),
+                        width.saturating_sub(10),
+                    )),
+                ])),
                 Event::Finished {
                     located,
                     total,
@@ -1972,7 +2193,7 @@ impl AppState {
     }
 
     pub fn advance_execution(&mut self) {
-        if self.exec_cancelled || self.orchestrator.is_cancelled() {
+        if (self.exec_cancelled || self.orchestrator.is_cancelled()) && self.run_task.is_none() {
             self.exec_paused = false;
             self.step = AppStep::ToolSelect;
             self.focus = FocusTarget::ToolList;
@@ -2384,7 +2605,20 @@ impl AppState {
         }
         self.exec_cancelled = true;
         self.exec_paused = false;
-        self.orchestrator.cancel_execution();
+        // Na Análise a task já passou dos scanners: o "cancelando…" precisa
+        // durar até o turno do provedor encerrar, e é o `Completed` que leva aos
+        // resultados. Sair da tela agora esconderia chamadas ainda em curso.
+        if self.step == AppStep::Analysis {
+            self.analysis_phase = AnalysisPhase::Cancelling;
+        }
+        // Com a task viva, o estado que importa é o dela: gravar o checkpoint
+        // da tela aqui (sem achados) apagaria o parcial que a task persiste.
+        let task_alive = self.run_task.is_some();
+        if task_alive {
+            self.orchestrator.request_cancel();
+        } else {
+            self.orchestrator.cancel_execution();
+        }
         // A ferramenta em execucao e marcada como cancelada, e nao como falha:
         // o operador pediu para parar, e a distincao importa no relatorio e na
         // auditoria tanto quanto importa na tela.
@@ -2398,10 +2632,11 @@ impl AppState {
             self.push_exec_log(format!("[cancelled] {name} CANCELADA pelo operador"));
         }
         self.push_exec_log("X Cancelamento solicitado; encerrando o container".to_string());
-        // A auditoria e gravada agora, e nao quando a task termina: o
-        // cancelamento e uma decisao do operador e precisa estar registrada
-        // mesmo que o container demore a encerrar.
-        self.persist_cancelled_run();
+        // A auditoria é gravada agora quando não há task dona do estado; com a
+        // task viva, ela grava o parcial e o motivo compartilhado ao encerrar.
+        if !task_alive {
+            self.persist_cancelled_run();
+        }
         self.follow_latest_log();
     }
 
@@ -2447,14 +2682,16 @@ impl AppState {
             return;
         }
         if !self.exec_cancelled {
-            self.orchestrator.cancel_execution();
+            self.orchestrator.request_cancel();
         }
+        let mut persisted_by_task = false;
         if let Some(task) = self.run_task.take() {
             let completed = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 let _ = task.await;
             })
             .await
             .is_ok();
+            persisted_by_task = completed;
             if !completed {
                 // O executor cooperativo não respondeu: o `abort` é o último
                 // recurso, e o guard `ContainerCleanup` ainda remove o
@@ -2467,7 +2704,11 @@ impl AppState {
             }
         }
         self.run_receiver = None;
-        self.persist_cancelled_run();
+        // A task que encerrou normalmente já gravou o parcial com o estado real;
+        // a tela só grava quando precisou abortar.
+        if !persisted_by_task {
+            self.persist_cancelled_run();
+        }
     }
 
     /// Persiste a execução sintética de cancelamento para auditoria: nenhum
@@ -2698,6 +2939,21 @@ fn restore_rag_example(result: &mut crate::cyberrag::service::ExplanationResult)
     example.linguagem = code.map(|candidate| candidate.linguagem.clone());
     example.vulneravel = code.map(|candidate| candidate.vulneravel.trim().to_string());
     example.corrigido = code.map(|candidate| candidate.corrigido.trim().to_string());
+}
+
+fn parse_scan_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Local>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&chrono::Local))
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+                .ok()
+                .and_then(|timestamp| timestamp.and_local_timezone(chrono::Local).single())
+        })
 }
 
 fn format_elapsed(total_secs: u64) -> String {
@@ -3710,6 +3966,56 @@ mod tests {
         );
         if let Some(path) = app.audit_log_path.clone() {
             let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Cancelar na Análise mantém a tela em "cancelando…" até a task encerrar;
+    /// só o `Completed` leva aos resultados.
+    #[tokio::test]
+    async fn cancelling_the_analysis_keeps_the_screen_until_the_task_ends() {
+        let mut app = app();
+        app.step = AppStep::Analysis;
+        app.analysis_phase = AnalysisPhase::Generating;
+        app.run_task = Some(tokio::spawn(std::future::pending()));
+
+        app.cancel_run();
+
+        assert_eq!(app.step, AppStep::Analysis);
+        assert_eq!(app.analysis_phase, AnalysisPhase::Cancelling);
+        assert!(app.orchestrator.is_cancelled());
+        // Com a task viva, nenhum avanço de quadro troca a tela.
+        app.advance_execution();
+        assert_eq!(app.step, AppStep::Analysis);
+
+        if let Some(task) = app.run_task.take() {
+            task.abort();
+        }
+        if let Some(path) = app.audit_log_path.clone() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Dois scans não podem disputar `run_task` e `run_receiver`: enquanto a
+    /// task anterior encerra, um novo início é recusado com motivo.
+    #[tokio::test]
+    async fn a_new_scan_waits_for_the_previous_task_to_finish() {
+        let mut app = app();
+        app.step = AppStep::ToolSelect;
+        if let Some(tool) = app.tools.first_mut() {
+            tool.selected = true;
+        }
+        app.run_task = Some(tokio::spawn(std::future::pending()));
+
+        app.start_selected_tools();
+
+        assert_eq!(app.step, AppStep::ToolSelect);
+        assert!(app
+            .exec_logs()
+            .iter()
+            .any(|line| line.contains("Aguarde o encerramento")));
+
+        if let Some(task) = app.run_task.take() {
+            task.abort();
         }
     }
 

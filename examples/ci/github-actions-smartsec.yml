@@ -1,0 +1,266 @@
+# Exemplo de CI para consumidores do SmartSec.
+#
+# Copie este arquivo para .github/workflows/smartsec.yml no repositório da
+# aplicação que será analisada. Ele NÃO é o CI do próprio SmartSec; o CI do
+# projeto fica em .github/workflows/ci.yml.
+#
+# O workflow:
+#   1. instala o SmartSec a partir de uma tag/ref fixa;
+#   2. prepara Podman rootless + pasta com --map-host-loopback;
+#   3. executa um scan headless real, com IA, contra um alvo autorizado;
+#   4. publica relatório Markdown/PDF, log e auditoria JSON como artefatos;
+#   5. aplica o contrato de exit codes do SmartSec.
+#
+# Antes de usar:
+#   - cadastre o secret OPENAI_API_KEY (ou troque o provedor);
+#   - garanta que o alvo é seu ou que você tem autorização escrita;
+#   - revise SMARTSEC_REF e os commits de pasta/Nuclei;
+#   - em runner self-hosted, pule as etapas de instalação que já existirem.
+#
+# Custo: cada execução faz chamadas reais ao provedor de IA. O orçamento do
+# agente de código é limitado no binário (120 chamadas e 180 s por fase), mas
+# a análise de logs ainda consome tokens. Use workflow_dispatch/schedule com
+# parcimônia e nunca em pull requests de fork (secrets não são injetados).
+
+name: SmartSec Headless Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'URL ou IP autorizado (ex.: https://staging.example.com)'
+        required: true
+        type: string
+      tools:
+        description: 'Ferramentas separadas por vírgula (Nmap,Nuclei,Nikto,SQLMap,ZAP). TruffleHog exige um caminho de repositório como target.'
+        required: false
+        default: 'Nmap,Nuclei,Nikto,ZAP'
+        type: string
+      project:
+        description: 'Diretório do código para o agente localizar correções'
+        required: false
+        default: '.'
+        type: string
+      fail_on_critical:
+        description: 'Falhar o job quando houver achado crítico (exit 1)'
+        required: false
+        default: true
+        type: boolean
+  # Descomente para uma varredura semanal do ambiente de staging.
+  # schedule:
+  #   - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smartsec-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fixe uma tag ou SHA. Não use uma branch móvel em produção.
+  SMARTSEC_REF: 'v0.2.2'
+  SMARTSEC_TOOLCHAIN: '1.98.1'
+  # O pasta do runner do Ubuntu pode não aceitar --map-host-loopback; o
+  # SmartSec usa essa flag em toda execução. Compile o commit homologado.
+  SMARTSEC_PASTA_REPO: 'https://passt.top/passt'
+  SMARTSEC_PASTA_COMMIT: 'f8df3f1b228fe19a74a269334fdfe6cc7d0605ce'
+  # O binário recusa templates fora deste commit.
+  SMARTSEC_NUCLEI_COMMIT: 'b98e6097cb84e73e7a480436062d685a8f898824'
+  SMARTSEC_NUCLEI_REPO: 'https://github.com/projectdiscovery/nuclei-templates'
+  TMPDIR: '/var/tmp/smartsec'
+
+jobs:
+  scan:
+    name: Scan headless
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Verificar a chave de IA
+        env:
+          KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "::error::Cadastre o secret OPENAI_API_KEY ou troque o provedor para llama.cpp."
+            exit 1
+          fi
+          echo "Chave de IA presente (valor não exibido)."
+
+      - name: Obter o código da aplicação
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências do build e do runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential libdbus-1-dev podman curl jq git ca-certificates
+
+      - name: Fixar a toolchain Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.SMARTSEC_TOOLCHAIN }}
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: smartsec-consumer-ci
+
+      - name: Instalar o SmartSec
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/smartsec-install"
+          cargo install \
+            --git https://github.com/luis-ota/smartsec-rust.git \
+            --tag "$SMARTSEC_REF" \
+            --locked \
+            --root "$root" \
+            --bin smartsec
+          echo "$root/bin" >> "$GITHUB_PATH"
+          "$root/bin/smartsec" --version
+
+      # O pasta do Ubuntu 24.04 pode não conhecer --map-host-loopback. O
+      # binário compilado deste commit é o mesmo validado no TCC.
+      - name: Preparar o pasta com --map-host-loopback
+        run: |
+          set -euo pipefail
+          origem="$RUNNER_TEMP/passt"
+          git clone --quiet "$SMARTSEC_PASTA_REPO" "$origem"
+          git -C "$origem" checkout --quiet "$SMARTSEC_PASTA_COMMIT"
+          obtido="$(git -C "$origem" rev-parse HEAD)"
+          test "$obtido" = "$SMARTSEC_PASTA_COMMIT"
+          make --directory "$origem" --silent pasta
+          sudo install -m 0755 "$origem/passt" /usr/local/bin/pasta
+          rm -rf "$origem"
+          pasta --version
+          pasta --help 2>&1 | grep -q -- '--map-host-loopback'
+
+      - name: Verificar Podman rootless
+        run: |
+          set -euo pipefail
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = 'true'
+          podman run --rm --network 'pasta:--map-host-loopback=169.254.1.2' \
+            docker.io/instrumentisto/nmap:7.98@sha256:96f6ed194519b62421a1a1c57809e65a7f94d2aa1c8c25676f247e5e148c0827 -V
+
+      - name: Preparar a tmpfs de trabalho
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /var/tmp/smartsec
+          sudo mount -t tmpfs -o size=512m tmpfs /var/tmp/smartsec
+          findmnt -no FSTYPE --target /var/tmp/smartsec
+
+      - name: Baixar os templates do Nuclei no commit fixado
+        run: |
+          set -euo pipefail
+          destino="$RUNNER_TEMP/nuclei-templates"
+          git clone --quiet "$SMARTSEC_NUCLEI_REPO" "$destino"
+          git -C "$destino" checkout --quiet "$SMARTSEC_NUCLEI_COMMIT"
+          test "$(git -C "$destino" rev-parse HEAD)" = "$SMARTSEC_NUCLEI_COMMIT"
+          echo "SMARTSEC_NUCLEI_PATH=$destino" >> "$GITHUB_ENV"
+
+      - name: Escrever a configuração do scan
+        run: |
+          set -euo pipefail
+          cat > smartsec-ci.toml <<EOF
+          active_tools = ["Nmap", "Nuclei", "Nikto", "ZAP"]
+          execution_type = "Auto"
+          project_dir = "$GITHUB_WORKSPACE/${{ inputs.project }}"
+          nuclei_templates_path = "$SMARTSEC_NUCLEI_PATH"
+          nuclei_templates_commit = "$SMARTSEC_NUCLEI_COMMIT"
+
+          [llm]
+          provider = "OpenAI"
+          model = "gpt-4o-mini"
+          remote_consent = true
+          EOF
+          # Não imprima o arquivo se ele vier a conter segredo no futuro.
+          grep -v -i 'api_key\|token\|secret' smartsec-ci.toml
+
+      - name: Executar o scan headless
+        id: scan
+        continue-on-error: true
+        env:
+          # Override de sessão: não grava a chave no disco.
+          SMARTSEC_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/smartsec-config
+          # Inputs passam por env para não serem interpolados como shell.
+          TARGET: ${{ inputs.target }}
+          TOOLS: ${{ inputs.tools }}
+        run: |
+          set -uo pipefail
+          mkdir -p artifacts "$XDG_CONFIG_HOME"
+          set +e
+          smartsec scan \
+            --target "$TARGET" \
+            --tools "$TOOLS" \
+            --config smartsec-ci.toml \
+            --llm openai \
+            --model gpt-4o-mini \
+            --output-dir artifacts \
+            2>&1 | tee artifacts/scan.log
+          code="${PIPESTATUS[0]}"
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          # Copie a auditoria para o artefato; o caminho é estável no runner.
+          find "$XDG_CONFIG_HOME/smartsec/scans" -maxdepth 1 -type f -name 'scan_*.json' \
+            -exec cp {} artifacts/ \; 2>/dev/null || true
+          # O veredito é aplicado no passo seguinte, com mensagem explícita.
+          exit 0
+
+      - name: Aplicar o veredito do exit code
+        env:
+          CODE: ${{ steps.scan.outputs.exit_code }}
+          FAIL_ON_CRITICAL: ${{ inputs.fail_on_critical }}
+        run: |
+          set -euo pipefail
+          echo "SmartSec exit code: $CODE"
+          case "$CODE" in
+            0)
+              echo "Scan concluído sem achado crítico." | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            1)
+              echo "Scan concluído com achado crítico." | tee -a "$GITHUB_STEP_SUMMARY"
+              if [ "$FAIL_ON_CRITICAL" = "true" ]; then
+                echo "::error::Achado crítico encontrado e fail_on_critical=true." | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              echo "::warning::Achado crítico encontrado; o job continua porque fail_on_critical=false."
+              ;;
+            2)
+              echo "::error::Erro de configuração/execução do SmartSec (exit 2)." | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 2
+              ;;
+            *)
+              echo "::error::Exit code inesperado do SmartSec: $CODE" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+          # Resumo curto e auditável, sem despejar o relatório inteiro.
+          if [ -f artifacts/smartsec-report.md ]; then
+            {
+              echo ""
+              echo "### Resumo do relatório"
+              echo '```'
+              grep -E '^- (Total|Críticas|Altas|Médias|Baixas|Informativas)' artifacts/smartsec-report.md || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar os artefatos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartsec-${{ github.run_id }}
+          path: |
+            artifacts/
+            smartsec-ci.toml
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Limpar containers do SmartSec
+        if: always()
+        run: |
+          set -euo pipefail
+          podman ps -a --format '{{.Names}}' | grep '^smartsec-' | xargs -r podman rm -f || true

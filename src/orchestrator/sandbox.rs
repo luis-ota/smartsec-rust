@@ -12,6 +12,9 @@ use tokio::sync::watch;
 
 static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const PODMAN_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+/// A remoção pode demorar mais que o controle quando o storage do Podman está
+/// sob carga; o timeout maior evita marcar como falha uma limpeza que concluiu.
+const PODMAN_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const ROOTLESS_NETWORK: &str = "pasta:--map-host-loopback=169.254.1.2";
 const DEFAULT_MEMORY_LIMIT: &str = "512m";
 
@@ -939,10 +942,41 @@ impl PodmanExecutor {
         trace.emit(format!("$ podman rm --force --ignore {container_id}"));
         let mut command = self.podman_command();
         command.args(["rm", "--force", "--ignore", container_id]);
-        let output = tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output())
-            .await
-            .context("a limpeza do Podman não terminou em até 10 segundos")?
-            .context("falha ao executar a limpeza pelo Podman")?;
+        let output = match tokio::time::timeout(PODMAN_CLEANUP_TIMEOUT, command.output()).await {
+            Ok(result) => result.context("falha ao executar a limpeza pelo Podman")?,
+            Err(_) => {
+                // O processo pode ter removido o container e apenas não ter
+                // retornado dentro do prazo. Confirmar a existência evita
+                // transformar uma limpeza bem-sucedida em falha do scanner.
+                if !self.container_exists(container_id).await {
+                    trace.emit(format!(
+                        "container {container_id} já não existia; limpeza considerada concluída"
+                    ));
+                    return Ok(());
+                }
+                trace.emit(format!(
+                    "a limpeza do container {container_id} excedeu {PODMAN_CLEANUP_TIMEOUT:?}; tentando novamente"
+                ));
+                let mut retry = self.podman_command();
+                retry.args(["rm", "--force", "--ignore", container_id]);
+                let retry_output = tokio::time::timeout(PODMAN_CLEANUP_TIMEOUT, retry.output())
+                    .await
+                    .context("a limpeza do Podman não terminou em até 30 segundos")?
+                    .context("falha ao executar a limpeza pelo Podman")?;
+                if retry_output.status.success() {
+                    trace.emit(format!("container {container_id} removido"));
+                    return Ok(());
+                }
+                let error = anyhow!(
+                    "Podman não conseguiu remover o container {container_id}: {}",
+                    output_message(&retry_output.stderr)
+                );
+                trace.emit(format!(
+                    "falha na limpeza do container {container_id}: {error:#}"
+                ));
+                return Err(error);
+            }
+        };
         if output.status.success() {
             trace.emit(format!("container {container_id} removido"));
             Ok(())
@@ -955,6 +989,17 @@ impl PodmanExecutor {
                 "falha na limpeza do container {container_id}: {error:#}"
             ));
             Err(error)
+        }
+    }
+
+    /// Confirma se o container ainda existe; falhas de consulta contam como
+    /// "existe" para não esconder um vazamento.
+    async fn container_exists(&self, container_id: &str) -> bool {
+        let mut command = self.podman_command();
+        command.args(["container", "exists", container_id]);
+        match tokio::time::timeout(PODMAN_CONTROL_TIMEOUT, command.output()).await {
+            Ok(Ok(output)) => output.status.success(),
+            _ => true,
         }
     }
 
