@@ -28,6 +28,8 @@ pub enum CodeAgentEvent {
         located: bool,
         tool_calls: usize,
     },
+    /// O orçamento global da fase foi atingido e a exploração foi cortada.
+    BudgetExhausted { reason: String },
     Finished {
         located: usize,
         total: usize,

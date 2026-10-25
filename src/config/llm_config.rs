@@ -142,8 +142,14 @@ pub struct LlmConfig {
     pub base_url: String,
     #[serde(default)]
     pub model: String,
-    #[serde(skip)]
+    #[serde(default, skip_serializing)]
     pub api_key: String,
+    /// Erro ao ler o arquivo local de credenciais, apenas em memória.
+    #[serde(skip)]
+    pub credential_error: Option<String>,
+    /// Chave veio de `SMARTSEC_API_KEY` e vale só nesta sessão.
+    #[serde(skip)]
+    pub credential_from_env: bool,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
     #[serde(default = "default_max_retries")]
@@ -169,6 +175,8 @@ impl std::fmt::Debug for LlmConfig {
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("api_key", &"[OCULTA]")
+            .field("credential_error", &self.credential_error)
+            .field("credential_from_env", &self.credential_from_env)
             .field("timeout_secs", &self.timeout_secs)
             .field("max_retries", &self.max_retries)
             .field("remote_consent", &self.remote_consent)
@@ -212,6 +220,11 @@ impl LlmConfig {
         }
         if self.is_remote() {
             if self.api_key.trim().is_empty() {
+                if let Some(reason) = self.credential_error.as_deref() {
+                    return Err(format!(
+                        "Credenciais indisponíveis: {reason}. Verifique o arquivo local de credenciais e reabra a configuração."
+                    ));
+                }
                 return Err(
                     "Credenciais obrigatórias: informe a chave de acesso do provedor remoto."
                         .to_string(),
@@ -315,6 +328,8 @@ impl Default for LlmConfig {
             base_url: provider.default_base_url().to_string(),
             model: provider.default_model().to_string(),
             api_key: String::new(),
+            credential_error: None,
+            credential_from_env: false,
             timeout_secs: default_timeout_secs(),
             max_retries: default_max_retries(),
             remote_consent: false,
@@ -347,6 +362,25 @@ mod tests {
         assert!(config.validate().unwrap_err().contains("Consentimento"));
         config.remote_consent = true;
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn a_locked_keyring_is_reported_as_a_credential_problem() {
+        let config = LlmConfig {
+            provider: LlmProviderKind::OpenAI,
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            api_key: String::new(),
+            credential_error: Some("o cofre de segredos do sistema está bloqueado".to_string()),
+            remote_consent: true,
+            ..LlmConfig::default()
+        };
+
+        let error = config.validate().unwrap_err();
+
+        assert!(error.contains("Credenciais indisponíveis"), "{error}");
+        assert!(error.contains("cofre"), "{error}");
+        assert!(!error.contains("Credenciais obrigatórias"), "{error}");
     }
 
     #[test]
@@ -576,11 +610,15 @@ mod tests {
     fn never_serializes_api_key() {
         let config = LlmConfig {
             api_key: "secret-value".to_string(),
+            credential_error: Some("cofre bloqueado".to_string()),
+            credential_from_env: true,
             ..LlmConfig::default()
         };
         let serialized = toml::to_string(&config).unwrap();
         assert!(!serialized.contains("secret-value"));
         assert!(!serialized.contains("api_key"));
+        assert!(!serialized.contains("cofre bloqueado"));
+        assert!(!serialized.contains("credential_from_env"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::config::execution_type::ExecutionType;
+use crate::domain::Severity;
 use crate::tui::state::SettingsField;
 use ratatui::layout::Rect;
 
@@ -8,6 +9,7 @@ pub enum FocusTarget {
     SplashAuto,
     SplashAssisted,
     SplashSettings,
+    SplashRecent,
     SplashStart,
     ToolList,
     ToolBack,
@@ -19,11 +21,11 @@ pub enum FocusTarget {
     ResultsList,
     ResultsNewScan,
     ResultsExport,
-    ResultsDidactic,
     ResultsDetail,
     ResultsBack,
     ResultsExplain,
     DidacticContent,
+    DidacticExplain,
     DidacticBack,
     HistoryList,
     HistoryDetail,
@@ -36,7 +38,6 @@ pub enum FocusTarget {
     HelpClose,
     CommandList,
     ReportClose,
-    TraceClose,
     /// Botão de fechar do painel "Atividade da IA".
     AiTimelineClose,
 }
@@ -66,6 +67,7 @@ pub enum SemanticAction {
     ResumeRun,
     CancelRun,
     OpenVulnerability(usize),
+    FilterSeverity(Severity),
     ExportMarkdown,
     ShowDidactic,
     /// Explicação assistida (RAG) do achado aberto no detalhe.
@@ -85,8 +87,8 @@ pub enum SemanticAction {
     OpenHelp,
     OpenHistory,
     OpenHistoryRecord(usize),
+    OpenRecentScan(usize),
     OpenReportViewer,
-    OpenTraceability,
     OpenCommandPalette,
     ExecuteCommand(usize),
     /// Abre o painel ao vivo "Atividade da IA" na tela de Execução.

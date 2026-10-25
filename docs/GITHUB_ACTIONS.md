@@ -134,23 +134,21 @@ O workflow consome **um** secret, opcional:
 |---|---|
 | `SMARTSEC_LLM_API_KEY` | habilitaria o provedor de IA remoto |
 
-**Limitação real:** hoje a chave é inerte. O binário carrega a credencial
-apenas do keyring do sistema operacional — `llm.api_key` é `#[serde(skip)]` no
-TOML (`src/config/llm_config.rs`) e a leitura acontece em
-`crate::config::persistence::load_api_key`, ou seja, no Secret Service. Não
-existe leitura de variável de ambiente em `src/`, e o runner hospedado não tem
-Secret Service. Na prática, o CI roda com `--llm ollama` (loopback) e, como não
-há Ollama no runner, o agente cai no **fallback determinístico local**
+A chave tem dois caminhos: `~/.config/smartsec/auth.json` (persistente, 0600,
+como OpenCode/Codex) e `SMARTSEC_API_KEY` (somente a sessão). O secret do workflow ainda não
+é repassado com esse nome, então o CI continua em `--llm ollama` (loopback) e,
+como não há Ollama no runner, o agente cai no **fallback determinístico local**
 (`local_analysis` em `src/ai/agent.rs`): a análise sai em português, sem
-reclassificar severidades, e o exit code não muda. O passo *Verificar a
-disponibilidade da chave de IA* publica apenas se a chave existe — o valor
-nunca é impresso, nunca vai para o relatório e nunca é gravado no repositório.
-Habilitar a IA remota de verdade exige alteração em `src/`, registrada como
-bloqueio na issue #26.
+reclassificar severidades, e o exit code não muda. Para habilitar a IA remota,
+basta acrescentar `SMARTSEC_API_KEY: ${{ secrets.SMARTSEC_LLM_API_KEY }}` ao
+`env` do passo da varredura. A chave não é persistida, não aparece no relatório
+e é removida do ambiente dos processos filhos (Podman, `run_command` e `git`).
+O passo *Verificar a disponibilidade da chave de IA* continua publicando apenas
+se a chave existe.
 
-O provedor remoto também exigiria `remote_consent` e HTTPS na base URL; sem a
-chave no keyring, `LlmConfig::validate` reprovaria a configuração e o scan
-terminaria com `2`.
+O provedor remoto também exige `remote_consent` e HTTPS na base URL; sem
+consentimento, `LlmConfig::validate` reprova a configuração e o scan termina
+com `2`.
 
 ## Pull requests de fork
 
@@ -190,20 +188,6 @@ pelo workflow, e nenhum deles era previsível lendo o código:
   (`Failed(Some(125))`), porque o executor usa a mesma flag de rede. É um bug de
   ambiente pré-existente a esta issue, agora resolvido no CI.
 
-- **Headers do D-Bus.** O `keyring` usa a feature `sync-secret-service` no
-  Linux, que puxa `libdbus-sys`; o build script dele chama
-  `pkg-config --libs --cflags 'dbus-1 >= 1.6'`. O runner não traz os headers de
-  desenvolvimento, então sem `libdbus-1-dev` o build morre com exit `101` antes
-  de chegar ao clippy.
-
-- **Barramento D-Bus disponível durante o scan.** O crun do runner usa o systemd
-  como gerenciador de cgroup e precisa do barramento da sessão para subir o
-  container. Desabilitar `DBUS_SESSION_BUS_ADDRESS` para evitar a leitura da
-  chave no keyring faz o scan falhar com
-  `crun: sd-bus call: Interactive authentication required` e exit `125`. A
-  leitura da chave já é tolerante: sem Secret Service ela falha e o código
-  segue, sem prompt e sem espera.
-
 Outras limitações que continuam valendo:
 
 - **Rede de saída.** O runner hospedado tem acesso à internet. O `podman pull`
@@ -211,8 +195,8 @@ Outras limitações que continuam valendo:
   smoke test falha com mensagem de rede explícita antes da varredura. O
   container também ganha acesso de saída — o TCC não permite fechar isso sem
   alterar `src/orchestrator/sandbox.rs`, que fixa `--network pasta`.
-- **Keyring.** Não há Secret Service no runner, então provedores remotos de IA
-  não funcionam (ver *Secrets*).
+- **Credencial persistida.** O runner não mantém `auth.json`; provedores
+  remotos usam `SMARTSEC_API_KEY` apenas na sessão (ver *Secrets*).
 - **Templates do Nuclei.** O Nuclei exige um checkout Git de templates no commit
   configurado; o CI não faz esse checkout e por isso roda apenas com
   `--tools Nmap`. Para incluir o Nuclei, é preciso clonar

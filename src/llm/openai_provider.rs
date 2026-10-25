@@ -84,7 +84,8 @@ pub const DEFAULT_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 
 /// Teto da espera entre retentativas, para que a espera não consuma o prazo da
 /// análise inteira antes da segunda tentativa.
-const RETRY_MAX_DELAY: Duration = Duration::from_secs(8);
+/// Groq free tier pede 15–20s; o teto fica abaixo dos 45s da análise.
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(20);
 
 impl OpenAIProvider {
     /// Monta o corpo da requisição. Sem ferramentas declaradas, o campo `tools`
@@ -152,10 +153,19 @@ impl OpenAIProvider {
             let status = answer.status();
             let retry_after = retry_after_of(&answer);
             let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+            // Sem o corpo, "400 Bad Request" não diz o que corrigir.
+            let detail = if rate_limited {
+                None
+            } else {
+                Some(answer.text().await.unwrap_or_default())
+            };
             if rate_limited {
                 last_rate_limit = Some(retry_after);
             } else if !status.is_server_error() {
-                return Err(anyhow::anyhow!("A API da LLM retornou o status {status}"));
+                return Err(anyhow::anyhow!(
+                    "A API da LLM retornou o status {status}{}",
+                    error_detail(detail.as_deref())
+                ));
             }
             if attempt == self.max_retries {
                 return Err(match last_rate_limit {
@@ -163,8 +173,9 @@ impl OpenAIProvider {
                         anyhow::anyhow!(rate_limit_message(attempt + 1, asked))
                     }
                     None => anyhow::anyhow!(
-                        "A API da LLM retornou o status {status} após {} tentativa(s)",
-                        attempt + 1
+                        "A API da LLM retornou o status {status} após {} tentativa(s){}",
+                        attempt + 1,
+                        error_detail(detail.as_deref())
                     ),
                 });
             }
@@ -202,6 +213,24 @@ fn jittered(base: Duration) -> Duration {
         .wrapping_add(1_442_695_040_888_963_407);
     let half = u64::try_from(base.as_nanos() / 2).unwrap_or(u64::MAX);
     Duration::from_nanos(half + state % half.saturating_add(1))
+}
+
+/// Resume o corpo de erro do provedor sem repetir payloads enormes.
+fn error_detail(body: Option<&str>) -> String {
+    let Some(body) = body else {
+        return String::new();
+    };
+    let text = crate::utils::redaction::sanitize_diagnostic(body.trim());
+    if text.is_empty() {
+        return String::new();
+    }
+    let mut chars = text.chars();
+    let truncated: String = chars.by_ref().take(300).collect();
+    if chars.next().is_some() {
+        format!(": {truncated}…")
+    } else {
+        format!(": {truncated}")
+    }
 }
 
 /// Lê `Retry-After` em segundos, ignorando formatos que não são numéricos.

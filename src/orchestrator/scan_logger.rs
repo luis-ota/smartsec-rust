@@ -4,7 +4,359 @@ use crate::orchestrator::decision::DecisionRecord;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// Fases registradas no checkpoint incremental.
+///
+/// O valor é texto e não enum para que um log gravado por uma versão mais nova
+/// continue desserializável aqui, sem derrubar a leitura do histórico.
+pub const PHASE_TOOLS: &str = "tools";
+pub const PHASE_ANALYSIS: &str = "analysis";
+pub const PHASE_CODE: &str = "code";
+pub const PHASE_RAG: &str = "rag";
+pub const PHASE_COMPLETED: &str = "completed";
+pub const PHASE_CANCELLED: &str = "cancelled";
+
+/// Estado de uma ferramenta que ainda não terminou.
+pub const TOOL_STATUS_RUNNING: &str = "running";
+
+/// Teto do recorte de saída guardado no checkpoint.
+///
+/// É menor que [`MAX_LOG_STREAM_BYTES`] porque o checkpoint é reescrito com
+/// frequência durante o streaming: guardar 64 KiB por gravação inflaria o
+/// arquivo e o custo de I/O, sem acrescentar rastreabilidade.
+pub const MAX_CHECKPOINT_OUTPUT_BYTES: usize = 8 * 1024;
+
+/// Estado de execução de uma ferramenta em andamento (ou da última encerrada).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCheckpoint {
+    #[serde(default)]
+    pub tool_name: String,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    #[serde(default)]
+    pub started_at: String,
+    /// `running`, `succeeded`, `failed`, `timeout`, `cancelled` ou `skipped`.
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub output_bytes: usize,
+    /// Saída parcial limitada: o que já foi transmitido, ou o resultado final.
+    #[serde(default)]
+    pub output_partial: String,
+    #[serde(default)]
+    pub finished_at: String,
+}
+
+impl ToolCheckpoint {
+    fn sanitized(&self) -> Self {
+        let sanitize = crate::utils::redaction::sanitize_text;
+        Self {
+            tool_name: sanitize(&self.tool_name),
+            arguments: self.arguments.iter().map(|value| sanitize(value)).collect(),
+            started_at: sanitize(&self.started_at),
+            status: sanitize(&self.status),
+            output_bytes: self.output_bytes,
+            output_partial: capped_checkpoint_text(&sanitize(&self.output_partial)),
+            finished_at: sanitize(&self.finished_at),
+        }
+    }
+}
+
+/// Turno de IA em andamento.
+///
+/// Guarda só o suficiente para a auditoria saber **quem** estava respondendo e
+/// **sobre o quê**. O prompt completo e a credencial nunca entram aqui.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiCheckpoint {
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    /// Resumo do turno, sanitizado e limitado; nunca o prompt inteiro.
+    #[serde(default)]
+    pub prompt_summary: String,
+    #[serde(default)]
+    pub findings_count: usize,
+}
+
+impl AiCheckpoint {
+    fn sanitized(&self) -> Self {
+        let sanitize = crate::utils::redaction::sanitize_text;
+        Self {
+            started_at: sanitize(&self.started_at),
+            provider: sanitize(&self.provider),
+            model: sanitize(&self.model),
+            prompt_summary: capped_checkpoint_text(&sanitize(&self.prompt_summary)),
+            findings_count: self.findings_count,
+        }
+    }
+}
+
+/// Achado cuja análise de código está em andamento.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodeCheckpoint {
+    #[serde(default)]
+    pub finding_index: usize,
+    #[serde(default)]
+    pub finding_title: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<usize>,
+    #[serde(default)]
+    pub started_at: String,
+}
+
+impl CodeCheckpoint {
+    fn sanitized(&self) -> Self {
+        let sanitize = crate::utils::redaction::sanitize_text;
+        Self {
+            finding_index: self.finding_index,
+            finding_title: sanitize(&self.finding_title),
+            file: self.file.as_deref().map(sanitize),
+            line: self.line,
+            started_at: sanitize(&self.started_at),
+        }
+    }
+}
+
+/// Análise de código já concluída, guardada antes de a fase terminar.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodeAnalysisCheckpoint {
+    #[serde(default)]
+    pub finding_index: usize,
+    #[serde(default)]
+    pub finding_title: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<usize>,
+    #[serde(default)]
+    pub located: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub remediation: Vec<String>,
+    #[serde(default)]
+    pub tool_calls: usize,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub finished_at: String,
+}
+
+impl CodeAnalysisCheckpoint {
+    /// Converte a análise recém-concluída, mantendo o índice original do achado.
+    pub fn from_analysis(
+        finding_title: &str,
+        analysis: &crate::code_agent::agent::FindingCodeAnalysis,
+    ) -> Self {
+        Self {
+            finding_index: analysis.finding_index,
+            finding_title: finding_title.to_string(),
+            file: analysis
+                .location
+                .as_ref()
+                .map(|location| location.file.clone()),
+            line: analysis.location.as_ref().map(|location| location.line),
+            located: analysis.location.is_some(),
+            reason: analysis.reason.clone(),
+            remediation: analysis.remediation.clone(),
+            tool_calls: analysis.tool_calls,
+            provider: analysis.provider.clone(),
+            model: analysis.model.clone(),
+            finished_at: now_iso8601(),
+        }
+    }
+
+    fn sanitized(&self) -> Self {
+        let sanitize = crate::utils::redaction::sanitize_text;
+        Self {
+            finding_index: self.finding_index,
+            finding_title: sanitize(&self.finding_title),
+            file: self.file.as_deref().map(sanitize),
+            line: self.line,
+            located: self.located,
+            reason: self
+                .reason
+                .as_deref()
+                .map(crate::utils::redaction::sanitize_diagnostic),
+            remediation: self.remediation.iter().map(|step| sanitize(step)).collect(),
+            tool_calls: self.tool_calls,
+            provider: sanitize(&self.provider),
+            model: sanitize(&self.model),
+            finished_at: sanitize(&self.finished_at),
+        }
+    }
+}
+
+/// Estado incremental do scan, reescrito durante a execução.
+///
+/// `#[serde(default)]` em todos os campos: um checkpoint gravado antes de um
+/// campo existir continua carregando, e um log antigo sem `runtime` inteiro
+/// também.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScanRuntime {
+    /// `tools`, `analysis`, `code`, `rag`, `completed` ou `cancelled`.
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub current_tool: Option<ToolCheckpoint>,
+    #[serde(default)]
+    pub ai_in_progress: Option<AiCheckpoint>,
+    #[serde(default)]
+    pub code_in_progress: Option<CodeCheckpoint>,
+    /// Análises de código concluídas antes de a fase terminar.
+    #[serde(default)]
+    pub partial_code_analyses: Vec<CodeAnalysisCheckpoint>,
+    #[serde(default)]
+    pub last_checkpoint_at: String,
+    /// `em execução`, `cancelado`, `concluído` etc.
+    #[serde(default)]
+    pub checkpoint_reason: String,
+}
+
+impl ScanRuntime {
+    fn sanitized(&self) -> Self {
+        Self {
+            phase: crate::utils::redaction::sanitize_text(&self.phase),
+            current_tool: self.current_tool.as_ref().map(ToolCheckpoint::sanitized),
+            ai_in_progress: self.ai_in_progress.as_ref().map(AiCheckpoint::sanitized),
+            code_in_progress: self
+                .code_in_progress
+                .as_ref()
+                .map(CodeCheckpoint::sanitized),
+            partial_code_analyses: self
+                .partial_code_analyses
+                .iter()
+                .map(CodeAnalysisCheckpoint::sanitized)
+                .collect(),
+            last_checkpoint_at: crate::utils::redaction::sanitize_text(&self.last_checkpoint_at),
+            checkpoint_reason: crate::utils::redaction::sanitize_text(&self.checkpoint_reason),
+        }
+    }
+}
+
+/// Grava o runtime compartilhado no log já existente, sem exigir o fim do scan.
+///
+/// A gravação relê o JSON antes de substituir apenas `runtime`: assim um
+/// checkpoint de streaming nunca apaga achados ou ferramentas que o pipeline
+/// gravou depois. O arquivo é escrito de forma atômica, então um processo morto
+/// no meio da gravação deixa o último checkpoint válido intacto.
+#[derive(Clone)]
+pub struct CheckpointHandle {
+    path: PathBuf,
+    runtime: Arc<Mutex<ScanRuntime>>,
+    write_lock: Arc<Mutex<()>>,
+}
+
+impl CheckpointHandle {
+    pub fn new(
+        path: PathBuf,
+        runtime: Arc<Mutex<ScanRuntime>>,
+        write_lock: Arc<Mutex<()>>,
+    ) -> Self {
+        Self {
+            path,
+            runtime,
+            write_lock,
+        }
+    }
+
+    /// Anexa uma linha do trace/streaming à saída parcial da ferramenta atual.
+    pub fn append_tool_log(&self, line: &str) {
+        let mut runtime = lock_unpoisoned(&self.runtime);
+        let Some(tool) = runtime.current_tool.as_mut() else {
+            return;
+        };
+        if tool.status != TOOL_STATUS_RUNNING {
+            return;
+        }
+        append_capped(&mut tool.output_partial, &capped_trace_line(line));
+    }
+
+    /// Regrava o JSON existente com o runtime corrente.
+    pub fn flush(&self) -> Result<()> {
+        let _guard = lock_unpoisoned(&self.write_lock);
+        let content = match fs::read_to_string(&self.path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Falha ao ler checkpoint em {:?}", self.path))
+            }
+        };
+        let mut metadata: ScanMetadata = match serde_json::from_str(&content) {
+            Ok(metadata) => metadata,
+            // Um arquivo em versão incompatível não pode ser sobrescrito às
+            // cegas: o próximo checkpoint completo do orquestrador o substitui.
+            Err(_) => return Ok(()),
+        };
+        let runtime = {
+            let mut runtime = lock_unpoisoned(&self.runtime);
+            runtime.last_checkpoint_at = now_iso8601();
+            if runtime.checkpoint_reason.is_empty() {
+                runtime.checkpoint_reason = "em execução".to_string();
+            }
+            runtime.clone()
+        };
+        metadata.runtime = runtime;
+        let dir = self
+            .path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("checkpoint sem diretório pai: {:?}", self.path))?;
+        save_scan_log_to_dir(&metadata, dir)?;
+        Ok(())
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// Corta a saída no teto do checkpoint, em fronteira de caractere.
+fn capped_checkpoint_text(text: &str) -> String {
+    if text.len() <= MAX_CHECKPOINT_OUTPUT_BYTES {
+        return text.to_string();
+    }
+    let end = text
+        .char_indices()
+        .take_while(|(index, _)| *index < MAX_CHECKPOINT_OUTPUT_BYTES)
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let mut output = text[..end].to_string();
+    output.push_str("\n[... saída limitada no checkpoint ...]");
+    output
+}
+
+/// Anexa uma linha mantendo o **fim** do log, que é o trecho mais recente.
+fn append_capped(existing: &mut String, line: &str) {
+    if !existing.is_empty() {
+        existing.push('\n');
+    }
+    existing.push_str(line);
+    if existing.len() <= MAX_CHECKPOINT_OUTPUT_BYTES {
+        return;
+    }
+    let mut start = existing.len() - MAX_CHECKPOINT_OUTPUT_BYTES;
+    while !existing.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = existing[start..].to_string();
+    *existing = format!("[... trecho inicial descartado ...]\n{tail}");
+}
+
+fn now_iso8601() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
 
 /// Concordância de número para os textos de interface em pt-BR.
 fn plural(count: usize, singular: &str, plural: &str) -> String {
@@ -178,6 +530,220 @@ pub struct ScanMetadata {
     pub rag_failure_reason: Option<String>,
     #[serde(default)]
     pub rag_explanations_count: usize,
+    /// Explicações completas, para reabrir sem gastar tokens de novo.
+    #[serde(default)]
+    pub rag_explanations: Vec<crate::cyberrag::service::ExplanationResult>,
+    /// Diferença em relação à execução anterior do mesmo alvo.
+    #[serde(default)]
+    pub comparison: ScanComparison,
+    /// Estado incremental, reescrito durante a execução.
+    ///
+    /// Logs gravados antes deste campo continuam legíveis: ausente vira o
+    /// runtime vazio, e o restante do arquivo permanece o registro completo.
+    #[serde(default)]
+    pub runtime: ScanRuntime,
+}
+
+/// Achado que entrou ou saiu entre duas execuções.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ComparedFinding {
+    pub title: String,
+    pub severity: Severity,
+    pub tool: String,
+    pub target: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub line: Option<usize>,
+}
+
+impl ComparedFinding {
+    fn from_vulnerability(finding: &Vulnerability) -> Self {
+        Self {
+            title: finding.title.clone(),
+            severity: finding.severity,
+            tool: finding.tool.clone(),
+            target: finding.target.clone(),
+            file: finding
+                .code_location
+                .as_ref()
+                .map(|location| location.file.clone()),
+            line: finding.code_location.as_ref().map(|location| location.line),
+        }
+    }
+
+    fn sanitized(&self) -> Self {
+        Self {
+            title: crate::utils::redaction::sanitize_text(&self.title),
+            severity: self.severity,
+            tool: crate::utils::redaction::sanitize_text(&self.tool),
+            target: crate::utils::redaction::sanitize_url(&self.target),
+            file: self
+                .file
+                .as_deref()
+                .map(crate::utils::redaction::sanitize_text),
+            line: self.line,
+        }
+    }
+}
+
+/// Resultado da comparação com a execução anterior do mesmo alvo.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScanComparison {
+    #[serde(default)]
+    pub previous_scan_id: String,
+    #[serde(default)]
+    pub previous_completed_at: String,
+    #[serde(default)]
+    pub previous_count: usize,
+    #[serde(default)]
+    pub current_count: usize,
+    #[serde(default)]
+    pub fixed: Vec<ComparedFinding>,
+    #[serde(default)]
+    pub new: Vec<ComparedFinding>,
+    #[serde(default)]
+    pub persisting: usize,
+}
+
+impl ScanComparison {
+    pub fn between(
+        previous_scan_id: &str,
+        previous_completed_at: &str,
+        previous: &[Vulnerability],
+        current: &[Vulnerability],
+    ) -> Self {
+        let previous_keys: Vec<String> = previous.iter().map(finding_key).collect();
+        let current_keys: Vec<String> = current.iter().map(finding_key).collect();
+        let mut fixed = previous
+            .iter()
+            .filter(|finding| !current_keys.contains(&finding_key(finding)))
+            .map(ComparedFinding::from_vulnerability)
+            .collect::<Vec<_>>();
+        let mut new = current
+            .iter()
+            .filter(|finding| !previous_keys.contains(&finding_key(finding)))
+            .map(ComparedFinding::from_vulnerability)
+            .collect::<Vec<_>>();
+        sort_comparison(&mut fixed);
+        sort_comparison(&mut new);
+        let persisting = current_keys
+            .iter()
+            .filter(|key| previous_keys.contains(key))
+            .count();
+        Self {
+            previous_scan_id: previous_scan_id.to_string(),
+            previous_completed_at: previous_completed_at.to_string(),
+            previous_count: previous.len(),
+            current_count: current.len(),
+            fixed,
+            new,
+            persisting,
+        }
+    }
+
+    pub fn has_previous(&self) -> bool {
+        !self.previous_scan_id.is_empty()
+    }
+
+    pub fn sanitized(&self) -> Self {
+        Self {
+            previous_scan_id: crate::utils::redaction::sanitize_text(&self.previous_scan_id),
+            previous_completed_at: self.previous_completed_at.clone(),
+            previous_count: self.previous_count,
+            current_count: self.current_count,
+            fixed: self.fixed.iter().map(ComparedFinding::sanitized).collect(),
+            new: self.new.iter().map(ComparedFinding::sanitized).collect(),
+            persisting: self.persisting,
+        }
+    }
+}
+
+fn severity_order(severity: Severity) -> u8 {
+    match severity {
+        Severity::Critical => 0,
+        Severity::High => 1,
+        Severity::Medium => 2,
+        Severity::Low => 3,
+        Severity::Info => 4,
+    }
+}
+
+fn sort_comparison(findings: &mut [ComparedFinding]) {
+    findings.sort_by(|left, right| {
+        severity_order(left.severity)
+            .cmp(&severity_order(right.severity))
+            .then(left.title.cmp(&right.title))
+    });
+}
+
+fn normalize_comparison_text(value: &str) -> String {
+    value
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalize_comparison_target(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_lowercase()
+}
+
+fn finding_key(finding: &Vulnerability) -> String {
+    format!(
+        "{}|{}|{}",
+        normalize_comparison_text(&finding.tool),
+        normalize_comparison_text(&finding.title),
+        normalize_comparison_target(&finding.target)
+    )
+}
+
+/// Compara a execução atual com a última execução do mesmo alvo iniciada antes
+/// dela. Não grava nada; é chamado ao montar o log e no replay de logs antigos.
+pub fn comparison_with_previous(
+    target_url: &str,
+    current_started_at: &str,
+    current_scan_id: &str,
+    current: &[Vulnerability],
+) -> ScanComparison {
+    let Ok(history) = list_scan_logs_from_dir(&scans_dir()) else {
+        return ScanComparison::default();
+    };
+    let target = normalize_comparison_target(&crate::utils::redaction::sanitize_url(target_url));
+    let mut candidates = history
+        .records
+        .into_iter()
+        .filter(|record| {
+            record.scan_id != current_scan_id
+                && normalize_comparison_target(&record.target_url) == target
+                && (current_started_at.is_empty()
+                    || record.started_at.as_str() < current_started_at)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .started_at
+            .cmp(&left.started_at)
+            .then(right.completed_at.cmp(&left.completed_at))
+    });
+    for record in candidates {
+        let Ok(previous) = load_scan_log_from_file(&record.file_path) else {
+            continue;
+        };
+        let previous_findings = previous
+            .findings
+            .iter()
+            .filter_map(|value| serde_json::from_value::<Vulnerability>(value.clone()).ok())
+            .collect::<Vec<_>>();
+        return ScanComparison::between(
+            &previous.scan_id,
+            &previous.completed_at,
+            &previous_findings,
+            current,
+        );
+    }
+    ScanComparison::default()
 }
 
 /// Contagem de achados por severidade usada na listagem do histórico.
@@ -350,6 +916,9 @@ impl ScanMetadata {
             rag_ontology_verdict: String::new(),
             rag_failure_reason: None,
             rag_explanations_count: 0,
+            rag_explanations: Vec::new(),
+            comparison: ScanComparison::default(),
+            runtime: ScanRuntime::default(),
         }
     }
 
@@ -387,8 +956,9 @@ impl ScanMetadata {
         result: &crate::cyberrag::service::ExplanationResult,
     ) -> Self {
         self.rag_explanations_count += 1;
+        self.rag_explanations.push(result.clone());
         self.rag_ontology_verdict =
-            crate::utils::redaction::sanitize_diagnostic(&result.verdict.summary());
+            crate::utils::redaction::sanitize_diagnostic(&result.verdict_summary());
         self.rag_failure_reason = result
             .failure_reason
             .as_deref()
@@ -505,6 +1075,13 @@ impl ScanMetadata {
                 .as_deref()
                 .map(crate::utils::redaction::sanitize_diagnostic),
             rag_explanations_count: self.rag_explanations_count,
+            rag_explanations: self
+                .rag_explanations
+                .iter()
+                .map(crate::cyberrag::service::ExplanationResult::sanitized)
+                .collect(),
+            comparison: self.comparison.sanitized(),
+            runtime: self.runtime.sanitized(),
         }
     }
 }
@@ -524,14 +1101,93 @@ fn sanitize_tool_call_record(
     }
 }
 
+/// Cria um diretório privado do usuário (0700 no Unix).
+pub(crate) fn secure_dir(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Grava um arquivo privado (0600 no Unix) de forma atômica.
+///
+/// O checkpoint é reescrito enquanto o scan roda; gravar direto no destino
+/// deixaria um JSON truncado se o processo morresse no meio da escrita. O
+/// temporário no mesmo diretório e o `rename` preservam o último válido.
+fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "scan.json".to_string());
+    let temp = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let write_result = (|| -> std::io::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temp)?;
+            file.write_all(data.as_bytes())?;
+            file.sync_all()?;
+            fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        if let Err(error) = fs::rename(&temp, path) {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let write_result = fs::write(&temp, data);
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        if let Err(error) = fs::rename(&temp, path) {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 /// Retorna o diretório base para armazenamento de logs de scans.
 pub fn scans_dir() -> PathBuf {
-    let base = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("smartsec")
-        .join("scans");
-    let _ = fs::create_dir_all(&base);
-    base
+    #[cfg(test)]
+    {
+        // Testes unitários nunca escrevem no histórico real do usuário.
+        let base = std::env::var_os("SMARTSEC_TEST_SCANS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("smartsec-test-scans-{}", std::process::id()))
+            });
+        let _ = secure_dir(&base);
+        base
+    }
+    #[cfg(not(test))]
+    {
+        let base = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("smartsec")
+            .join("scans");
+        let _ = secure_dir(&base);
+        base
+    }
 }
 
 /// Salva os metadados de um scan em arquivo JSON estruturado.
@@ -541,8 +1197,20 @@ pub fn save_scan_log(metadata: &ScanMetadata) -> Result<PathBuf> {
 }
 
 /// Salva os metadados em um diretório específico (útil para testes).
-pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Result<PathBuf> {
-    fs::create_dir_all(target_dir).context("Falha ao criar diretório de scans")?;
+pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &Path) -> Result<PathBuf> {
+    if metadata.scan_id.is_empty()
+        || metadata
+            .scan_id
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
+        || metadata.scan_id.contains("..")
+    {
+        anyhow::bail!(
+            "scan_id inválido para gravação: \"{}\"; não pode conter separador de caminho",
+            metadata.scan_id
+        );
+    }
+    secure_dir(target_dir).context("Falha ao criar diretório de scans")?;
     let metadata = metadata.sanitized();
     let filename = format!("{}.json", metadata.scan_id);
     let path = target_dir.join(filename);
@@ -550,7 +1218,7 @@ pub fn save_scan_log_to_dir(metadata: &ScanMetadata, target_dir: &PathBuf) -> Re
     let json_data = serde_json::to_string_pretty(&metadata)
         .context("Falha ao serializar metadados do scan para JSON")?;
 
-    fs::write(&path, json_data)
+    write_private(&path, &json_data)
         .with_context(|| format!("Falha ao gravar arquivo de scan em {:?}", path))?;
 
     Ok(path)
@@ -673,14 +1341,19 @@ pub fn is_valid_scan_id(scan_id: &str) -> bool {
 /// Rejeita path traversal e qualquer id fora do padrão `scan_<nanos>`; o id nunca
 /// pode apontar para fora do diretório de histórico.
 pub fn scan_log_path(scan_id: &str) -> Result<PathBuf> {
+    scan_log_path_in_dir(scan_id, &scans_dir())
+}
+
+/// Resolve o caminho de um `scan_id` em um diretório qualquer (usado pelos
+/// testes para isolar o checkpoint do diretório real do usuário).
+pub fn scan_log_path_in_dir(scan_id: &str, dir: &Path) -> Result<PathBuf> {
     if !is_valid_scan_id(scan_id) {
         anyhow::bail!(
             "identificador de execução inválido: {scan_id}; esperado no formato scan_<nanos>"
         );
     }
-    let dir = scans_dir();
     let path = dir.join(format!("{scan_id}.json"));
-    debug_assert_eq!(path.parent(), Some(dir.as_path()));
+    debug_assert_eq!(path.parent(), Some(dir));
     Ok(path)
 }
 
@@ -981,6 +1654,169 @@ mod tests {
     }
 
     #[test]
+    fn scan_comparison_classifies_fixed_new_and_persisting_findings() {
+        let finding = |title: &str, severity: Severity| Vulnerability {
+            title: title.to_string(),
+            severity,
+            description: String::new(),
+            tool: "Nuclei".to_string(),
+            recommendation: String::new(),
+            didactic: String::new(),
+            source: FindingSource::Real,
+            target: "http://alvo.local/".to_string(),
+            evidence: String::new(),
+            detected_at: "2026-10-24T10:00:00Z".to_string(),
+            ..Default::default()
+        };
+        let previous = vec![
+            finding("Cabeçalho ausente", Severity::High),
+            finding("Versão exposta", Severity::Low),
+            finding("Painel aberto", Severity::Critical),
+        ];
+        let current = vec![
+            finding("Cabeçalho ausente", Severity::High),
+            finding("Painel aberto", Severity::Critical),
+            finding("Segredo no código", Severity::Medium),
+        ];
+
+        let comparison =
+            ScanComparison::between("scan_anterior", "2026-10-24T09:00:00Z", &previous, &current);
+
+        assert!(comparison.has_previous());
+        assert_eq!(comparison.previous_scan_id, "scan_anterior");
+        assert_eq!(comparison.previous_completed_at, "2026-10-24T09:00:00Z");
+        assert_eq!(comparison.previous_count, 3);
+        assert_eq!(comparison.current_count, 3);
+        assert_eq!(comparison.persisting, 2);
+        assert_eq!(
+            comparison
+                .fixed
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Versão exposta"],
+            "o achado que sumiu é o corrigido"
+        );
+        assert_eq!(
+            comparison
+                .new
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Segredo no código"],
+            "o achado inédito é o novo"
+        );
+
+        let unchanged = ScanComparison::between("scan_anterior", "", &previous, &previous);
+        assert!(unchanged.fixed.is_empty());
+        assert!(unchanged.new.is_empty());
+        assert_eq!(unchanged.persisting, previous.len());
+    }
+
+    /// A ordenação do painel é por severidade mesmo quando os títulos chegam
+    /// fora de ordem; é ela que garante que o corrigido crítico apareça antes
+    /// do informativo.
+    #[test]
+    fn scan_comparison_orders_fixed_findings_by_severity() {
+        let finding = |title: &str, severity: Severity| Vulnerability {
+            title: title.to_string(),
+            severity,
+            tool: "Nuclei".to_string(),
+            target: "http://alvo.local".to_string(),
+            ..Default::default()
+        };
+        let previous = vec![
+            finding("Zeta informativo", Severity::Info),
+            finding("Alfa crítico", Severity::Critical),
+            finding("Beta médio", Severity::Medium),
+        ];
+
+        let comparison = ScanComparison::between("scan_anterior", "", &previous, &[]);
+
+        assert_eq!(
+            comparison
+                .fixed
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alfa crítico", "Beta médio", "Zeta informativo"]
+        );
+    }
+
+    /// A comparação também é conteúdo do log: título e alvo precisam sair
+    /// sanitizados, como os demais campos que sobrevivem ao scan.
+    #[test]
+    fn the_scan_comparison_is_sanitized_before_persistence() {
+        let metadata = ScanMetadata {
+            scan_id: "scan_comparacao".to_string(),
+            target_url: "https://alvo.local".to_string(),
+            started_at: "2026-10-24T10:00:00Z".to_string(),
+            completed_at: "2026-10-24T10:05:00Z".to_string(),
+            execution_type: "Auto".to_string(),
+            llm_provider: "Ollama".to_string(),
+            findings: Vec::new(),
+            agent_analysis: String::new(),
+            comparison: ScanComparison {
+                previous_scan_id: "scan_anterior".to_string(),
+                previous_completed_at: "2026-10-24T09:00:00Z".to_string(),
+                previous_count: 1,
+                current_count: 0,
+                fixed: vec![ComparedFinding {
+                    title: "api_key exposta".to_string(),
+                    severity: Severity::High,
+                    tool: "TruffleHog".to_string(),
+                    target: "https://alvo.local/path?token=secret".to_string(),
+                    file: Some("src/app.py".to_string()),
+                    line: Some(12),
+                }],
+                new: Vec::new(),
+                persisting: 0,
+            },
+            ..Default::default()
+        };
+
+        let sanitized = metadata.sanitized();
+
+        assert_eq!(sanitized.comparison.fixed[0].title, "[REDACTED]");
+        assert_eq!(
+            sanitized.comparison.fixed[0].target,
+            "https://alvo.local/path"
+        );
+        assert_eq!(sanitized.comparison.fixed[0].line, Some(12));
+        assert_eq!(sanitized.comparison.previous_scan_id, "scan_anterior");
+    }
+
+    /// Log gravado antes da comparação não tem a chave: precisa continuar
+    /// carregando, e o campo ausente vira "sem execução anterior".
+    #[test]
+    fn a_scan_log_written_before_the_comparison_still_loads() {
+        let mut metadata = ScanMetadata::new(
+            "scan-sem-comparacao".to_string(),
+            "http://alvo.local".to_string(),
+            "2026-10-24T10:00:00Z".to_string(),
+            "2026-10-24T10:05:00Z".to_string(),
+            "Auto".to_string(),
+            "Ollama".to_string(),
+            Vec::new(),
+            Vec::new(),
+            "Análise concluída".to_string(),
+        );
+        metadata.comparison = ScanComparison::between("scan_anterior", "", &[], &[]);
+        let mut legacy = serde_json::to_value(&metadata).unwrap();
+        legacy
+            .as_object_mut()
+            .expect("metadado serializado")
+            .remove("comparison");
+
+        let restored: ScanMetadata =
+            serde_json::from_value(legacy).expect("histórico sem comparação");
+
+        assert!(!restored.comparison.has_previous());
+        assert!(restored.comparison.fixed.is_empty());
+        assert_eq!(restored.scan_id, "scan-sem-comparacao");
+    }
+
+    #[test]
     fn scan_metadata_from_an_earlier_version_without_llm_provenance_still_loads() {
         let metadata = ScanMetadata::new(
             "scan-legado".to_string(),
@@ -1075,10 +1911,168 @@ mod tests {
             serde_json::from_value(restored.findings[0].clone()).expect("achado legado");
         assert!(finding.code_location.is_none());
         assert!(finding.code_remediation.is_empty());
+
+        // O log anterior ao checkpoint incremental não tem `runtime`.
+        assert_eq!(restored.runtime.phase, "");
+        assert!(restored.runtime.current_tool.is_none());
+        assert!(restored.runtime.ai_in_progress.is_none());
+        assert!(restored.runtime.code_in_progress.is_none());
+        assert!(restored.runtime.partial_code_analyses.is_empty());
+        assert_eq!(restored.runtime.last_checkpoint_at, "");
+    }
+
+    /// O runtime é conteúdo do arquivo que sobrevive ao scan: argumentos de
+    /// ferramenta, saída parcial e resumo do turno não podem levar segredo nem
+    /// corpo HTTP para o disco.
+    #[test]
+    fn the_runtime_checkpoint_is_sanitized_before_persistence() {
+        let metadata = ScanMetadata {
+            scan_id: "scan_runtime_segredo".to_string(),
+            target_url: "https://alvo.local".to_string(),
+            started_at: "2026-10-24T10:00:00Z".to_string(),
+            completed_at: String::new(),
+            execution_type: "Auto".to_string(),
+            llm_provider: "OpenAI".to_string(),
+            runtime: ScanRuntime {
+                phase: PHASE_TOOLS.to_string(),
+                current_tool: Some(ToolCheckpoint {
+                    tool_name: "Nuclei".to_string(),
+                    arguments: vec![
+                        "https://alvo.local/path?token=secret".to_string(),
+                        "api_key=sk-secreto-real".to_string(),
+                    ],
+                    started_at: "2026-10-24T10:00:01Z".to_string(),
+                    status: "running".to_string(),
+                    output_bytes: 40,
+                    output_partial: "Authorization: Bearer secret\nrequest: secret".to_string(),
+                    finished_at: String::new(),
+                }),
+                ai_in_progress: Some(AiCheckpoint {
+                    started_at: "2026-10-24T10:00:02Z".to_string(),
+                    provider: "OpenAI".to_string(),
+                    model: "gpt-4o".to_string(),
+                    prompt_summary: "api_key=sk-secreto-real".to_string(),
+                    findings_count: 1,
+                }),
+                code_in_progress: Some(CodeCheckpoint {
+                    finding_index: 2,
+                    finding_title: "api_key exposta".to_string(),
+                    file: Some("src/app.py".to_string()),
+                    line: Some(12),
+                    started_at: "2026-10-24T10:00:03Z".to_string(),
+                }),
+                partial_code_analyses: vec![CodeAnalysisCheckpoint {
+                    finding_index: 0,
+                    finding_title: "token no código".to_string(),
+                    file: Some("src/config.py".to_string()),
+                    line: Some(4),
+                    located: true,
+                    reason: Some("token=secret".to_string()),
+                    remediation: vec!["remova api_key=secret".to_string()],
+                    tool_calls: 1,
+                    provider: "OpenAI".to_string(),
+                    model: "gpt-4o".to_string(),
+                    finished_at: "2026-10-24T10:00:04Z".to_string(),
+                }],
+                last_checkpoint_at: "2026-10-24T10:00:05Z".to_string(),
+                checkpoint_reason: "em execução".to_string(),
+            },
+            ..Default::default()
+        };
+
+        let sanitized = metadata.sanitized();
+        let runtime = &sanitized.runtime;
+        let tool = runtime.current_tool.as_ref().expect("ferramenta atual");
+        assert!(!tool.arguments.join(" ").contains("secret"));
+        assert!(!tool.output_partial.contains("secret"));
+        assert!(!runtime
+            .ai_in_progress
+            .as_ref()
+            .expect("turno da IA")
+            .prompt_summary
+            .contains("sk-secreto-real"));
+        let code = runtime.code_in_progress.as_ref().expect("código atual");
+        assert_eq!(code.file.as_deref(), Some("src/app.py"));
+        assert_eq!(code.line, Some(12));
+        assert_eq!(code.finding_index, 2);
+        let partial = &runtime.partial_code_analyses[0];
+        assert_eq!(partial.finding_index, 0);
+        assert_eq!(partial.file.as_deref(), Some("src/config.py"));
+        assert!(!partial
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("secret"));
+        assert!(!partial.remediation.join(" ").contains("secret"));
     }
 
     /// A fase do agente de código precisa ser auditável: diretório lido,
     /// contagens e o registro de cada chamada de ferramenta.
+    /// O flush de streaming relê o JSON e troca só o runtime: achados e
+    /// ferramentas já gravados não podem desaparecer no checkpoint seguinte.
+    #[test]
+    fn a_streaming_checkpoint_does_not_erase_the_rest_of_the_scan() {
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec-checkpoint-merge-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let metadata = ScanMetadata::new(
+            "scan_1000000000000000999".to_string(),
+            "http://alvo.local".to_string(),
+            "2026-10-24T10:00:00Z".to_string(),
+            "2026-10-24T10:05:00Z".to_string(),
+            "Auto".to_string(),
+            "Ollama".to_string(),
+            vec![ToolExecutionRecord {
+                tool_name: "Nmap".to_string(),
+                arguments: vec!["-sT".to_string()],
+                executed_at: "2026-10-24T10:00:30Z".to_string(),
+                output_bytes: 10,
+                output_sample: "porta aberta".to_string(),
+                stdout: "porta aberta".to_string(),
+                stderr: String::new(),
+                status: "succeeded".to_string(),
+                duration_ms: 30,
+                tool_version: None,
+                image: None,
+                execution_error: None,
+                podman_trace: Vec::new(),
+            }],
+            Vec::new(),
+            "análise".to_string(),
+        );
+        let path = save_scan_log_to_dir(&metadata, &dir).expect("log inicial");
+
+        let runtime = Arc::new(Mutex::new(ScanRuntime {
+            phase: PHASE_TOOLS.to_string(),
+            current_tool: Some(ToolCheckpoint {
+                tool_name: "Nuclei".to_string(),
+                status: TOOL_STATUS_RUNNING.to_string(),
+                ..ToolCheckpoint::default()
+            }),
+            ..ScanRuntime::default()
+        }));
+        let handle = CheckpointHandle::new(
+            scan_log_path_in_dir(&metadata.scan_id, &dir).expect("caminho do checkpoint"),
+            Arc::clone(&runtime),
+            Arc::new(Mutex::new(())),
+        );
+        handle.append_tool_log("linha em streaming");
+        handle.flush().expect("flush do checkpoint");
+
+        let loaded = load_scan_log_from_file(&path).expect("checkpoint relido");
+        assert_eq!(loaded.tools_executed.len(), 1);
+        assert_eq!(loaded.tools_executed[0].tool_name, "Nmap");
+        assert_eq!(
+            loaded.runtime.current_tool.unwrap().output_partial,
+            "linha em streaming"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_code_agent_phase_is_recorded_with_its_audit_trail() {
         use crate::code_agent::agent::{CodeAnalysisReport, FindingCodeAnalysis, ToolCallRecord};
@@ -1140,6 +2134,7 @@ mod tests {
         let approved = ExplanationResult {
             finding_index: 0,
             text: "Explicação".to_string(),
+            conceito: "injecao_sql".to_string(),
             example: None,
             claims: vec![OntologyClaim {
                 sujeito: "injecao_sql".to_string(),
@@ -1183,6 +2178,7 @@ mod tests {
         // Cada explicação é registrada; o veredito do log é o da mais recente.
         let metadata = metadata.with_rag_explanation(&refused);
         assert_eq!(metadata.rag_explanations_count, 1);
+        assert_eq!(metadata.rag_explanations.len(), 1);
         assert!(
             metadata.rag_ontology_verdict.contains("reprovada"),
             "{}",
@@ -1710,5 +2706,41 @@ mod tests {
 
         assert!(capped.chars().count() <= MAX_LOG_TRACE_LINE_CHARS + 1);
         assert_eq!(capped_trace_line("curta"), "curta");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_scan_log_and_directory_are_private_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "smartsec-permissoes-scan-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let metadata = ScanMetadata::new(
+            "scan_1757000000000000777".to_string(),
+            "http://alvo.local".to_string(),
+            "2026-10-22T12:00:00Z".to_string(),
+            "2026-10-22T12:01:00Z".to_string(),
+            "Auto".to_string(),
+            "OpenAI".to_string(),
+            Vec::new(),
+            Vec::new(),
+            String::new(),
+        );
+
+        let path = save_scan_log_to_dir(&metadata, &dir).expect("gravação");
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

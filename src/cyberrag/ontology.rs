@@ -7,7 +7,7 @@
 //! ontologia é autoral — nada copiado do repo de referência (sem licença).
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -53,20 +53,20 @@ struct OntologyFile {
     triplas: Vec<OntologyTriple>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OntologyClaim {
     pub sujeito: String,
     pub relacao: String,
     pub objeto: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimRejection {
     pub claim: OntologyClaim,
     pub motivo: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OntologyVerdict {
     /// Só aprova com ≥1 afirmação e nenhuma rejeição.
     pub aprovado: bool,
@@ -250,6 +250,29 @@ impl Ontology {
             .collect()
     }
 
+    pub fn resolve_entity_id(&self, value: &str) -> Option<&str> {
+        self.entity_by_label
+            .get(&normalize_label(value))
+            .map(String::as_str)
+    }
+
+    pub fn resolve_relation_id(&self, value: &str) -> Option<&str> {
+        self.relation_by_label
+            .get(&normalize_label(value))
+            .map(String::as_str)
+    }
+
+    pub fn triples_for_subject(&self, subject: &str) -> Vec<(String, String, String)> {
+        let Some(subject) = self.resolve_entity_id(subject) else {
+            return Vec::new();
+        };
+        self.triples
+            .iter()
+            .filter(|(triple_subject, _, _)| triple_subject == subject)
+            .cloned()
+            .collect()
+    }
+
     pub fn triples_of(&self, relation: &str) -> Vec<(&str, &str)> {
         self.triples
             .iter()
@@ -272,6 +295,12 @@ impl Ontology {
                 "- {} · {} · {}\n",
                 relation.id, relation.rotulo, relation.descricao
             ));
+        }
+        // O modelo precisa das triplas, não só de entidades e relações.
+        vocabulary
+            .push_str("\nTriplas válidas (sujeito · relação · objeto) — use somente estas:\n");
+        for (subject, relation, object) in &self.triples {
+            vocabulary.push_str(&format!("- {subject} · {relation} · {object}\n"));
         }
         vocabulary
     }

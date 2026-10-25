@@ -13,8 +13,59 @@ use std::path::{Component, Path, PathBuf};
 /// Marcador acrescentado quando um arquivo é lido parcialmente.
 pub const TRUNCATION_MARKER: &str = "[... truncado:";
 
-const SKIPPED_DIRECTORIES: &[&str] = &[".git", "target", "node_modules", "dist", "build"];
+const SKIPPED_DIRECTORIES: &[&str] = &[
+    ".git",
+    ".ai",
+    ".claude",
+    ".svn",
+    ".hg",
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+];
 const BINARY_SAMPLE_BYTES: usize = 8 * 1024;
+
+/// Extensões de código e configuração que a busca deve entregar primeiro.
+const CODE_EXTENSIONS: &[&str] = &[
+    "rs",
+    "py",
+    "js",
+    "jsx",
+    "ts",
+    "tsx",
+    "go",
+    "java",
+    "kt",
+    "rb",
+    "php",
+    "c",
+    "h",
+    "cc",
+    "cpp",
+    "hpp",
+    "cs",
+    "swift",
+    "sh",
+    "bash",
+    "sql",
+    "html",
+    "css",
+    "scss",
+    "vue",
+    "svelte",
+    "toml",
+    "yaml",
+    "yml",
+    "json",
+    "ini",
+    "conf",
+    "cfg",
+    "env",
+    "properties",
+    "dockerfile",
+    "tf",
+];
 
 /// Ocorrência de um termo em um arquivo do workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +184,18 @@ impl Workspace {
         requested: &str,
         max_bytes: Option<usize>,
     ) -> Result<String, WorkspaceError> {
+        Ok(sanitize_text(&self.read_text_raw(requested, max_bytes)?))
+    }
+
+    /// Leitura crua para a prévia local da TUI.
+    ///
+    /// Mantém a política de caminho/tamanho de `read_text`, mas sem a
+    /// sanitização conservadora que apagaria linhas inteiras de código.
+    pub(crate) fn read_text_raw(
+        &self,
+        requested: &str,
+        max_bytes: Option<usize>,
+    ) -> Result<String, WorkspaceError> {
         let max_bytes = max_bytes
             .filter(|value| *value > 0)
             .unwrap_or(self.max_file_bytes);
@@ -149,7 +212,7 @@ impl Workspace {
             .read_to_end(&mut buffer)
             .map_err(|error| map_io(requested, error))?;
         let (text, _) = truncate_bytes(&buffer, max_bytes, metadata.len());
-        Ok(sanitize_text(&text))
+        Ok(text)
     }
 
     /// Lista as entradas de um diretório em ordem determinística, marcando
@@ -182,19 +245,36 @@ impl Workspace {
     /// Busca textual recursiva no workspace, pulando diretórios de build,
     /// arquivos binários e arquivos maiores que o limite configurado.
     pub fn search(&self, term: &str, max_results: usize) -> Result<Vec<SearchHit>, WorkspaceError> {
+        self.search_any(&[term], max_results)
+    }
+
+    /// Busca por qualquer um dos termos em uma única passagem pelo workspace.
+    ///
+    /// Uma passagem só é necessária porque o localizador de portas testa vários
+    /// formatos (`EXPOSE 3000`, `containerPort: 3000`, `listen(3000)`); repetir
+    /// `search` por formato releria o projeto inteiro.
+    pub fn search_any(
+        &self,
+        terms: &[&str],
+        max_results: usize,
+    ) -> Result<Vec<SearchHit>, WorkspaceError> {
+        let needles: Vec<String> = terms
+            .iter()
+            .map(|term| term.to_ascii_lowercase())
+            .filter(|term| !term.is_empty())
+            .collect();
         let mut hits = Vec::new();
-        let needle = term.to_ascii_lowercase();
-        if needle.is_empty() || max_results == 0 {
+        if needles.is_empty() || max_results == 0 {
             return Ok(hits);
         }
-        self.search_directory(&self.root, &needle, max_results, &mut hits);
+        self.search_directory(&self.root, &needles, max_results, &mut hits);
         Ok(hits)
     }
 
     fn search_directory(
         &self,
         directory: &Path,
-        needle: &str,
+        needles: &[String],
         max_results: usize,
         hits: &mut Vec<SearchHit>,
     ) {
@@ -217,25 +297,97 @@ impl Workspace {
             } else if !file_type.is_file() {
                 continue;
             }
-            paths.push(entry.path());
+            let path = entry.path();
+            paths.push((search_rank(&path, file_type.is_dir()), path));
         }
         paths.sort();
-        for path in paths {
+        for (_, path) in paths {
             if hits.len() >= max_results {
                 return;
             }
             if path.is_dir() {
-                self.search_directory(&path, needle, max_results, hits);
+                self.search_directory(&path, needles, max_results, hits);
             } else {
-                self.search_file(&path, needle, max_results, hits);
+                self.search_file(&path, needles, max_results, hits);
             }
+        }
+    }
+
+    /// Índice leve da árvore do projeto, sem LLM.
+    ///
+    /// Devolve diretórios e arquivos de entrada/configuração em ordem
+    /// determinística, podando diretórios de build e ocultos. É o que permite ao
+    /// modelo começar pela estrutura em vez de gastar chamadas de `list_dir`
+    /// repetidas na raiz.
+    pub fn overview(&self, max_entries: usize, max_depth: usize) -> String {
+        let mut lines = Vec::new();
+        self.overview_directory(&self.root, 0, max_depth, max_entries, &mut lines);
+        if lines.is_empty() {
+            "(projeto vazio)".to_string()
+        } else {
+            lines.join("\n")
+        }
+    }
+
+    fn overview_directory(
+        &self,
+        directory: &Path,
+        depth: usize,
+        max_depth: usize,
+        max_entries: usize,
+        lines: &mut Vec<String>,
+    ) {
+        if lines.len() >= max_entries {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if file_type.is_dir() {
+                if name.starts_with('.') || SKIPPED_DIRECTORIES.contains(&name.as_str()) {
+                    continue;
+                }
+                dirs.push((name, entry.path()));
+            } else if file_type.is_file() && is_entrypoint_file(&name) {
+                files.push(name);
+            }
+        }
+        dirs.sort_by(|left, right| left.0.cmp(&right.0));
+        files.sort();
+        for name in files {
+            if lines.len() >= max_entries {
+                return;
+            }
+            let relative = directory.strip_prefix(&self.root).unwrap_or(directory);
+            lines.push(relative.join(&name).to_string_lossy().replace('\\', "/"));
+        }
+        if depth >= max_depth {
+            return;
+        }
+        for (_name, path) in dirs {
+            if lines.len() >= max_entries {
+                return;
+            }
+            let relative = path.strip_prefix(&self.root).unwrap_or(&path);
+            lines.push(format!(
+                "{}/",
+                relative.to_string_lossy().replace('\\', "/")
+            ));
+            self.overview_directory(&path, depth + 1, max_depth, max_entries, lines);
         }
     }
 
     fn search_file(
         &self,
         path: &Path,
-        needle: &str,
+        needles: &[String],
         max_results: usize,
         hits: &mut Vec<SearchHit>,
     ) {
@@ -265,7 +417,8 @@ impl Workspace {
             if hits.len() >= max_results {
                 return;
             }
-            if line.to_ascii_lowercase().contains(needle) {
+            let lower = line.to_ascii_lowercase();
+            if needles.iter().any(|needle| lower.contains(needle)) {
                 hits.push(SearchHit {
                     path: relative.clone(),
                     line: index + 1,
@@ -274,6 +427,83 @@ impl Workspace {
             }
         }
     }
+}
+
+/// Prioridade de varredura dentro de um diretório.
+///
+/// Código e configuração vêm antes dos diretórios e dos arquivos restantes:
+/// com o teto de resultados, a busca entrega a origem provável primeiro em vez
+/// de gastar o limite em README, imagens e lockfiles.
+fn search_rank(path: &Path, is_dir: bool) -> u8 {
+    if is_dir {
+        return 1;
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if matches!(
+        name.as_str(),
+        "cargo.lock"
+            | "package-lock.json"
+            | "yarn.lock"
+            | "pnpm-lock.yaml"
+            | "go.sum"
+            | "poetry.lock"
+            | "composer.lock"
+            | "pipfile.lock"
+    ) {
+        return 2;
+    }
+    if name == "dockerfile" || name == "makefile" {
+        return 0;
+    }
+    match path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+    {
+        Some(extension) if CODE_EXTENSIONS.contains(&extension.as_str()) => 0,
+        _ => 2,
+    }
+}
+
+fn is_entrypoint_file(name: &str) -> bool {
+    const NAMES: &[&str] = &[
+        "cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+        "requirements.txt",
+        "dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yml",
+        "compose.yaml",
+        "makefile",
+        "readme.md",
+    ];
+    let lower = name.to_ascii_lowercase();
+    if NAMES.contains(&lower.as_str()) {
+        return true;
+    }
+    if [
+        "main.",
+        "lib.",
+        "index.",
+        "app.",
+        "server.",
+        "config.",
+        "settings.",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+    {
+        return true;
+    }
+    matches!(
+        lower.rsplit_once('.').map(|(_, extension)| extension),
+        Some("toml" | "yaml" | "yml" | "json" | "ini" | "conf" | "cfg" | "env")
+    )
 }
 
 fn map_io(requested: &str, error: std::io::Error) -> WorkspaceError {
@@ -454,6 +684,29 @@ mod tests {
     }
 
     #[test]
+    fn search_any_matches_every_term_in_a_single_pass() {
+        let workspace = fixture_workspace();
+
+        let hits = workspace
+            .search_any(&["EXEMPLO_SECRET", "DEBUG"], 10)
+            .unwrap();
+        let locations: Vec<(String, usize)> = hits
+            .iter()
+            .map(|hit| (hit.path.clone(), hit.line))
+            .collect();
+        assert_eq!(
+            locations,
+            vec![
+                ("src/config.py".to_owned(), 2),
+                ("src/config.py".to_owned(), 3),
+            ]
+        );
+        assert!(hits
+            .iter()
+            .all(|hit| !hit.text.contains("valor-de-exemplo")));
+    }
+
+    #[test]
     fn search_skips_ignored_directories_binary_and_large_files() {
         let root = temp_workspace("search-skips");
         fs::write(root.join("texto.txt"), "login permitido\n").unwrap();
@@ -472,6 +725,62 @@ mod tests {
         assert_eq!(hits[0].path, "texto.txt");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_prefers_code_and_configuration_over_documentation() {
+        let root = temp_workspace("search-prioridade");
+        fs::write(root.join("README.md"), "login documentado\n").unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/app.py"), "login implementado\n").unwrap();
+        fs::write(root.join("config.yaml"), "login: configuração\n").unwrap();
+        let workspace = Workspace::open(&root).unwrap();
+
+        let hits = workspace.search("login", 2).unwrap();
+
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(
+            hits.iter().all(|hit| hit.path != "README.md"),
+            "o teto de resultados não pode ser gasto em documentação: {hits:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_skips_agent_and_tooling_directories_by_default() {
+        let root = temp_workspace("search-agentes");
+        fs::write(root.join("app.py"), "login permitido\n").unwrap();
+        for skipped in [".ai", ".claude"] {
+            let directory = root.join(skipped);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("instrucoes.py"), "login ignorado\n").unwrap();
+        }
+        let workspace = Workspace::open(&root).unwrap();
+
+        let hits = workspace.search("login", 10).unwrap();
+
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].path, "app.py");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn overview_lists_directories_and_entrypoints_without_build_noise() {
+        let workspace = fixture_workspace();
+
+        let overview = workspace.overview(80, 3);
+
+        assert!(overview.contains("src/"), "{overview}");
+        assert!(overview.contains("src/app.py"), "{overview}");
+        assert!(overview.contains("README.md"), "{overview}");
+        for skipped in ["target", "node_modules", "build", "dist"] {
+            assert!(
+                !overview.contains(skipped),
+                "o índice não pode listar {skipped}: {overview}"
+            );
+        }
     }
 
     #[test]

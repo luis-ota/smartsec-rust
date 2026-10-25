@@ -728,7 +728,10 @@ fn field_value(app: &AppState, field: SettingsField) -> (String, bool) {
                     false,
                 )
             } else {
-                ("•••••••• · guardada no keyring".to_string(), false)
+                (
+                    "•••••••• · guardada no arquivo local 0600".to_string(),
+                    false,
+                )
             }
         }
         SettingsField::Model => {
@@ -845,7 +848,7 @@ fn field_help(field: SettingsField) -> (&'static str, &'static str) {
             "https://integrate.api.nvidia.com/v1",
         ),
         SettingsField::ApiKey => (
-            "Chave de acesso do provedor, como uma senha; fica no keyring do sistema.",
+            "Chave de acesso do provedor, como uma senha; fica no arquivo local 0600 (auth.json).",
             "nvapi-… (NVIDIA) ou sk-… (OpenAI); copie a chave do site do provedor",
         ),
         SettingsField::Model => (
@@ -1424,6 +1427,21 @@ mod tests {
 
         assert!(screen.contains("Ajuda · Envio remoto"), "{screen}");
         assert!(screen.contains("Espaço alterna"), "{screen}");
+    }
+
+    #[test]
+    fn the_summary_marks_an_environment_key_as_session_only() {
+        let mut app = remote_app();
+        app.config.llm.credential_from_env = true;
+        app.show_settings = true;
+        app.reset_settings_draft();
+
+        let screen = draw(&mut app, 100, 24);
+
+        assert!(
+            screen.contains("chave da sessão (SMARTSEC_API_KEY)"),
+            "{screen}"
+        );
     }
 
     /// O resumo responde "o que acontece se eu salvar" no estado do rascunho.

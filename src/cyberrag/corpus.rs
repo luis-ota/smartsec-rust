@@ -15,6 +15,21 @@ pub struct CodeExample {
     pub corrigido: String,
 }
 
+/// Guia de um cabeçalho específico dentro da classe genérica de cabeçalhos.
+///
+/// A classe agregada dizia que "cabeçalho ausente" mitiga XSS e clickjacking,
+/// o que fazia o modelo atribuir o efeito errado a Permissions-Policy, COOP ou
+/// HSTS. O guia separa efeito próprio, o que o cabeçalho não faz, valor e
+/// verificação.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct HeaderGuide {
+    pub cabecalho: String,
+    pub efeito: String,
+    pub nao_mitiga: String,
+    pub valor: String,
+    pub verificacao: String,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct CorpusEntry {
     pub id: String,
@@ -28,6 +43,8 @@ pub struct CorpusEntry {
     pub exemplos: Vec<CodeExample>,
     #[serde(default)]
     pub referencias: Vec<String>,
+    #[serde(default)]
+    pub cabecalhos: Vec<HeaderGuide>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +130,14 @@ impl Corpus {
 
     pub fn get(&self, id: &str) -> Option<&CorpusEntry> {
         self.by_id.get(id).map(|index| &self.entries[*index])
+    }
+
+    pub fn header_guide(&self, concept: &str, header: &str) -> Option<&HeaderGuide> {
+        let entry = self.get(concept)?;
+        entry
+            .cabecalhos
+            .iter()
+            .find(|guide| guide.cabecalho.eq_ignore_ascii_case(header.trim()))
     }
 
     pub fn len(&self) -> usize {

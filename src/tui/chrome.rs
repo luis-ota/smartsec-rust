@@ -17,6 +17,8 @@ pub const SURFACE_HOVER: Color = Color::Rgb(42, 51, 59);
 pub const BORDER: Color = Color::Rgb(55, 62, 68);
 pub const TEXT: Color = Color::Rgb(224, 229, 232);
 pub const MUTED: Color = Color::Rgb(125, 134, 140);
+/// Texto secundário com contraste confortável em fundo escuro.
+pub const TEXT_SOFT: Color = Color::Rgb(198, 205, 212);
 pub const ACCENT: Color = Color::Rgb(70, 190, 200);
 /// Realce do botão primário sob o mouse: o mesmo accent, mais claro.
 pub const ACCENT_HOVER: Color = Color::Rgb(132, 230, 240);

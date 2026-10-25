@@ -70,6 +70,8 @@ pub enum AnalysisPhase {
     Correlating,
     /// A chamada de análise por IA está em andamento.
     Generating,
+    /// O cancelamento foi solicitado e a task ainda está encerrando.
+    Cancelling,
     Complete,
 }
 
@@ -288,6 +290,8 @@ pub struct AppState {
     pub step: AppStep,
     pub screen_area: Rect,
     pub should_quit: bool,
+    /// `false` libera o mouse para a seleção nativa do terminal.
+    pub mouse_capture: bool,
     pub tick: u64,
     pub spinner_idx: usize,
     pub tools: Vec<ToolItem>,
@@ -303,6 +307,13 @@ pub struct AppState {
     pub tool_visible_height: usize,
     pub exec_current: usize,
     pub exec_tick: u64,
+    /// Início da execução atual; `None` fora de uma varredura.
+    pub run_started_at: Option<std::time::Instant>,
+    /// Início e conclusão reais do scan, em horário local, usados para o tempo
+    /// total no Resumo. Separados de `run_started_at` porque o replay não tem
+    /// `Instant` e precisa dos timestamps gravados no log.
+    pub scan_started_at_wall: Option<chrono::DateTime<chrono::Local>>,
+    pub scan_completed_at_wall: Option<chrono::DateTime<chrono::Local>>,
     /// Buffer do log de execução; toda mutação passa por `push_exec_log`,
     /// `set_exec_logs` ou `clear_exec_logs` para as medidas seguirem alinhadas.
     exec_logs: Vec<String>,
@@ -334,9 +345,26 @@ pub struct AppState {
     pub ai_timeline_max_scroll: usize,
     /// Auto-follow do fim do painel; desligado quando o usuário rola para cima.
     pub ai_timeline_follow: bool,
+    /// Evento destacado na lista; independente do offset de rolagem.
+    pub ai_timeline_selected: usize,
+    /// Altura visível da lista na última renderização, usada para manter a
+    /// seleção dentro da janela sem depender do desenho do frame.
+    pub ai_timeline_visible_height: usize,
+    /// Modo detalhe em tela cheia dentro do painel.
+    pub ai_timeline_detail_open: bool,
+    pub ai_timeline_detail_scroll: usize,
+    /// Limite de rolagem do texto completo, medido na renderização.
+    pub ai_timeline_detail_max_scroll: usize,
     pub result_cursor: usize,
     pub result_scroll: usize,
+    pub severity_filter: Option<crate::domain::Severity>,
     pub result_detail_vuln: Option<usize>,
+    pub detail_code_preview: Option<crate::tui::code_preview::CodePreview>,
+    /// Raiz usada para ler a prévia; separada do config para o replay não
+    /// misturar o projeto atual com o projeto do scan aberto.
+    pub results_project_dir: Option<PathBuf>,
+    /// Diferença em relação à execução anterior do mesmo alvo.
+    pub scan_comparison: crate::orchestrator::scan_logger::ScanComparison,
     /// Explicação RAG por achado, exibida no detalhe (issue #109).
     pub rag_results: std::collections::BTreeMap<usize, crate::cyberrag::service::ExplanationResult>,
     /// Achado com explicação em andamento.
@@ -351,7 +379,6 @@ pub struct AppState {
     pub report_content: String,
     pub report_scroll: usize,
     pub report_max_scroll: usize,
-    pub show_trace_overlay: bool,
     pub show_didactic: bool,
     pub didactic_scroll: usize,
     pub didactic_max_scroll: usize,
@@ -395,6 +422,8 @@ pub struct AppState {
     pub audit_log_path: Option<PathBuf>,
     pub history: crate::orchestrator::scan_logger::ScanHistory,
     pub history_dir: PathBuf,
+    pub splash_recent_cursor: usize,
+    pub(crate) history_refresh_pending: bool,
     pub history_cursor: usize,
     pub history_scroll: usize,
     pub history_detail: Option<crate::orchestrator::scan_logger::ScanMetadata>,
@@ -494,6 +523,7 @@ impl AppState {
             step: AppStep::Splash,
             screen_area: Rect::default(),
             should_quit: false,
+            mouse_capture: true,
             tick: 0,
             spinner_idx: 0,
             tools,
@@ -505,6 +535,9 @@ impl AppState {
             tool_visible_height: 8,
             exec_current: 0,
             exec_tick: 0,
+            run_started_at: None,
+            scan_started_at_wall: None,
+            scan_completed_at_wall: None,
             exec_logs: Vec::new(),
             log_rows: Vec::new(),
             log_rows_total: 0,
@@ -524,9 +557,18 @@ impl AppState {
             ai_timeline_scroll: 0,
             ai_timeline_max_scroll: 0,
             ai_timeline_follow: true,
+            ai_timeline_selected: 0,
+            ai_timeline_visible_height: 8,
+            ai_timeline_detail_open: false,
+            ai_timeline_detail_scroll: 0,
+            ai_timeline_detail_max_scroll: 0,
             result_cursor: 0,
             result_scroll: 0,
+            severity_filter: None,
             result_detail_vuln: None,
+            detail_code_preview: None,
+            results_project_dir: None,
+            scan_comparison: crate::orchestrator::scan_logger::ScanComparison::default(),
             detail_scroll: 0,
             detail_max_scroll: 0,
             md_exported: false,
@@ -536,7 +578,6 @@ impl AppState {
             report_content: String::new(),
             report_scroll: 0,
             report_max_scroll: 0,
-            show_trace_overlay: false,
             show_didactic: false,
             didactic_scroll: 0,
             didactic_max_scroll: 0,
@@ -569,6 +610,8 @@ impl AppState {
             audit_log_path: None,
             history: crate::orchestrator::scan_logger::ScanHistory::default(),
             history_dir: crate::orchestrator::scan_logger::scans_dir(),
+            splash_recent_cursor: 0,
+            history_refresh_pending: false,
             history_cursor: 0,
             history_scroll: 0,
             history_detail: None,
@@ -641,7 +684,7 @@ impl AppState {
         self.show_help_overlay
             || self.show_command_palette
             || self.show_report_viewer
-            || self.show_trace_overlay
+            || self.show_ai_timeline
     }
 
     fn pointer_within(&self, area: Rect) -> bool {
@@ -692,6 +735,171 @@ impl AppState {
             .indices
             .iter()
             .map(|index| &findings[*index])
+            .collect()
+    }
+
+    /// Carrega a prévia do código do achado aberto, uma vez por abertura.
+    pub fn load_detail_preview(&mut self, index: usize) {
+        self.detail_code_preview = None;
+        let Some((file, line)) = self
+            .vulnerabilities()
+            .get(index)
+            .and_then(|finding| finding.code_location.as_ref())
+            .map(|location| (location.file.clone(), location.line))
+        else {
+            return;
+        };
+        let Some(root) = self.results_project_dir.clone() else {
+            return;
+        };
+        self.detail_code_preview = Some(crate::tui::code_preview::CodePreview::load(
+            index, &root, &file, line,
+        ));
+    }
+
+    /// Carrega um scan concluído direto na tela de resultados.
+    pub fn load_replayed_scan(
+        &mut self,
+        metadata: crate::orchestrator::scan_logger::ScanMetadata,
+    ) -> anyhow::Result<()> {
+        self.scan_started_at_wall = parse_scan_timestamp(&metadata.started_at);
+        self.scan_completed_at_wall = parse_scan_timestamp(&metadata.completed_at);
+        let legacy_project_dir = if metadata.code_project_dir.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(&metadata.code_project_dir))
+        };
+        let stored_comparison = metadata.comparison.clone();
+        let mut findings = Vec::with_capacity(metadata.findings.len());
+        for value in metadata.findings {
+            let mut finding: Vulnerability = serde_json::from_value(value).map_err(|error| {
+                anyhow::anyhow!("achado inválido no scan {}: {error}", metadata.scan_id)
+            })?;
+            // Logs antigos podem ter uma localização alucinada para porta/serviço
+            // de rede. Reencontra a origem apenas em EXPOSE/ports do Docker; sem
+            // match exato, é melhor não mostrar nada do que mostrar um import.
+            if finding.is_network_port_finding() {
+                finding.code_location = legacy_project_dir.as_deref().and_then(|dir| {
+                    crate::code_agent::agent::locate_network_port_in_project(dir, &finding)
+                });
+                finding.code_remediation = if finding.code_location.is_some() {
+                    vec![
+                        "Remova a exposição da porta no Dockerfile ou restrinja o acesso com firewall/proxy."
+                            .to_string(),
+                    ]
+                } else {
+                    Vec::new()
+                };
+            }
+            findings.push(finding);
+        }
+        self.scan_comparison = if stored_comparison.has_previous() {
+            stored_comparison
+        } else {
+            // Logs antigos não têm a comparação gravada: recalcula a partir do
+            // histórico, que é somente leitura.
+            crate::orchestrator::scan_logger::comparison_with_previous(
+                &metadata.target_url,
+                &metadata.started_at,
+                &metadata.scan_id,
+                &findings,
+            )
+        };
+        self.config.target_url = metadata.target_url.clone();
+        if !metadata.code_project_dir.is_empty() {
+            self.config.project_dir = Some(metadata.code_project_dir.clone());
+        }
+        self.results_project_dir = if metadata.code_project_dir.is_empty() {
+            self.config.project_dir.clone().map(PathBuf::from)
+        } else {
+            Some(PathBuf::from(&metadata.code_project_dir))
+        };
+        self.detail_code_preview = None;
+        self.config.active_tools = metadata
+            .tools_executed
+            .iter()
+            .map(|tool| tool.tool_name.clone())
+            .collect();
+        self.orchestrator.findings = findings;
+        self.rag_results.clear();
+        self.rag_pending = None;
+        for mut result in metadata.rag_explanations {
+            restore_rag_example(&mut result);
+            if self
+                .orchestrator
+                .findings
+                .get(result.finding_index)
+                .is_some_and(Vulnerability::is_network_port_finding)
+            {
+                result.example = None;
+            }
+            self.rag_results.insert(result.finding_index, result);
+        }
+        self.orchestrator.rag_explanations = self.rag_results.values().cloned().collect();
+        self.orchestrator.decision_history = metadata.decisions.clone();
+        self.orchestrator.enrichment = metadata.enrichment.clone();
+        self.orchestrator.last_log =
+            format!("Execução recuperada do histórico {}", metadata.scan_id);
+        self.agent.last_analysis = metadata.agent_analysis.clone();
+        self.audit_log_path = Some(
+            crate::orchestrator::scan_logger::scans_dir()
+                .join(format!("{}.json", metadata.scan_id)),
+        );
+        self.llm_warning = metadata.llm_failure_reason.clone();
+        self.ai_timeline.clear();
+        for decision in &metadata.decisions {
+            self.push_ai_timeline(AiTimelineOrigin::Planning, decision_summary(decision));
+        }
+        if let Some(summary) = metadata.agent_analysis.lines().next() {
+            self.push_ai_timeline(
+                AiTimelineOrigin::Ai,
+                format!(
+                    "análise concluída · {}",
+                    crate::tui::chrome::truncate_width(summary, 200)
+                ),
+            );
+        }
+        for call in &metadata.code_tool_calls {
+            self.push_ai_timeline(
+                AiTimelineOrigin::Code,
+                format!(
+                    "{} · achado #{} · {}",
+                    call.tool,
+                    call.finding_index + 1,
+                    crate::tui::chrome::truncate_width(&call.summary, 160)
+                ),
+            );
+        }
+        self.ai_timeline_follow = true;
+        self.ai_timeline_scroll = 0;
+        self.ai_timeline_selected = self.ai_timeline.len().saturating_sub(1);
+        self.ai_timeline_detail_open = false;
+        self.ai_timeline_detail_scroll = 0;
+        self.ai_timeline_detail_max_scroll = 0;
+        self.step = AppStep::Results;
+        self.focus = FocusTarget::ResultsList;
+        self.result_cursor = 0;
+        self.result_scroll = 0;
+        self.severity_filter = None;
+        self.result_detail_vuln = None;
+        self.run_started_at = None;
+        self.md_exported = false;
+        self.exported_report_path = None;
+        self.exported_pdf_path = None;
+        Ok(())
+    }
+
+    /// Índices visíveis, na mesma ordem de `vulnerabilities()`.
+    pub fn visible_vulnerability_indices(&self) -> Vec<usize> {
+        let filter = self.severity_filter;
+        self.vulnerabilities()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, item)| match filter {
+                Some(severity) => item.severity == severity,
+                None => true,
+            })
+            .map(|(index, _)| index)
             .collect()
     }
 
@@ -860,6 +1068,27 @@ impl AppState {
         self.ai_summary()
     }
 
+    pub fn run_elapsed_label(&self) -> String {
+        self.run_started_at.map_or_else(
+            || "00:00".to_string(),
+            |start| format_elapsed(start.elapsed().as_secs()),
+        )
+    }
+
+    /// Tempo total do scan a partir dos timestamps reais. Sem conclusão
+    /// registrada, usa o relógio atual sobre o início — nunca o tick da TUI.
+    pub fn scan_total_duration_secs(&self) -> Option<u64> {
+        let start = self.scan_started_at_wall?;
+        let end = self
+            .scan_completed_at_wall
+            .unwrap_or_else(chrono::Local::now);
+        Some((end - start).num_seconds().max(0) as u64)
+    }
+
+    pub fn scan_total_duration_label(&self) -> Option<String> {
+        self.scan_total_duration_secs().map(format_elapsed)
+    }
+
     pub fn tick(&mut self) {
         self.tick += 1;
         self.spinner_idx = (self.spinner_idx + 1) % 10;
@@ -895,7 +1124,6 @@ impl AppState {
             || self.show_help_overlay
             || self.show_command_palette
             || self.show_report_viewer
-            || self.show_trace_overlay
             || self.show_ai_timeline
     }
 
@@ -939,7 +1167,7 @@ impl AppState {
                     self.ai_activity = AiActivity::PlanningNuclei;
                     self.push_ai_timeline(
                         AiTimelineOrigin::Planning,
-                        "planejando o uso do Nuclei…",
+                        "planejando o Nuclei (aguardando resposta)",
                     );
                 }
                 RunEvent::AiDecisionFinished(decision) => {
@@ -1024,7 +1252,9 @@ impl AppState {
                     orchestrator,
                     audit_log,
                 } => {
+                    self.scan_completed_at_wall = Some(chrono::Local::now());
                     self.orchestrator = *orchestrator;
+                    self.scan_comparison = Default::default();
                     let agent_history = self.orchestrator.agent.execution_history.clone();
                     for detail in &agent_history {
                         let detail = crate::utils::redaction::sanitize_text(detail);
@@ -1058,6 +1288,13 @@ impl AppState {
                                 "[auditoria] Log salvo em {}",
                                 path.display()
                             ));
+                            // A comparação é a que ficou gravada no arquivo: ler
+                            // de lá evita divergir do que o replay mostrará.
+                            if let Ok(metadata) =
+                                crate::orchestrator::scan_logger::load_scan_log_from_file(&path)
+                            {
+                                self.scan_comparison = metadata.comparison;
+                            }
                             self.audit_log_path = Some(path);
                         }
                         Err(error) => {
@@ -1071,6 +1308,7 @@ impl AppState {
                     // A análise terminou: os resultados já podem ser revisados.
                     self.step = AppStep::Results;
                     self.focus = FocusTarget::ResultsList;
+                    self.history_refresh_pending = true;
                     completed = true;
                 }
             }
@@ -1163,9 +1401,35 @@ impl AppState {
         self.rag_results.insert(finding_index, result);
     }
 
-    /// Re-grava o log do scan com o veredito mais recente da explicação RAG.
+    /// Re-grava o log do scan com as explicações RAG completas.
+    ///
+    /// Para um replay, atualiza o arquivo original em vez de criar um scan novo;
+    /// assim a explicação salva reaparece sem gastar tokens na próxima abertura.
     fn persist_rag_explanation(&mut self) {
-        if let Err(error) = self.orchestrator.persist_scan_log() {
+        let update = (|| -> anyhow::Result<()> {
+            let Some(path) = self.audit_log_path.clone() else {
+                self.orchestrator.persist_scan_log()?;
+                return Ok(());
+            };
+            let mut metadata = crate::orchestrator::scan_logger::load_scan_log_from_file(&path)?;
+            metadata.rag_explanations = self.orchestrator.rag_explanations.clone();
+            metadata.rag_explanations_count = metadata.rag_explanations.len();
+            if let Some(last) = metadata.rag_explanations.last() {
+                metadata.rag_ontology_verdict =
+                    crate::utils::redaction::sanitize_diagnostic(&last.verdict_summary());
+                metadata.rag_failure_reason = last
+                    .failure_reason
+                    .as_deref()
+                    .map(crate::utils::redaction::sanitize_diagnostic);
+            }
+            let parent = path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("log do scan sem diretório pai"))?
+                .to_path_buf();
+            crate::orchestrator::scan_logger::save_scan_log_to_dir(&metadata, &parent)?;
+            Ok(())
+        })();
+        if let Err(error) = update {
             self.record_run_issue(
                 RunIssueScope::Ai,
                 format!("o log do scan não pôde ser regravado após a explicação: {error}"),
@@ -1291,6 +1555,15 @@ impl AppState {
         if self.step != AppStep::ToolSelect || !self.tools.iter().any(|tool| tool.selected) {
             return;
         }
+        // A task anterior pode ainda estar encerrando (cancelamento cooperativo):
+        // iniciar outra sobrescreveria `run_task` e `run_receiver` e dois scans
+        // disputariam o mesmo estado da tela.
+        if self.run_task.is_some() {
+            self.push_exec_log(
+                "Aguarde o encerramento da execução anterior antes de iniciar outra".to_string(),
+            );
+            return;
+        }
         self.step = AppStep::Execution;
         self.focus = FocusTarget::ExecutionLogs;
         self.init_execution();
@@ -1304,6 +1577,11 @@ impl AppState {
         }
         self.exec_current = 0;
         self.exec_tick = 0;
+        self.run_started_at = Some(std::time::Instant::now());
+        self.scan_started_at_wall = Some(chrono::Local::now());
+        self.scan_completed_at_wall = None;
+        self.results_project_dir = Some(self.config.effective_project_dir());
+        self.detail_code_preview = None;
         self.clear_exec_logs();
         self.log_scroll = 0;
         self.log_follow = true;
@@ -1311,6 +1589,10 @@ impl AppState {
         self.exec_paused = false;
         let registry = self.orchestrator.registry.clone();
         self.orchestrator = Orchestrator::with_registry(self.config.clone(), registry.clone());
+        // A task cria outro orquestrador; ele herda este `scan_id` para que
+        // trilha da IA e checkpoint não sejam gravados duas vezes com o mesmo
+        // scan em arquivos distintos.
+        let scan_id = self.orchestrator.scan_id.clone();
         // A task de execução e a TUI compartilham o mesmo canal de controle,
         // para que a pausa e o cancelamento atinjam o container real.
         let control = self.orchestrator.control.clone();
@@ -1327,6 +1609,11 @@ impl AppState {
         self.ai_timeline_scroll = 0;
         self.ai_timeline_max_scroll = 0;
         self.ai_timeline_follow = true;
+        self.ai_timeline_selected = 0;
+        self.ai_timeline_visible_height = 8;
+        self.ai_timeline_detail_open = false;
+        self.ai_timeline_detail_scroll = 0;
+        self.ai_timeline_detail_max_scroll = 0;
         self.show_ai_timeline = false;
         self.log_drop_counter.store(0, Ordering::Relaxed);
 
@@ -1347,7 +1634,8 @@ impl AppState {
         self.run_receiver = Some(receiver);
         let dropped = Arc::clone(&self.log_drop_counter);
         self.run_task = Some(tokio::spawn(async move {
-            let mut orchestrator = Orchestrator::with_registry(config, registry);
+            let mut orchestrator =
+                Orchestrator::with_registry(config, registry).adopt_scan_id(scan_id);
             // A task precisa do MESMO canal da TUI: cada `Orchestrator::new`
             // criaria o seu, e a pausa da tela nunca chegaria ao container.
             orchestrator.control = control.clone();
@@ -1518,8 +1806,11 @@ impl AppState {
             });
             // A fase do agente de código roda depois da análise de logs, como no
             // headless: os achados precisam existir e estar classificados. O
-            // heartbeat continua vivo para a TUI não parecer travada.
-            orchestrator.analyze_code(Some(&code_tx)).await;
+            // heartbeat continua vivo para a TUI não parecer travada. Um
+            // cancelamento pedido durante a análise não abre mais nenhum turno.
+            if !orchestrator.is_cancelled() {
+                orchestrator.analyze_code(Some(&code_tx)).await;
+            }
             drop(code_tx);
             heartbeat.abort();
             let audit_log = orchestrator
@@ -1615,6 +1906,16 @@ impl AppState {
                     )),
                 }
             }
+            Event::BudgetExhausted { reason } => {
+                self.code_agent_current = None;
+                self.push_exec_log(format!(
+                    "[ia/codigo] orçamento esgotado: {reason}; devolvendo resultado parcial"
+                ));
+                self.push_ai_timeline(
+                    AiTimelineOrigin::Code,
+                    format!("orçamento esgotado: {reason}"),
+                );
+            }
         }
 
         if self.code_agent_trail.len() >= CODE_TRAIL_LIMIT {
@@ -1633,13 +1934,151 @@ impl AppState {
             text: text.into(),
         });
         let overflow = self.ai_timeline.len().saturating_sub(AI_TIMELINE_LIMIT);
-        if overflow == 0 {
+        if overflow > 0 {
+            self.ai_timeline.drain(..overflow);
+        }
+        if self.ai_timeline_follow {
+            self.ai_timeline_selected = self.ai_timeline.len().saturating_sub(1);
+        } else {
+            // O descarte do topo desloca os índices: a seleção e o offset
+            // acompanham para não pular para outro evento no meio da leitura.
+            self.ai_timeline_scroll = self.ai_timeline_scroll.saturating_sub(overflow);
+            self.ai_timeline_selected = self.ai_timeline_selected.saturating_sub(overflow);
+            self.ai_timeline_selected = self
+                .ai_timeline_selected
+                .min(self.ai_timeline.len().saturating_sub(1));
+        }
+    }
+
+    /// Contagem de eventos por origem exibida no cabeçalho da revisão.
+    pub fn ai_timeline_origin_counts(&self) -> (usize, usize, usize) {
+        let mut planning = 0;
+        let mut ai = 0;
+        let mut code = 0;
+        for entry in &self.ai_timeline {
+            match entry.origin {
+                AiTimelineOrigin::Planning => planning += 1,
+                AiTimelineOrigin::Ai => ai += 1,
+                AiTimelineOrigin::Code => code += 1,
+            }
+        }
+        (planning, ai, code)
+    }
+
+    /// Mantém o evento selecionado dentro da janela visível da lista.
+    pub(crate) fn ai_timeline_reveal_selection(&mut self) {
+        let length = self.ai_timeline.len();
+        if length == 0 {
+            self.ai_timeline_selected = 0;
+            self.ai_timeline_scroll = 0;
             return;
         }
-        self.ai_timeline.drain(..overflow);
-        if !self.ai_timeline_follow {
-            self.ai_timeline_scroll = self.ai_timeline_scroll.saturating_sub(overflow);
+        let visible = self.ai_timeline_visible_height.max(1);
+        let max_scroll = length.saturating_sub(visible);
+        self.ai_timeline_selected = self.ai_timeline_selected.min(length - 1);
+        if self.ai_timeline_selected < self.ai_timeline_scroll {
+            self.ai_timeline_scroll = self.ai_timeline_selected;
+        } else if self.ai_timeline_selected >= self.ai_timeline_scroll.saturating_add(visible) {
+            self.ai_timeline_scroll = self
+                .ai_timeline_selected
+                .saturating_add(1)
+                .saturating_sub(visible);
         }
+        self.ai_timeline_scroll = self.ai_timeline_scroll.min(max_scroll);
+    }
+
+    /// Move a seleção da lista. `amount` é usado pelas teclas de página.
+    pub fn ai_timeline_move_selection(&mut self, down: bool, amount: usize) {
+        let length = self.ai_timeline.len();
+        if length == 0 {
+            self.ai_timeline_selected = 0;
+            self.ai_timeline_scroll = 0;
+            return;
+        }
+        let last = length - 1;
+        self.ai_timeline_selected = if down {
+            self.ai_timeline_selected.saturating_add(amount).min(last)
+        } else {
+            self.ai_timeline_selected.saturating_sub(amount)
+        };
+        self.ai_timeline_reveal_selection();
+        self.ai_timeline_follow = self.ai_timeline_selected == last;
+    }
+
+    pub fn ai_timeline_select_first(&mut self) {
+        self.ai_timeline_selected = 0;
+        self.ai_timeline_reveal_selection();
+        self.ai_timeline_follow = self.ai_timeline.len() <= 1;
+    }
+
+    pub fn ai_timeline_select_last(&mut self) {
+        let length = self.ai_timeline.len();
+        self.ai_timeline_selected = length.saturating_sub(1);
+        let visible = self.ai_timeline_visible_height.max(1);
+        self.ai_timeline_scroll = length.saturating_sub(visible);
+        self.ai_timeline_follow = true;
+    }
+
+    /// Roda a janela da lista sem mover a seleção além do necessário para ela
+    /// continuar visível; é o gesto da roda do mouse.
+    pub fn ai_timeline_scroll_list(&mut self, down: bool, amount: usize) {
+        let length = self.ai_timeline.len();
+        let visible = self.ai_timeline_visible_height.max(1);
+        let max_scroll = length.saturating_sub(visible);
+        self.ai_timeline_scroll = if down {
+            self.ai_timeline_scroll
+                .saturating_add(amount)
+                .min(max_scroll)
+        } else {
+            self.ai_timeline_scroll.saturating_sub(amount)
+        };
+        self.ai_timeline_follow = self.ai_timeline_scroll >= max_scroll;
+        if self.ai_timeline_follow {
+            self.ai_timeline_selected = length.saturating_sub(1);
+        } else {
+            let first = self.ai_timeline_scroll;
+            let last_visible = first
+                .saturating_add(visible)
+                .saturating_sub(1)
+                .min(length.saturating_sub(1));
+            self.ai_timeline_selected = self.ai_timeline_selected.clamp(first, last_visible);
+        }
+    }
+
+    pub fn ai_timeline_open_detail(&mut self) {
+        if self.ai_timeline.is_empty() {
+            return;
+        }
+        self.ai_timeline_selected = self.ai_timeline_selected.min(self.ai_timeline.len() - 1);
+        self.ai_timeline_detail_open = true;
+        self.ai_timeline_detail_scroll = 0;
+        // Ler um evento em detalhe congela a seleção mesmo que cheguem novos
+        // eventos ao vivo.
+        self.ai_timeline_follow = false;
+    }
+
+    pub fn ai_timeline_close_detail(&mut self) {
+        self.ai_timeline_detail_open = false;
+        self.ai_timeline_detail_scroll = 0;
+        self.ai_timeline_detail_max_scroll = 0;
+    }
+
+    pub fn ai_timeline_scroll_detail(&mut self, down: bool, amount: usize) {
+        self.ai_timeline_detail_scroll = if down {
+            self.ai_timeline_detail_scroll
+                .saturating_add(amount)
+                .min(self.ai_timeline_detail_max_scroll)
+        } else {
+            self.ai_timeline_detail_scroll.saturating_sub(amount)
+        };
+    }
+
+    pub fn ai_timeline_detail_home(&mut self) {
+        self.ai_timeline_detail_scroll = 0;
+    }
+
+    pub fn ai_timeline_detail_end(&mut self) {
+        self.ai_timeline_detail_scroll = self.ai_timeline_detail_max_scroll;
     }
 
     pub fn code_agent_rows(
@@ -1719,6 +2158,13 @@ impl AppState {
                         label(format!(" · {tool_calls} chamada(s)")),
                     ]));
                 }
+                Event::BudgetExhausted { reason } => rows.push(Line::from(vec![
+                    label("  fase  ".into()),
+                    bad(crate::tui::chrome::truncate_width(
+                        &format!("orçamento esgotado · {reason}"),
+                        width.saturating_sub(10),
+                    )),
+                ])),
                 Event::Finished {
                     located,
                     total,
@@ -1747,7 +2193,7 @@ impl AppState {
     }
 
     pub fn advance_execution(&mut self) {
-        if self.exec_cancelled || self.orchestrator.is_cancelled() {
+        if (self.exec_cancelled || self.orchestrator.is_cancelled()) && self.run_task.is_none() {
             self.exec_paused = false;
             self.step = AppStep::ToolSelect;
             self.focus = FocusTarget::ToolList;
@@ -1875,13 +2321,17 @@ impl AppState {
         );
         if self.settings_connection_is_remote() {
             parts.push(
-                match (
-                    self.settings_api_key_touched,
-                    self.settings_input_api_key.trim().is_empty(),
-                ) {
-                    (true, false) => "chave nova digitada".to_string(),
-                    (false, false) => "chave salva".to_string(),
-                    _ => "sem chave".to_string(),
+                if self.config.llm.credential_from_env && !self.settings_api_key_touched {
+                    "chave da sessão (SMARTSEC_API_KEY)".to_string()
+                } else {
+                    match (
+                        self.settings_api_key_touched,
+                        self.settings_input_api_key.trim().is_empty(),
+                    ) {
+                        (true, false) => "chave nova digitada".to_string(),
+                        (false, false) => "chave salva".to_string(),
+                        _ => "sem chave".to_string(),
+                    }
                 },
             );
             parts.push(if self.settings_remote_consent {
@@ -2021,6 +2471,32 @@ impl AppState {
             .or(self.config_warning.as_deref())
     }
 
+    /// Relê a chave ao abrir Configurar IA; o arquivo pode ter sido atualizado.
+    pub(crate) fn reload_api_key_from_store(&mut self) {
+        if !self.config.llm.api_key.trim().is_empty() || !self.config.llm.is_remote() {
+            return;
+        }
+        match crate::config::persistence::api_key_status() {
+            crate::config::persistence::ApiKeyStatus::Available(key) => {
+                self.config.llm.api_key = key;
+                self.config.llm.credential_error = None;
+            }
+            crate::config::persistence::ApiKeyStatus::Missing => {
+                self.config.llm.credential_error = None;
+            }
+            crate::config::persistence::ApiKeyStatus::Locked(reason)
+            | crate::config::persistence::ApiKeyStatus::Unavailable(reason) => {
+                self.config.llm.credential_error = Some(reason);
+            }
+        }
+        let problems = self.config.validation_problems();
+        self.set_config_warning(if problems.is_empty() {
+            None
+        } else {
+            Some(problems.join(" · "))
+        });
+    }
+
     pub fn apply_settings(&mut self) -> Result<(), String> {
         let candidate = self.settings_candidate()?;
         candidate.save()?;
@@ -2053,6 +2529,8 @@ impl AppState {
         candidate.llm.provider = provider;
         candidate.llm.base_url = self.settings_effective_base_url();
         candidate.llm.api_key = self.settings_input_api_key.clone();
+        candidate.llm.credential_from_env =
+            self.config.llm.credential_from_env && !self.settings_api_key_touched;
         candidate.llm.model = self.settings_effective_model();
         candidate.llm.timeout_secs = timeout;
         candidate.llm.max_retries = retries;
@@ -2127,7 +2605,20 @@ impl AppState {
         }
         self.exec_cancelled = true;
         self.exec_paused = false;
-        self.orchestrator.cancel_execution();
+        // Na Análise a task já passou dos scanners: o "cancelando…" precisa
+        // durar até o turno do provedor encerrar, e é o `Completed` que leva aos
+        // resultados. Sair da tela agora esconderia chamadas ainda em curso.
+        if self.step == AppStep::Analysis {
+            self.analysis_phase = AnalysisPhase::Cancelling;
+        }
+        // Com a task viva, o estado que importa é o dela: gravar o checkpoint
+        // da tela aqui (sem achados) apagaria o parcial que a task persiste.
+        let task_alive = self.run_task.is_some();
+        if task_alive {
+            self.orchestrator.request_cancel();
+        } else {
+            self.orchestrator.cancel_execution();
+        }
         // A ferramenta em execucao e marcada como cancelada, e nao como falha:
         // o operador pediu para parar, e a distincao importa no relatorio e na
         // auditoria tanto quanto importa na tela.
@@ -2141,10 +2632,11 @@ impl AppState {
             self.push_exec_log(format!("[cancelled] {name} CANCELADA pelo operador"));
         }
         self.push_exec_log("X Cancelamento solicitado; encerrando o container".to_string());
-        // A auditoria e gravada agora, e nao quando a task termina: o
-        // cancelamento e uma decisao do operador e precisa estar registrada
-        // mesmo que o container demore a encerrar.
-        self.persist_cancelled_run();
+        // A auditoria é gravada agora quando não há task dona do estado; com a
+        // task viva, ela grava o parcial e o motivo compartilhado ao encerrar.
+        if !task_alive {
+            self.persist_cancelled_run();
+        }
         self.follow_latest_log();
     }
 
@@ -2190,14 +2682,16 @@ impl AppState {
             return;
         }
         if !self.exec_cancelled {
-            self.orchestrator.cancel_execution();
+            self.orchestrator.request_cancel();
         }
+        let mut persisted_by_task = false;
         if let Some(task) = self.run_task.take() {
             let completed = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 let _ = task.await;
             })
             .await
             .is_ok();
+            persisted_by_task = completed;
             if !completed {
                 // O executor cooperativo não respondeu: o `abort` é o último
                 // recurso, e o guard `ContainerCleanup` ainda remove o
@@ -2210,7 +2704,11 @@ impl AppState {
             }
         }
         self.run_receiver = None;
-        self.persist_cancelled_run();
+        // A task que encerrou normalmente já gravou o parcial com o estado real;
+        // a tela só grava quando precisou abortar.
+        if !persisted_by_task {
+            self.persist_cancelled_run();
+        }
     }
 
     /// Persiste a execução sintética de cancelamento para auditoria: nenhum
@@ -2277,7 +2775,52 @@ impl AppState {
         self.history_cursor = self
             .history_cursor
             .min(self.history.records.len().saturating_sub(1));
+        self.splash_recent_cursor = self
+            .splash_recent_cursor
+            .min(self.recent_scan_indices().len().saturating_sub(1));
         self.history_scroll = 0;
+        self.history_refresh_pending = false;
+    }
+
+    /// Índices das execuções que valem a pena mostrar no início.
+    ///
+    /// A suíte grava logs de teste com alvo `[REDACTED]`; eles não são
+    /// execuções reais e não podem esconder o histórico útil.
+    pub fn recent_scan_indices(&self) -> Vec<usize> {
+        self.history
+            .records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| record.target_url != "[REDACTED]" && record.findings_count > 0)
+            .map(|(index, _)| index)
+            .take(3)
+            .collect()
+    }
+
+    pub fn request_history_refresh(&mut self) {
+        self.history_refresh_pending = true;
+    }
+
+    pub fn refresh_history_if_pending(&mut self) {
+        if self.history_refresh_pending {
+            self.load_history();
+        }
+    }
+
+    /// Abre os resultados de um registro já listado no histórico.
+    pub fn replay_history_record(&mut self, index: usize) -> anyhow::Result<()> {
+        let record =
+            self.history.records.get(index).cloned().ok_or_else(|| {
+                anyhow::anyhow!("A execução selecionada não está mais disponível.")
+            })?;
+        let metadata =
+            crate::orchestrator::scan_logger::load_scan_log_from_file(&record.file_path)?;
+        self.load_replayed_scan(metadata)?;
+        self.audit_log_path = Some(record.file_path.clone());
+        self.history_cursor = index;
+        self.history_detail = None;
+        self.history_error = None;
+        Ok(())
     }
 
     /// Abre o histórico a partir da tela atual, preservando a tela de retorno.
@@ -2357,6 +2900,73 @@ fn selected_from_active_tools(active_tools: &[String], name: &str) -> bool {
 
 /// Ordem de leitura dos achados: a severidade do scanner é autoritativa
 /// (TCC_SPEC.md, seção 7) e a tela apenas a ordena para destacar os críticos.
+fn restore_rag_example(result: &mut crate::cyberrag::service::ExplanationResult) {
+    let Some(example) = result.example.as_mut() else {
+        return;
+    };
+    // Exemplos autorais/persistidos com código já preenchido são preservados;
+    // o corpus só reconstrói quando o log veio sem o código (sanitizado).
+    if example.vulneravel.is_some() || example.corrigido.is_some() {
+        return;
+    }
+    let Some(entry) = crate::cyberrag::corpus::Corpus::shared().get(&example.id) else {
+        result.example = None;
+        return;
+    };
+    let language = example.linguagem.clone();
+    if let Some(header) = example.header.clone() {
+        if let Some(guide) = entry
+            .cabecalhos
+            .iter()
+            .find(|guide| guide.cabecalho.eq_ignore_ascii_case(&header))
+        {
+            *example = crate::cyberrag::service::header_example(
+                entry.id.clone(),
+                &header,
+                guide,
+                language.as_deref(),
+            );
+            return;
+        }
+    }
+    let code = entry
+        .exemplos
+        .iter()
+        .find(|candidate| Some(candidate.linguagem.as_str()) == language.as_deref())
+        .or_else(|| entry.exemplos.first());
+    example.titulo = entry.titulo.clone();
+    example.padrao_seguro = entry.padrao_seguro.clone();
+    example.linguagem = code.map(|candidate| candidate.linguagem.clone());
+    example.vulneravel = code.map(|candidate| candidate.vulneravel.trim().to_string());
+    example.corrigido = code.map(|candidate| candidate.corrigido.trim().to_string());
+}
+
+fn parse_scan_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Local>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&chrono::Local))
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+                .ok()
+                .and_then(|timestamp| timestamp.and_local_timezone(chrono::Local).single())
+        })
+}
+
+fn format_elapsed(total_secs: u64) -> String {
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
 fn severity_rank(severity: crate::domain::Severity) -> u8 {
     match severity {
         crate::domain::Severity::Critical => 0,
@@ -2374,11 +2984,33 @@ fn decision_summary(record: &DecisionRecord) -> String {
         DecisionSource::Ai => "a IA decidiu",
         DecisionSource::Fallback => "a política local decidiu",
     };
-    format!(
-        "plano do Nuclei definido: {author} · motivo: {} · {} argumento(s)",
-        record.justification,
-        record.parameters.len()
-    )
+    let templates = record
+        .parameters
+        .get("templates")
+        .map(String::as_str)
+        .unwrap_or("(padrão)");
+    let concurrency = record
+        .parameters
+        .get("concurrency")
+        .map(String::as_str)
+        .unwrap_or("?");
+    let timeout = record
+        .parameters
+        .get("timeout_seconds")
+        .map(String::as_str)
+        .unwrap_or("?");
+    let mut summary = format!(
+        "plano do Nuclei definido: {author}\n\
+         motivo: {}\n\
+         templates: {templates}\n\
+         concorrência: {concurrency} · timeout: {timeout}s",
+        record.justification
+    );
+    if !record.evidence.is_empty() {
+        summary.push_str("\nevidências: ");
+        summary.push_str(&record.evidence.join(" · "));
+    }
+    summary
 }
 
 /// Conta as linhas visuais de entradas que saíram do log, usando a mesma
@@ -2874,18 +3506,15 @@ mod tests {
             .iter()
             .map(|entry| entry.text.as_str())
             .collect();
-        assert_eq!(texts[0], "planejando o uso do Nuclei…");
+        assert_eq!(texts[0], "planejando o Nuclei (aguardando resposta)");
         assert!(
             texts[1].contains("plano do Nuclei definido"),
             "{}",
             texts[1]
         );
         assert!(texts[1].contains(&decision.justification), "{}", texts[1]);
-        assert!(
-            texts[1].contains(&format!("{} argumento(s)", decision.parameters.len())),
-            "{}",
-            texts[1]
-        );
+        assert!(texts[1].contains("templates:"), "{}", texts[1]);
+        assert!(texts[1].contains("concorrência:"), "{}", texts[1]);
         assert_eq!(texts[2], "análise em andamento (10s)");
         assert_eq!(texts[3], "ferramenta read_file no achado #1");
         assert_eq!(texts[4], "read_file ok · 4 | raise ValueError");
@@ -2899,6 +3528,62 @@ mod tests {
             }),
             "todo evento carrega o horário local no formato HH:MM:SS"
         );
+    }
+
+    #[test]
+    fn elapsed_uses_mm_ss_and_hh_mm_ss() {
+        assert_eq!(format_elapsed(0), "00:00");
+        assert_eq!(format_elapsed(65), "01:05");
+        assert_eq!(format_elapsed(3661), "01:01:01");
+    }
+
+    #[test]
+    fn replay_loads_findings_and_opens_the_results_screen() {
+        use serde_json::json;
+
+        let finding = Vulnerability {
+            title: "Cabeçalho ausente".to_string(),
+            severity: crate::domain::Severity::High,
+            description: "descrição".to_string(),
+            tool: "Nuclei".to_string(),
+            target: "http://alvo.local".to_string(),
+            evidence: "evidência".to_string(),
+            detected_at: "2026-10-22T12:00:00Z".to_string(),
+            ..Default::default()
+        };
+        let metadata: crate::orchestrator::scan_logger::ScanMetadata =
+            serde_json::from_value(json!({
+                "scan_id": "scan_123",
+                "target_url": "http://alvo.local",
+                "started_at": "2026-10-22T12:00:00Z",
+                "completed_at": "2026-10-22T12:01:00Z",
+                "execution_type": "Assistido",
+                "llm_provider": "OpenAI",
+                "tools_executed": [],
+                "findings_count": 1,
+                "critical_count": 0,
+                "high_count": 1,
+                "medium_count": 0,
+                "low_count": 0,
+                "findings": [serde_json::to_value(&finding).unwrap()],
+                "agent_analysis": "resumo da IA",
+                "rag_explanations": [serde_json::to_value(rag_result(true)).unwrap()]
+            }))
+            .expect("log de replay válido");
+
+        let mut app = AppState::new(Configuration::default()).expect("configuração válida");
+        app.load_replayed_scan(metadata).expect("replay válido");
+
+        assert_eq!(app.step, AppStep::Results);
+        assert_eq!(app.orchestrator.findings.len(), 1);
+        assert_eq!(app.config.target_url, "http://alvo.local");
+        assert_eq!(app.agent.last_analysis, "resumo da IA");
+        assert_eq!(app.rag_results.len(), 1);
+        assert!(app
+            .rag_results
+            .values()
+            .next()
+            .is_some_and(|r| r.approved()));
     }
 
     #[test]
@@ -2935,6 +3620,7 @@ mod tests {
             } else {
                 String::new()
             },
+            conceito: "injecao_sql".to_string(),
             example: None,
             claims: Vec::new(),
             verdict: crate::cyberrag::ontology::OntologyVerdict {
@@ -3280,6 +3966,56 @@ mod tests {
         );
         if let Some(path) = app.audit_log_path.clone() {
             let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Cancelar na Análise mantém a tela em "cancelando…" até a task encerrar;
+    /// só o `Completed` leva aos resultados.
+    #[tokio::test]
+    async fn cancelling_the_analysis_keeps_the_screen_until_the_task_ends() {
+        let mut app = app();
+        app.step = AppStep::Analysis;
+        app.analysis_phase = AnalysisPhase::Generating;
+        app.run_task = Some(tokio::spawn(std::future::pending()));
+
+        app.cancel_run();
+
+        assert_eq!(app.step, AppStep::Analysis);
+        assert_eq!(app.analysis_phase, AnalysisPhase::Cancelling);
+        assert!(app.orchestrator.is_cancelled());
+        // Com a task viva, nenhum avanço de quadro troca a tela.
+        app.advance_execution();
+        assert_eq!(app.step, AppStep::Analysis);
+
+        if let Some(task) = app.run_task.take() {
+            task.abort();
+        }
+        if let Some(path) = app.audit_log_path.clone() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Dois scans não podem disputar `run_task` e `run_receiver`: enquanto a
+    /// task anterior encerra, um novo início é recusado com motivo.
+    #[tokio::test]
+    async fn a_new_scan_waits_for_the_previous_task_to_finish() {
+        let mut app = app();
+        app.step = AppStep::ToolSelect;
+        if let Some(tool) = app.tools.first_mut() {
+            tool.selected = true;
+        }
+        app.run_task = Some(tokio::spawn(std::future::pending()));
+
+        app.start_selected_tools();
+
+        assert_eq!(app.step, AppStep::ToolSelect);
+        assert!(app
+            .exec_logs()
+            .iter()
+            .any(|line| line.contains("Aguarde o encerramento")));
+
+        if let Some(task) = app.run_task.take() {
+            task.abort();
         }
     }
 

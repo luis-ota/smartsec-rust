@@ -12,11 +12,61 @@ com schema mínimo está em [`smartsec.example.toml`](../smartsec.example.toml).
 | O quê | Onde |
 |---|---|
 | Opções da IA e do scan | `~/.config/smartsec/config.toml` |
-| Chave de provedor remoto | **keyring do sistema** — nunca no TOML |
+| Chave de provedor remoto | `~/.config/smartsec/auth.json` (0600) — nunca no TOML |
 | Logs estruturados de cada execução | `~/.config/smartsec/scans/<scan_id>.json` |
 
 A chave fora do TOML é deliberada: `llm.api_key` é `#[serde(skip)]`, então
 mesmo alguém com acesso ao arquivo de configuração não lê a credencial dali.
+
+### Cadastrar, conferir e remover a chave pela CLI
+
+O caminho principal é um arquivo JSON privado (0600), o mesmo modelo adotado
+por OpenCode, Codex e Claude Code. O SmartSec é a interface para ele e **não
+depende de keyring, Secret Service ou prompt gráfico**:
+
+```bash
+smartsec auth set      # entrada oculta, sem eco no terminal
+smartsec auth status   # provedor, modelo, tamanho, final e fonte
+smartsec auth remove   # apaga o auth.json
+```
+
+`auth set` valida que a chave não está vazia, não tem quebra de linha e grava em
+`~/.config/smartsec/auth.json` com permissão `0600`. Em CI, a chave entra pela
+entrada padrão:
+
+```bash
+smartsec auth set --stdin < /run/secrets/smartsec-api-key
+```
+
+O arquivo não é cifrado; a proteção é a permissão `0600` e o diretório `0700`.
+Isso é equivalente ao `auth.json` do OpenCode. O TOML continua sem a chave.
+O status mostra `fonte: arquivo local 0600` e nunca falha com “keyring
+bloqueado”. O `--file` antigo continua aceito como compatibilidade, mas não é
+mais necessário.
+
+### Override de sessão/CI (`SMARTSEC_API_KEY`)
+
+`SMARTSEC_API_KEY` existe **apenas** como override explícito de CI/sessão, não
+como caminho principal. Prefira o arquivo local, inclusive na TUI:
+
+```bash
+smartsec auth set
+smartsec
+```
+
+Em CI, a variável deve vir do secret do runner, nunca digitada no histórico do
+shell:
+
+```bash
+# o runner define SMARTSEC_API_KEY a partir do secret
+smartsec scan --target http://169.254.1.2:3000
+```
+
+Essa chave **não é gravada** no TOML nem no `auth.json`: vale só para o
+processo. Ela tem precedência sobre o arquivo local e é removida do ambiente
+dos processos filhos (Podman, `run_command` do agente e `git`), para não vazar
+para os scanners. Na TUI, o resumo mostra `chave da sessão
+(SMARTSEC_API_KEY)`. Para persistir, use `smartsec auth set`.
 
 ## Arquivo de configuração TOML
 
@@ -53,18 +103,16 @@ exige:
 
 1. **Ambiente.** Antes de perguntar qualquer coisa, o SmartSec verifica se há
    servidor de IA local respondendo (`localhost:8080` para llama.cpp,
-   `localhost:11434` para Ollama), se o cofre de segredos do sistema está
-   disponível e se o Podman está presente e rootless. Cada item diz o que foi
-   achado e o que aquilo significa. A verificação acontece uma vez, em task
-   assíncrona com timeout curto; nada é consultado durante a renderização de um
-   quadro. Sem cofre de segredos, o caminho remoto é fechado na hora com aviso
-   explícito, porque uma chave que não pode ser salva não sobrevive à próxima
-   sessão.
+   `localhost:11434` para Ollama) e se o Podman está presente e rootless. Cada
+   item diz o que foi achado e o que aquilo significa. A verificação acontece
+   uma vez, em task assíncrona com timeout curto; nada é consultado durante a
+   renderização de um quadro. A chave é persistida em arquivo 0600, sem
+   depender de keyring.
 2. **Provedor.** A escolha usa os mesmos campos, o mesmo rascunho e a mesma
    validação da tela `Configurar IA` — inclusive o botão para abri-la e ajustar
    o que falta.
 3. **Credencial.** Só para provedor remoto, e mascarada na tela. A chave vai
-   para o keyring; ela nunca passa pelo arquivo de configuração.
+   para `~/.config/smartsec/auth.json` (0600); ela nunca passa pelo TOML.
 4. **Consentimento.** Só para provedor remoto. O texto diz o que sai da máquina:
    alvo, logs das ferramentas, achados com suas evidências e o código do projeto
    escolhido. Recusar não deixa o fluxo inválido: o assistente volta para o
@@ -93,10 +141,9 @@ coluna (`←`/`→`), `Enter` abre o campo para digitar, troca o provedor ou aci
 a opcao em foco, `Espaco` alterna opcoes liga/desliga, `Esc` sai do campo em
 edicao ou descarta o rascunho e `Ctrl+U` limpa o campo atual. Valores invalidos
 mantem a tela aberta com uma mensagem que diz o que corrigir. Chaves ficam no
-keyring do sistema e nunca sao gravadas no TOML. No Linux o keyring usa o
-Secret Service (por exemplo, gnome-keyring ou KWallet), que precisa estar ativo
-para salvar e ler chaves de provedores remotos. A evidencia visual do desenho
-esta em `docs/evidence/tui-config-ia/`.
+arquivo local 0600 (`~/.config/smartsec/auth.json`) e nunca sao gravadas no
+TOML. Nao ha dependencia de keyring, Secret Service ou prompt grafico. A
+evidencia visual do desenho esta em `docs/evidence/tui-config-ia/`.
 
 ## Retentativas e limite de uso
 
@@ -138,6 +185,16 @@ O `scan_id` tem o formato `scan_<nanos>` e nao e adivinhavel. Por isso o modo
 headless imprime o identificador ao final da execucao, e a TUI abre a lista com
 `h` ou pela paleta de comandos (`Ctrl+P`).
 
+Para abrir a TUI direto nos resultados de um scan concluído, sem repetir a
+varredura:
+
+```bash
+smartsec replay <SCAN_ID>
+```
+
+A tela reconstrói os achados e a linha do tempo das ações da IA a partir do log
+estruturado. O RAG continua sob demanda e não altera o registro original.
+
 Regras de seguranca e de robustez:
 
 - A consulta e **somente leitura**: nenhum artefato original e criado, reescrito
@@ -150,6 +207,18 @@ Regras de seguranca e de robustez:
   sumirem em silencio; abre-los falha com mensagem acionavel em portugues.
 - Registros gravados por versoes anteriores do formato, sem os campos mais
   novos, continuam legiveis.
+
+### Comparação com a execução anterior
+
+Cada registro leva também a diferença em relação à última execução do **mesmo
+alvo**: achados que sumiram (corrigidos), que apareceram (novos) e quantos
+persistem. A comparação usa ferramenta, título e alvo normalizados, é sanitizada
+como o resto do log e aparece no Resumo (`vs. última -N corrigidos · +N novos ·
+N persistem`) e em um painel compacto acima da lista, com até três corrigidos.
+
+O cálculo é somente leitura e não repete a varredura. Logs antigos, gravados
+antes desse campo, continuam abrindo: ao fazer replay, a comparação é
+recalculada a partir do histórico disponível.
 
 Para ver o comportamento com um registro corrompido semeado de proposito:
 

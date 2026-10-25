@@ -88,6 +88,14 @@ Instalado, o comando e `smartsec`. A partir do repositorio:
 # TUI interativa
 cargo run
 
+# Cadastrar, conferir e remover a chave do provedor remoto em auth.json 0600
+cargo run -- auth set
+cargo run -- auth status
+cargo run -- auth remove
+
+# CI: a chave entra pela entrada padrão, nunca por argumento
+smartsec auth set --stdin < /run/secrets/smartsec-api-key
+
 # Headless — scan automatico com relatorio
 cargo run -- scan --target https://example.com
 
@@ -101,12 +109,35 @@ cargo run -- scan --target https://example.com --project ./minha-aplicacao
 cargo run -- history
 cargo run -- show scan_1757000000000000000
 
+# Reabrir uma execucao concluida direto na TUI de resultados
+cargo run -- replay scan_1757000000000000000
+
 # Alvo local autorizado, a partir de um servidor preso ao loopback
 cargo run -- scan --target http://169.254.1.2:3000
 ```
 
 O arquivo TOML e as flags sao detalhados em
 [docs/CONFIGURACAO.md](docs/CONFIGURACAO.md).
+
+## Chave da API
+
+O caminho principal é um arquivo JSON privado (0600), o mesmo modelo do
+OpenCode, Codex e Claude Code. O SmartSec cadastra, consulta e remove a chave
+sem keyring, sem Secret Service e sem prompt gráfico:
+
+```bash
+smartsec auth set      # digite a chave; a entrada não aparece no terminal
+smartsec auth status   # provedor, modelo, tamanho, final e fonte
+smartsec auth remove   # apaga ~/.config/smartsec/auth.json
+```
+
+Em CI, `smartsec auth set --stdin < /run/secrets/smartsec-api-key` lê a chave da
+entrada padrão, sem prompt e sem colocá-la em argumentos de processo.
+
+A chave **nunca** vai para o TOML, para logs ou para os scans; ela fica apenas
+em `~/.config/smartsec/auth.json` (0600). `SMARTSEC_API_KEY` continua existindo
+apenas como override explícito de CI/sessão: tem precedência sobre o arquivo,
+não é gravada e é removida do ambiente dos scanners.
 
 ## Relatorios
 
@@ -160,6 +191,7 @@ src/
   llm/             Provedores LLM (openai, llama.cpp, nvidia-nim)
   domain/          Modelos de dados (vulnerabilidade, severidade, ferramentas)
   config/          Persistencia de configuracao (~/.config/smartsec/)
+  auth.rs          Cadastro da chave da API em auth.json 0600
   report/          Gerador de relatorio Markdown e PDF
 ```
 
@@ -188,8 +220,9 @@ desenvolvimento. Como o CI valida e documentado em
 | F1        | Abrir ajuda               |
 | Ctrl+P    | Abrir paleta de comandos  |
 | Ctrl+U    | Limpar o campo atual na configuracao |
+| Ctrl+T    | Liberar o mouse para selecionar/copiar texto no terminal |
 | H         | Abrir o historico de execucoes |
-| Mouse     | Clicar botoes, selecionar ferramentas, rolar listas |
+| Mouse     | Clicar botoes, selecionar ferramentas, rolar listas e filtrar severidade |
 
 ## Licenca
 

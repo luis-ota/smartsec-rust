@@ -5,6 +5,7 @@
 //! Suporta o modo TUI interativo e os comandos estruturados `scan`/`tool`.
 
 mod ai;
+mod auth;
 mod code_agent;
 mod code_audit;
 mod config;
@@ -18,6 +19,7 @@ mod tools;
 mod tui;
 mod utils;
 
+use crate::auth::AuthArgs;
 use crate::config::execution_type::ExecutionType;
 use crate::domain::security_tool::SecurityTool;
 use crate::domain::vulnerability::Vulnerability;
@@ -59,7 +61,9 @@ enum CliCommand {
     History(HistoryArgs),
     Show(ShowArgs),
     Trace(ShowArgs),
+    Replay(ShowArgs),
     Onboarding,
+    Auth(AuthArgs),
 }
 
 #[derive(Debug)]
@@ -111,6 +115,11 @@ impl Cli {
         if arguments.is_empty() {
             return Ok(Self { command: None });
         }
+        if arguments[0] == "auth" {
+            return Ok(Self {
+                command: Some(CliCommand::Auth(AuthArgs::parse(&arguments[1..])?)),
+            });
+        }
         if arguments
             .iter()
             .any(|argument| argument == "--help" || argument == "-h")
@@ -124,7 +133,7 @@ impl Cli {
                 if arguments.len() > 1 {
                     anyhow::bail!(
                         "opção desconhecida: {}; o assistente inicial não recebe opções",
-                        arguments[1]
+                        safe_argument(&arguments[1])
                     );
                 }
                 return Ok(Self {
@@ -137,7 +146,7 @@ impl Cli {
                     command: Some(CliCommand::History(HistoryArgs { limit })),
                 });
             }
-            "show" | "trace" => {
+            "show" | "trace" | "replay" => {
                 let scan_id = arguments
                     .get(1)
                     .ok_or_else(|| anyhow::anyhow!("o scan_id da execução é obrigatório"))?;
@@ -147,17 +156,17 @@ impl Cli {
                 if arguments.len() > 2 {
                     anyhow::bail!(
                         "argumento desconhecido: {}; use --help para ver as opções",
-                        arguments[2]
+                        safe_argument(&arguments[2])
                     );
                 }
                 let args = ShowArgs {
                     scan_id: scan_id.clone(),
                 };
                 return Ok(Self {
-                    command: Some(if command == "trace" {
-                        CliCommand::Trace(args)
-                    } else {
-                        CliCommand::Show(args)
+                    command: Some(match command {
+                        "trace" => CliCommand::Trace(args),
+                        "replay" => CliCommand::Replay(args),
+                        _ => CliCommand::Show(args),
                     }),
                 });
             }
@@ -215,12 +224,30 @@ fn parse_execution_args(arguments: &[String]) -> Result<(Option<String>, Executi
             }
             "--project" => options.project = Some(value(&mut index, "--project")?),
             other => {
-                anyhow::bail!("argumento desconhecido: {other}; use --help para ver as opções")
+                anyhow::bail!(
+                    "argumento desconhecido: {}; use --help para ver as opções",
+                    safe_argument(other)
+                )
             }
         }
         index += 1;
     }
     Ok((target, options))
+}
+
+/// Não ecoa valores de credenciais em mensagens de argumento inválido.
+fn safe_argument(argument: &str) -> String {
+    let lower = argument.to_lowercase();
+    if ["api-key", "apikey", "token", "secret", "authorization"]
+        .iter()
+        .any(|key| lower.contains(key))
+    {
+        return argument.find('=').map_or_else(
+            || "<oculto>".to_string(),
+            |index| format!("{}<oculto>", &argument[..=index]),
+        );
+    }
+    argument.to_string()
 }
 
 /// Interpreta o limite de `history` (`--limit`, `-n` ou `--limite`).
@@ -234,7 +261,10 @@ fn parse_history_limit(arguments: &[String]) -> Result<usize> {
     while index < arguments.len() {
         let argument = arguments[index].as_str();
         if !matches!(argument, "--limit" | "-n" | "--limite") {
-            anyhow::bail!("argumento desconhecido: {argument}; use --help para ver as opções");
+            anyhow::bail!(
+                "argumento desconhecido: {}; use --help para ver as opções",
+                safe_argument(argument)
+            );
         }
         index += 1;
         let value = arguments
@@ -261,6 +291,8 @@ fn print_help() {
     println!("  smartsec history [--limit <N>]");
     println!("  smartsec show <SCAN_ID>");
     println!("  smartsec trace <SCAN_ID>");
+    println!("  smartsec replay <SCAN_ID>");
+    println!("  smartsec auth <set|status|remove>");
     println!();
     println!("Comandos:");
     println!("  scan              Executa uma varredura não interativa.");
@@ -269,6 +301,15 @@ fn print_help() {
     println!("  history           Lista as execuções recentes do histórico.");
     println!("  show <SCAN_ID>    Mostra o detalhe de uma execução.");
     println!("  trace <SCAN_ID>   Mostra as ações que a IA executou na execução.");
+    println!("  replay <SCAN_ID>  Abre a TUI nos resultados de uma execução concluída.");
+    println!("  auth              Gerencia a chave da API no arquivo local 0600.");
+    println!();
+    println!("Chave da API:");
+    println!("  smartsec auth set [--stdin]  Lê sem eco e grava em ~/.config/smartsec/auth.json");
+    println!("  smartsec auth status         Mostra provedor, modelo e final mascarado");
+    println!("  smartsec auth remove         Remove a chave do arquivo local");
+    println!("  A chave nunca vai para o TOML; SMARTSEC_API_KEY é só override de");
+    println!("  sessão/CI e não substitui o cadastro no auth.json local.");
     println!();
     println!("Erros de uso:");
     println!("  ferramenta desconhecida  Ferramenta fora do catálogo registrado");
@@ -307,10 +348,11 @@ impl CommandLineInterface {
 
     pub async fn run(self) -> Result<i32> {
         let cli = Cli::parse(&self.arguments)?;
-        if self
-            .arguments
-            .iter()
-            .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
+        if !matches!(&cli.command, Some(CliCommand::Auth(_)))
+            && self
+                .arguments
+                .iter()
+                .any(|argument| matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V"))
         {
             return Ok(EXIT_SUCCESS);
         }
@@ -331,12 +373,25 @@ impl CommandLineInterface {
             Some(CliCommand::History(args)) => Ok(Self::print_history(args.limit)),
             Some(CliCommand::Show(args)) => Ok(Self::print_scan_detail(&args.scan_id)),
             Some(CliCommand::Trace(args)) => Ok(Self::print_agent_trace(&args.scan_id)),
+            Some(CliCommand::Replay(args)) => {
+                let (mut config, problems) =
+                    config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
+                let metadata =
+                    crate::orchestrator::scan_logger::load_scan_log_by_id(&args.scan_id)?;
+                config.target_url = metadata.target_url.clone();
+                if !metadata.code_project_dir.is_empty() {
+                    config.project_dir = Some(metadata.code_project_dir.clone());
+                }
+                Self::display_tui(config, problems, false, Some(metadata)).await?;
+                Ok(EXIT_SUCCESS)
+            }
             Some(CliCommand::Onboarding) => {
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
-                Self::display_tui(config, problems, true).await?;
+                Self::display_tui(config, problems, true, None).await?;
                 Ok(EXIT_SUCCESS)
             }
+            Some(CliCommand::Auth(args)) => auth::run(args),
             None => {
                 // A TUI abre mesmo com configuração inválida: é a própria tela de
                 // Configurar IA que conserta o que está errado, então abortar
@@ -344,7 +399,7 @@ impl CommandLineInterface {
                 // visível e o headless segue validando.
                 let (config, problems) =
                     config::Configuration::load_for_tui().map_err(anyhow::Error::msg)?;
-                Self::display_tui(config, problems, force_onboarding).await?;
+                Self::display_tui(config, problems, force_onboarding, None).await?;
                 Ok(EXIT_SUCCESS)
             }
         }
@@ -354,8 +409,13 @@ impl CommandLineInterface {
         initial_config: config::Configuration,
         config_problems: Vec<String>,
         force_onboarding: bool,
+        replay: Option<crate::orchestrator::scan_logger::ScanMetadata>,
     ) -> Result<()> {
         let mut app = tui::state::AppState::new(initial_config)?;
+        if let Some(metadata) = replay {
+            app.load_replayed_scan(metadata)?;
+        }
+        app.request_history_refresh();
         // O aviso de configuração entra antes de qualquer execução e só sai
         // quando o operador salva uma configuração válida pela própria tela.
         app.set_config_warning(Some(config_problems.join(" · ")));
@@ -386,10 +446,22 @@ impl CommandLineInterface {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
         app: &mut tui::state::AppState,
     ) -> Result<()> {
+        let mut mouse_capture = true;
         loop {
+            if app.step == tui::state::AppStep::Splash {
+                app.refresh_history_if_pending();
+            }
             terminal.draw(|f| tui::render(app, f))?;
 
             let should_quit = tui::event::handle_events(app)?;
+            if app.mouse_capture != mouse_capture {
+                if app.mouse_capture {
+                    execute!(terminal.backend_mut(), EnableMouseCapture)?;
+                } else {
+                    execute!(terminal.backend_mut(), DisableMouseCapture)?;
+                }
+                mouse_capture = app.mouse_capture;
+            }
             if should_quit || app.should_quit {
                 app.shutdown_run().await;
                 return Ok(());
@@ -1093,6 +1165,7 @@ pub async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthAction;
     use crate::config::llm_config::{LlmConfig, LlmProviderKind};
     use crate::config::Configuration;
     use crate::domain::vulnerability::FindingSource;
@@ -1247,6 +1320,79 @@ mod tests {
         assert_eq!(configured.output_file.as_deref(), Some("personalizado.md"));
         assert_eq!(configured.output_dir.as_deref(), Some("saida"));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unknown_arguments_do_not_echo_api_keys() {
+        let error = Cli::parse(&[
+            "scan".to_string(),
+            "--api-key=sk-segredo".to_string(),
+            "--target".to_string(),
+            "192.0.2.10".to_string(),
+        ])
+        .unwrap_err()
+        .to_string();
+
+        assert!(!error.contains("sk-segredo"), "{error}");
+        assert!(error.contains("<oculto>"), "{error}");
+    }
+
+    #[test]
+    fn parses_replay_with_a_scan_id() {
+        let cli = Cli::parse(&["replay".to_owned(), "scan_123".to_owned()]).unwrap();
+        let Some(CliCommand::Replay(args)) = cli.command else {
+            panic!("o comando replay deveria ser reconhecido");
+        };
+        assert_eq!(args.scan_id, "scan_123");
+    }
+
+    #[test]
+    fn parses_the_auth_subcommand_through_the_main_cli() {
+        let cases = [
+            (vec!["auth"], AuthAction::Help),
+            (vec!["auth", "--help"], AuthAction::Help),
+            (
+                vec!["auth", "set"],
+                AuthAction::Set {
+                    from_stdin: false,
+                    to_file: false,
+                },
+            ),
+            (
+                vec!["auth", "set", "--stdin"],
+                AuthAction::Set {
+                    from_stdin: true,
+                    to_file: false,
+                },
+            ),
+            (
+                vec!["auth", "set", "--file"],
+                AuthAction::Set {
+                    from_stdin: false,
+                    to_file: true,
+                },
+            ),
+            (vec!["auth", "status"], AuthAction::Status),
+            (vec!["auth", "remove"], AuthAction::Remove),
+        ];
+        for (arguments, expected) in cases {
+            let arguments: Vec<String> = arguments.into_iter().map(str::to_owned).collect();
+            let cli = Cli::parse(&arguments).unwrap();
+            let Some(CliCommand::Auth(args)) = cli.command else {
+                panic!("o comando auth deveria ser reconhecido: {arguments:?}");
+            };
+            assert_eq!(args.action, expected, "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn auth_rejects_unknown_arguments_without_treating_them_as_a_scan() {
+        let error = Cli::parse(&["auth".to_owned(), "set".to_owned(), "chave".to_owned()])
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("linha de comando"), "{error}");
+        assert!(!error.contains("--target"), "{error}");
     }
 
     #[test]

@@ -31,8 +31,8 @@ sh install.sh
 ```
 
 O pacote pronto exige Linux com **glibc 2.35 ou superior** (Ubuntu 22.04+,
-Debian 12+, Fedora 36+, Arch) e a `libdbus-1` do sistema (presente em qualquer
-desktop com D-Bus, via keyring). Distros mais antigas: compile do codigo, no
+Debian 12+, Fedora 36+, Arch). A chave da API fica em `auth.json` 0600; não há
+dependência de `libdbus`/keyring. Distros mais antigas: compile do código, no
 caminho abaixo.
 
 ## Caminho de desenvolvimento (compilar do codigo)

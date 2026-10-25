@@ -182,8 +182,18 @@ impl Configuration {
             &crate::config::persistence::PersistedConfig::from(self),
         )
         .map_err(|error| format!("não foi possível salvar a configuração: {error}"))?;
-        crate::config::persistence::save_api_key(&self.llm.api_key)
-            .map_err(|error| format!("não foi possível atualizar a chave no keyring: {error}"))?;
+        // Chave de ambiente é da sessão; não a grave no arquivo local.
+        if !self.llm.credential_from_env {
+            // Se a leitura anterior falhou e o campo ficou vazio, salvar a
+            // configuração não pode apagar a credencial que não foi lida.
+            let loaded_error_without_key =
+                self.llm.api_key.trim().is_empty() && self.llm.credential_error.is_some();
+            if !loaded_error_without_key {
+                crate::config::persistence::save_api_key(&self.llm.api_key).map_err(|error| {
+                    format!("não foi possível atualizar a chave no arquivo local: {error}")
+                })?;
+            }
+        }
         Ok(())
     }
 
@@ -224,8 +234,22 @@ impl From<crate::config::persistence::PersistedConfig> for Configuration {
             llm.model = llm.provider.default_model().to_string();
         }
         if llm.api_key.is_empty() {
-            if let Ok(key) = crate::config::persistence::load_api_key() {
-                llm.api_key = key;
+            // Caminho de CI/TUI quando o arquivo local ainda não tem chave.
+            if let Ok(key) = std::env::var("SMARTSEC_API_KEY") {
+                if !key.trim().is_empty() {
+                    llm.api_key = key;
+                    llm.credential_from_env = true;
+                }
+            }
+        }
+        if llm.api_key.is_empty() {
+            match crate::config::persistence::api_key_status() {
+                crate::config::persistence::ApiKeyStatus::Available(key) => llm.api_key = key,
+                crate::config::persistence::ApiKeyStatus::Missing => {}
+                crate::config::persistence::ApiKeyStatus::Locked(reason)
+                | crate::config::persistence::ApiKeyStatus::Unavailable(reason) => {
+                    llm.credential_error = Some(reason);
+                }
             }
         }
         Self {

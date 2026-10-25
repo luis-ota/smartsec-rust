@@ -1,4 +1,6 @@
-use crate::tui::chrome::{ACCENT, MUTED, SUCCESS, SURFACE, SURFACE_HOVER, TEXT, WARNING};
+use crate::tui::chrome::{
+    ACCENT, SUCCESS, SURFACE, SURFACE_ACTIVE, SURFACE_HOVER, TEXT, TEXT_SOFT, WARNING,
+};
 use crate::tui::commands::command_items;
 use crate::tui::interaction::SemanticAction;
 use crate::tui::state::{AiTimelineOrigin, AppState, AppStep};
@@ -9,6 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
     app.hit_regions.clear();
@@ -52,6 +55,7 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
             Line::from(""),
             shortcut("f1", "abrir ajuda em qualquer contexto"),
             shortcut("ctrl+p", "abrir a paleta de comandos"),
+            shortcut("ctrl+t", "liberar o mouse para selecionar e copiar"),
             Line::from(""),
             Line::styled(
                 "O resumo no topo diz o que será aplicado ao salvar.",
@@ -75,9 +79,9 @@ pub fn render_help(app: &mut AppState, frame: &mut Frame, area: Rect) {
             shortcut("ctrl+u", "limpar o campo de texto em foco"),
             shortcut("esc", "sair do campo em edição ou voltar"),
             shortcut("f1", "abrir ajuda em qualquer contexto"),
-            shortcut("f2", "rastreabilidade da Sprint 1"),
             shortcut("h", "consultar o histórico de execuções"),
             shortcut("ctrl+p", "abrir a paleta de comandos"),
+            shortcut("ctrl+t", "liberar o mouse para selecionar e copiar"),
             Line::from(""),
             Line::styled(
                 "O mouse oferece as mesmas ações disponíveis pelo teclado.",
@@ -258,95 +262,369 @@ pub fn render_report_viewer(app: &mut AppState, frame: &mut Frame, area: Rect) {
     );
 }
 
-/// Painel ao vivo "Atividade da IA": o que a IA fez e está fazendo durante a
-/// execução, sem o ruído das saídas das ferramentas de varredura.
+/// Painel de revisão "Atividade da IA": o que a IA fez e está fazendo durante a
+/// execução, sem o ruído das saídas das ferramentas de varredura. A lista tem
+/// seleção própria e o `enter` abre o evento em tela cheia dentro do painel.
 pub fn render_ai_timeline(app: &mut AppState, frame: &mut Frame, area: Rect) {
-    use ratatui::widgets::Wrap;
     app.hit_regions.clear();
-    let popup = centered_fixed(area, 76, 20);
+    let popup = centered_fixed(
+        area,
+        area.width.saturating_sub(4).clamp(60, 120),
+        area.height.saturating_sub(2).clamp(12, 32),
+    );
+    // Limpa a área inteira, não só o popup: sem isso, os painéis da tela de
+    // origem aparecem nas bordas e parecem fazer parte da revisão da IA.
+    frame.render_widget(Clear, area);
     frame.render_widget(Clear, popup);
+    let title = if app.ai_timeline_detail_open {
+        " Atividade da IA · detalhe do evento "
+    } else {
+        " Atividade da IA · revisão "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
-        .title(" Atividade da IA ")
+        .title(title)
         .title_style(Style::default().fg(Color::White).bold())
         .style(Style::default().bg(SURFACE));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .split(inner);
-    frame.render_widget(
-        Paragraph::new(format!(
-            "{} ação(ões) registradas · horário local",
-            app.ai_timeline.len()
-        ))
-        .style(Style::default().fg(MUTED).bg(SURFACE)),
-        rows[0],
+    if app.ai_timeline_detail_open {
+        render_ai_timeline_detail(app, frame, inner);
+    } else {
+        render_ai_timeline_list(app, frame, inner);
+    }
+}
+
+fn render_ai_timeline_list(app: &mut AppState, frame: &mut Frame, inner: Rect) {
+    use ratatui::widgets::Wrap;
+
+    render_ai_timeline_header(app, frame, Rect::new(inner.x, inner.y, inner.width, 1));
+
+    let body_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
+    let footer_area = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width,
+        1,
     );
 
-    let visible = rows[1].height.max(1) as usize;
-    app.ai_timeline_max_scroll = app.ai_timeline.len().saturating_sub(visible);
-    app.ai_timeline_scroll = if app.ai_timeline_follow {
-        app.ai_timeline_max_scroll
-    } else {
-        app.ai_timeline_scroll.min(app.ai_timeline_max_scroll)
-    };
     if app.ai_timeline.is_empty() {
+        let list_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(ACCENT))
+            .title(" Ações ")
+            .title_style(Style::default().fg(TEXT).bold())
+            .style(Style::default().bg(SURFACE));
+        let list_inner = list_block.inner(body_area);
+        frame.render_widget(list_block, body_area);
         frame.render_widget(
-            Paragraph::new(
-                "A IA ainda não agiu nesta execução; ela atua antes do Nuclei \
-                 (planejamento) e depois das ferramentas (análise e agente de código).",
-            )
+            Paragraph::new(Text::from(vec![
+                Line::styled(
+                    "A IA ainda não agiu nesta execução.",
+                    Style::default().fg(TEXT).bold(),
+                ),
+                Line::from(""),
+                Line::styled(
+                    "Ela atua antes do Nuclei (planejamento) e depois das ferramentas",
+                    Style::default().fg(TEXT_SOFT),
+                ),
+                Line::styled(
+                    "(análise e agente de código).",
+                    Style::default().fg(TEXT_SOFT),
+                ),
+            ]))
             .wrap(Wrap { trim: false })
-            .style(Style::default().fg(MUTED).bg(SURFACE)),
-            rows[1],
+            .style(Style::default().bg(SURFACE)),
+            list_inner,
         );
-    } else {
-        let body: Vec<Line> = app
-            .ai_timeline
-            .iter()
-            .skip(app.ai_timeline_scroll)
-            .take(visible)
-            .map(|entry| {
-                let origin_color = match entry.origin {
-                    AiTimelineOrigin::Planning => ACCENT,
-                    AiTimelineOrigin::Ai => SUCCESS,
-                    AiTimelineOrigin::Code => WARNING,
-                };
-                Line::from(vec![
-                    Span::styled(format!("{} ", entry.time), Style::default().fg(MUTED)),
-                    Span::styled(
-                        format!("{:<12} ", entry.origin.label()),
-                        Style::default().fg(origin_color).bold(),
-                    ),
-                    Span::styled(
-                        crate::tui::chrome::truncate_width(
-                            &entry.text,
-                            rows[1].width.saturating_sub(22) as usize,
-                        ),
-                        Style::default().fg(TEXT),
-                    ),
-                ])
-            })
-            .collect();
-        frame.render_widget(
-            Paragraph::new(Text::from(body)).style(Style::default().bg(SURFACE)),
-            rows[1],
-        );
+        render_ai_timeline_footer(app, frame, footer_area, None, "esc fecha");
+        return;
     }
 
-    app.register_hit_region(rows[2], SemanticAction::Back);
+    // A lista ocupa o espaço restante; o detalhe resumido ganha um painel fixo
+    // para não competir com as linhas da lista em 80x24.
+    let detail_height = (body_area.height.saturating_sub(1) * 45 / 100).clamp(6, 14);
+    let chunks =
+        Layout::vertical([Constraint::Min(2), Constraint::Length(detail_height)]).split(body_area);
+    let list_area = chunks[0];
+    let detail_area = chunks[1];
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(" Ações ")
+        .title_style(Style::default().fg(TEXT).bold())
+        .style(Style::default().bg(SURFACE));
+    let list_inner = list_block.inner(list_area);
+    frame.render_widget(list_block, list_area);
+
+    let length = app.ai_timeline.len();
+    let visible = list_inner.height.max(1) as usize;
+    app.ai_timeline_visible_height = visible;
+    app.ai_timeline_max_scroll = length.saturating_sub(visible);
+    if app.ai_timeline_follow {
+        app.ai_timeline_selected = length - 1;
+        app.ai_timeline_scroll = app.ai_timeline_max_scroll;
+    } else {
+        app.ai_timeline_reveal_selection();
+    }
+    app.ai_timeline_selected = app.ai_timeline_selected.min(length - 1);
+
+    let first = app.ai_timeline_scroll.min(app.ai_timeline_max_scroll);
+    let text_width = list_inner.width.saturating_sub(26) as usize;
+    let mut lines = Vec::with_capacity(visible);
+    for offset in 0..visible {
+        let index = first + offset;
+        let Some(entry) = app.ai_timeline.get(index) else {
+            break;
+        };
+        let selected = index == app.ai_timeline_selected;
+        let origin_color = ai_origin_color(entry.origin);
+        let row_style = if selected {
+            Style::default().bg(SURFACE_ACTIVE).fg(TEXT).bold()
+        } else {
+            Style::default().bg(SURFACE).fg(TEXT)
+        };
+        let first_line = entry.text.lines().next().unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "> " } else { "  " },
+                row_style.fg(origin_color).bold(),
+            ),
+            Span::styled(
+                format!("{}  ", entry.time),
+                row_style.fg(if selected { TEXT } else { TEXT_SOFT }),
+            ),
+            Span::styled(
+                format!("{:<12}  ", entry.origin.label()),
+                row_style.fg(origin_color).bold(),
+            ),
+            Span::styled(
+                crate::tui::chrome::truncate_width(first_line, text_width),
+                row_style.fg(TEXT),
+            ),
+        ]));
+    }
     frame.render_widget(
-        Paragraph::new("↑↓ rolar · enter ou esc  fechar")
-            .alignment(Alignment::Right)
-            .style(Style::default().fg(ACCENT).bg(SURFACE)),
-        rows[2],
+        Paragraph::new(Text::from(lines)).style(Style::default().bg(SURFACE)),
+        list_inner,
     );
+
+    render_ai_selected_detail(app, frame, detail_area);
+
+    let indicator = if length > visible {
+        let last = (first + visible).min(length);
+        Some(format!("↑↓ rolar · {}-{} de {}", first + 1, last, length))
+    } else {
+        None
+    };
+    render_ai_timeline_footer(app, frame, footer_area, indicator, "enter abre · esc fecha");
+}
+
+fn render_ai_timeline_header(app: &AppState, frame: &mut Frame, area: Rect) {
+    let (planning, ai, code) = app.ai_timeline_origin_counts();
+    let line = Line::from(vec![
+        Span::styled(
+            format!("{} ação(ões) registradas", app.ai_timeline.len()),
+            Style::default().fg(TEXT).bold(),
+        ),
+        Span::styled("  ·  ", Style::default().fg(TEXT_SOFT)),
+        Span::styled(
+            format!("planejamento {planning}"),
+            Style::default().fg(ACCENT).bold(),
+        ),
+        Span::styled("  ·  ", Style::default().fg(TEXT_SOFT)),
+        Span::styled(format!("IA {ai}"), Style::default().fg(SUCCESS).bold()),
+        Span::styled("  ·  ", Style::default().fg(TEXT_SOFT)),
+        Span::styled(
+            format!("código {code}"),
+            Style::default().fg(WARNING).bold(),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(SURFACE)),
+        area,
+    );
+}
+
+fn render_ai_selected_detail(app: &AppState, frame: &mut Frame, area: Rect) {
+    use ratatui::widgets::Wrap;
+
+    let entry = app.ai_timeline.get(app.ai_timeline_selected);
+    let border = entry.map_or(ACCENT, |entry| ai_origin_color(entry.origin));
+    let title = entry.map_or_else(
+        || " Evento selecionado ".to_string(),
+        |entry| {
+            format!(
+                " Evento selecionado · {} · {} ",
+                entry.origin.label(),
+                entry.time
+            )
+        },
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .title(title)
+        .title_style(Style::default().fg(TEXT).bold())
+        .style(Style::default().bg(SURFACE));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let body = entry.map_or_else(
+        || {
+            Text::from(Line::styled(
+                "nenhuma ação registrada ainda".to_string(),
+                Style::default().fg(TEXT_SOFT),
+            ))
+        },
+        |entry| {
+            Text::from(
+                entry
+                    .text
+                    .lines()
+                    .map(|line| Line::styled(line.to_string(), Style::default().fg(TEXT)))
+                    .collect::<Vec<_>>(),
+            )
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(body)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(SURFACE)),
+        inner,
+    );
+}
+
+fn render_ai_timeline_detail(app: &mut AppState, frame: &mut Frame, inner: Rect) {
+    use ratatui::widgets::Wrap;
+
+    let length = app.ai_timeline.len();
+    let index = app.ai_timeline_selected.min(length.saturating_sub(1));
+    let Some(entry) = app.ai_timeline.get(index) else {
+        render_ai_timeline_footer(app, frame, inner, None, "esc fecha");
+        return;
+    };
+
+    let header_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    let body_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
+    let footer_area = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width,
+        1,
+    );
+    let origin_color = ai_origin_color(entry.origin);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Evento ", Style::default().fg(TEXT_SOFT)),
+            Span::styled(
+                format!("{} de {}", index + 1, length),
+                Style::default().fg(TEXT).bold(),
+            ),
+            Span::styled("  ·  ", Style::default().fg(TEXT_SOFT)),
+            Span::styled(entry.time.clone(), Style::default().fg(TEXT).bold()),
+            Span::styled("  ·  ", Style::default().fg(TEXT_SOFT)),
+            Span::styled(
+                entry.origin.label().to_string(),
+                Style::default().fg(origin_color).bold(),
+            ),
+            Span::styled("  ·  texto completo", Style::default().fg(TEXT_SOFT)),
+        ]))
+        .style(Style::default().bg(SURFACE)),
+        header_area,
+    );
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(origin_color))
+        .title(" Texto completo ")
+        .title_style(Style::default().fg(TEXT).bold())
+        .style(Style::default().bg(SURFACE));
+    let body_inner = block.inner(body_area);
+    frame.render_widget(block, body_area);
+
+    let paragraph = Paragraph::new(entry.text.clone())
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(TEXT).bg(SURFACE));
+    let total_lines = paragraph.line_count(body_inner.width);
+    let visible = body_inner.height.max(1) as usize;
+    app.ai_timeline_detail_max_scroll = total_lines.saturating_sub(visible);
+    app.ai_timeline_detail_scroll = app
+        .ai_timeline_detail_scroll
+        .min(app.ai_timeline_detail_max_scroll);
+    frame.render_widget(
+        paragraph.scroll((app.ai_timeline_detail_scroll as u16, 0)),
+        body_inner,
+    );
+
+    let indicator = if total_lines > visible {
+        let first = app.ai_timeline_detail_scroll + 1;
+        let last = (app.ai_timeline_detail_scroll + visible).min(total_lines);
+        Some(format!("↑↓ rolar · {first}-{last} de {total_lines}"))
+    } else {
+        None
+    };
+    render_ai_timeline_footer(app, frame, footer_area, indicator, "esc volta à lista");
+}
+
+fn render_ai_timeline_footer(
+    app: &mut AppState,
+    frame: &mut Frame,
+    area: Rect,
+    indicator: Option<String>,
+    hint: &str,
+) {
+    let hint_width = (hint.width() as u16).min(area.width);
+    let hint_area = Rect::new(
+        area.x + area.width.saturating_sub(hint_width),
+        area.y,
+        hint_width,
+        1,
+    );
+    if let Some(indicator) = indicator {
+        let indicator_width = area.width.saturating_sub(hint_width + 1);
+        if indicator_width > 0 {
+            frame.render_widget(
+                Paragraph::new(crate::tui::chrome::truncate_width(
+                    &indicator,
+                    indicator_width as usize,
+                ))
+                .style(Style::default().fg(TEXT_SOFT).bg(SURFACE)),
+                Rect::new(area.x, area.y, indicator_width, 1),
+            );
+        }
+    }
+    let hovered = app.mouse_over_overlay(hint_area);
+    frame.render_widget(
+        Paragraph::new(hint).alignment(Alignment::Right).style(
+            Style::default()
+                .fg(if hovered { Color::White } else { ACCENT })
+                .bg(if hovered { SURFACE_HOVER } else { SURFACE })
+                .bold(),
+        ),
+        hint_area,
+    );
+    app.register_hit_region(hint_area, SemanticAction::Back);
+}
+
+fn ai_origin_color(origin: AiTimelineOrigin) -> Color {
+    match origin {
+        AiTimelineOrigin::Planning => ACCENT,
+        AiTimelineOrigin::Ai => SUCCESS,
+        AiTimelineOrigin::Code => WARNING,
+    }
 }
 
 fn shortcut<'a>(key: &'a str, description: &'a str) -> Line<'a> {

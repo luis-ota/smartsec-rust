@@ -55,6 +55,231 @@ pub fn config_path() -> PathBuf {
     base.join("smartsec").join("config.toml")
 }
 
+/// Arquivo de autenticação do SmartSec.
+///
+/// Mesmo modelo do OpenCode/Codex/Claude Code: um JSON privado (0600) no
+/// diretório de configuração, sem depender de um prompt gráfico do keyring.
+/// O keyring não participa mais do caminho de salvamento.
+pub fn api_key_file_path() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("smartsec").join("auth.json")
+}
+
+fn legacy_api_key_path() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("smartsec").join("api_key")
+}
+
+pub fn api_key_file_exists() -> bool {
+    [api_key_file_path(), legacy_api_key_path()]
+        .iter()
+        .any(|path| {
+            let Ok(metadata) = fs::symlink_metadata(path) else {
+                return false;
+            };
+            if !metadata.file_type().is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o077 == 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredAuth {
+    version: u8,
+    key: String,
+}
+
+/// Grava a chave no arquivo privado (0600 no Unix), com troca atômica.
+pub fn save_api_key_file(key: &str) -> std::io::Result<()> {
+    let key = key.trim();
+    if key.is_empty() {
+        return delete_api_key_file();
+    }
+    if key.chars().any(char::is_control) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a chave contém quebra de linha ou caractere de controle",
+        ));
+    }
+    let path = api_key_file_path();
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("auth.json sem diretório pai"))?;
+    fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    ensure_not_symlink(&path)?;
+    let content = serde_json::to_string_pretty(&StoredAuth {
+        version: 1,
+        key: key.to_string(),
+    })
+    .map_err(std::io::Error::other)?;
+
+    let temp = path.with_file_name(format!(".auth.json.tmp.{}", std::process::id()));
+    let _ = fs::remove_file(&temp);
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::rename(&temp, &path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+    // Migra o fallback antigo (texto puro) para o JSON novo.
+    let _ = fs::remove_file(legacy_api_key_path());
+    Ok(())
+}
+
+fn ensure_not_symlink(path: &std::path::Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} é um symlink; recusado por segurança", path.display()),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn secured_metadata(path: &std::path::Path) -> std::io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("{} é um symlink; recusado por segurança", path.display()),
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("o arquivo {} não está com permissão 0600", path.display()),
+                    ));
+                }
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn read_auth_file() -> std::io::Result<Option<String>> {
+    let path = api_key_file_path();
+    if !secured_metadata(&path)? {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path)?;
+    let stored: StoredAuth = serde_json::from_str(&content).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("auth.json inválido: {error}"),
+        )
+    })?;
+    if stored.version != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("auth.json com versão não suportada: {}", stored.version),
+        ));
+    }
+    let key = stored.key.trim();
+    Ok((!key.is_empty()).then(|| key.to_string()))
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn read_legacy_file() -> std::io::Result<Option<String>> {
+    let path = legacy_api_key_path();
+    if !secured_metadata(&path)? {
+        return Ok(None);
+    }
+    let key = fs::read_to_string(&path)?;
+    let key = key.trim();
+    Ok((!key.is_empty()).then(|| key.to_string()))
+}
+
+fn load_api_key_file() -> std::io::Result<Option<String>> {
+    #[cfg(test)]
+    {
+        // Os testes não podem depender da chave real do usuário.
+        Ok(None)
+    }
+    #[cfg(not(test))]
+    {
+        let auth_error = match read_auth_file() {
+            Ok(Some(key)) => return Ok(Some(key)),
+            Ok(None) => None,
+            Err(error) => Some(error),
+        };
+        match read_legacy_file() {
+            Ok(Some(key)) => {
+                // Se o auth.json existente estava ilegível, tenta reconstruí-lo.
+                let _ = save_api_key_file(&key);
+                return Ok(Some(key));
+            }
+            Ok(None) => {}
+            Err(legacy_error) => {
+                if auth_error.is_none() {
+                    return Err(legacy_error);
+                }
+            }
+        }
+        match auth_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
+    }
+}
+
+fn delete_api_key_file() -> std::io::Result<()> {
+    for path in [api_key_file_path(), legacy_api_key_path()] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 /// Carrega a configuração global: arquivo ausente devolve os padrões; TOML
 /// inválido é erro, porque cair em `default()` em silêncio faria perder alvo,
 /// ferramentas e provedor. A leitura nunca sobrescreve o arquivo, e a CLI
@@ -86,12 +311,22 @@ fn try_load_config_file_at(path: &std::path::Path) -> Result<PersistedConfig, St
             path.display()
         )
     })?;
-    toml::from_str(&content).map_err(|error| {
+    let mut config: PersistedConfig = toml::from_str(&content).map_err(|error| {
         format!(
             "a configuração global em '{}' é um TOML inválido: {error}. Corrija o arquivo ou remova-o; nenhuma configuração foi sobrescrita.",
             path.display()
         )
-    })
+    })?;
+    // Migração de instalações antigas: a chave que estava em texto puro no
+    // TOML vai para auth.json 0600 e o campo é removido do arquivo.
+    if !config.llm.api_key.trim().is_empty() {
+        let legacy = config.llm.api_key.clone();
+        if save_api_key_file(&legacy).is_ok() {
+            config.llm.api_key.clear();
+            let _ = save_config_file(&config);
+        }
+    }
+    Ok(config)
 }
 
 pub fn load_config_file_from(path: &std::path::Path) -> Result<PersistedConfig, String> {
@@ -104,33 +339,232 @@ pub fn save_config_file(cfg: &PersistedConfig) -> std::io::Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     let mut cfg_no_key = cfg.clone();
     cfg_no_key.llm.api_key = String::new();
     let content = toml::to_string_pretty(&cfg_no_key).map_err(std::io::Error::other)?;
-    fs::write(&path, content)
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(content.as_bytes())?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&path, content)
+    }
 }
-
-pub(crate) const KEYRING_SERVICE: &str = "smartsec";
-pub(crate) const KEYRING_USERNAME: &str = "llm-api-key";
 
 pub fn config_file_exists_at(path: &std::path::Path) -> bool {
     path.exists()
 }
 
-pub fn save_api_key(key: &str) -> Result<(), keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
-    if key.is_empty() {
-        let _ = entry.delete_credential();
-    } else {
-        entry.set_password(key)?;
-    }
-    Ok(())
+pub fn save_api_key(key: &str) -> std::io::Result<()> {
+    save_api_key_file(key)
 }
 
-pub fn load_api_key() -> Result<String, keyring::Error> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
-    entry.get_password()
+pub fn load_api_key() -> std::io::Result<Option<String>> {
+    load_api_key_file()
+}
+
+/// Remove a chave. Ausência não é erro: `auth remove` é idempotente.
+pub fn delete_api_key() -> std::io::Result<()> {
+    delete_api_key_file()
+}
+
+fn credential_file_error(error: std::io::Error) -> CredentialStoreError {
+    CredentialStoreError::Unavailable(format!(
+        "não foi possível acessar o arquivo local de credenciais: {error}"
+    ))
+}
+
+/// Distingue chave ausente de cofre bloqueado ou indisponível.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ApiKeyStatus {
+    Available(String),
+    Missing,
+    Locked(String),
+    Unavailable(String),
+}
+
+impl std::fmt::Debug for ApiKeyStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Available(_) => formatter.write_str("Available([OCULTA])"),
+            Self::Missing => formatter.write_str("Missing"),
+            Self::Locked(reason) => formatter.debug_tuple("Locked").field(reason).finish(),
+            Self::Unavailable(reason) => {
+                formatter.debug_tuple("Unavailable").field(reason).finish()
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CredentialStoreError {
+    Missing,
+    Locked(String),
+    Unavailable(String),
+}
+
+impl std::fmt::Display for CredentialStoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => {
+                write!(formatter, "nenhuma chave da API está cadastrada")
+            }
+            Self::Locked(reason) | Self::Unavailable(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
+impl std::error::Error for CredentialStoreError {}
+
+fn status_from_load(result: Result<String, CredentialStoreError>) -> ApiKeyStatus {
+    match result {
+        Ok(key) if !key.trim().is_empty() => ApiKeyStatus::Available(key),
+        Ok(_) | Err(CredentialStoreError::Missing) => ApiKeyStatus::Missing,
+        Err(CredentialStoreError::Locked(reason)) => ApiKeyStatus::Locked(reason),
+        Err(CredentialStoreError::Unavailable(reason)) => ApiKeyStatus::Unavailable(reason),
+    }
+}
+
+fn status_from_file(result: std::io::Result<Option<String>>) -> ApiKeyStatus {
+    match result {
+        Ok(Some(key)) if !key.trim().is_empty() => ApiKeyStatus::Available(key),
+        Ok(_) => ApiKeyStatus::Missing,
+        Err(error) => ApiKeyStatus::Unavailable(format!(
+            "não foi possível acessar o arquivo local de credenciais: {error}"
+        )),
+    }
+}
+
+/// Fronteira injetável entre o subcomando `auth` e o cofre do sistema.
+///
+/// O binário usa `SystemCredentialStore`; os testes usam uma implementação em
+/// memória e nunca tocam no keyring real.
+pub trait CredentialStore {
+    fn save(&self, key: &str) -> Result<(), CredentialStoreError>;
+    fn load(&self) -> Result<String, CredentialStoreError>;
+    fn delete(&self) -> Result<(), CredentialStoreError>;
+
+    fn status(&self) -> ApiKeyStatus {
+        status_from_load(self.load())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemCredentialStore;
+
+impl CredentialStore for SystemCredentialStore {
+    fn save(&self, key: &str) -> Result<(), CredentialStoreError> {
+        save_api_key(key).map_err(credential_file_error)
+    }
+
+    fn load(&self) -> Result<String, CredentialStoreError> {
+        match load_api_key() {
+            Ok(Some(key)) if !key.trim().is_empty() => Ok(key),
+            Ok(_) => Err(CredentialStoreError::Missing),
+            Err(error) => Err(credential_file_error(error)),
+        }
+    }
+
+    fn delete(&self) -> Result<(), CredentialStoreError> {
+        delete_api_key().map_err(credential_file_error)
+    }
+
+    fn status(&self) -> ApiKeyStatus {
+        api_key_status()
+    }
+}
+
+pub fn api_key_status() -> ApiKeyStatus {
+    status_from_file(load_api_key())
+}
+
+#[cfg(test)]
+pub(crate) struct InMemoryCredentialStore {
+    key: std::sync::Mutex<Option<String>>,
+    failure: std::sync::Mutex<Option<CredentialStoreError>>,
+}
+
+#[cfg(test)]
+impl InMemoryCredentialStore {
+    pub(crate) fn new() -> Self {
+        Self {
+            key: std::sync::Mutex::new(None),
+            failure: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn with_failure(error: CredentialStoreError) -> Self {
+        Self {
+            key: std::sync::Mutex::new(None),
+            failure: std::sync::Mutex::new(Some(error)),
+        }
+    }
+
+    pub(crate) fn stored_key(&self) -> Option<String> {
+        self.key
+            .lock()
+            .expect("o mutex da chave de teste não pode envenenar")
+            .clone()
+    }
+
+    fn fail(&self) -> Result<(), CredentialStoreError> {
+        match self
+            .failure
+            .lock()
+            .expect("o mutex de falha de teste não pode envenenar")
+            .clone()
+        {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl CredentialStore for InMemoryCredentialStore {
+    fn save(&self, key: &str) -> Result<(), CredentialStoreError> {
+        self.fail()?;
+        *self
+            .key
+            .lock()
+            .expect("o mutex da chave de teste não pode envenenar") = Some(key.to_string());
+        Ok(())
+    }
+
+    fn load(&self) -> Result<String, CredentialStoreError> {
+        self.fail()?;
+        self.key
+            .lock()
+            .expect("o mutex da chave de teste não pode envenenar")
+            .clone()
+            .ok_or(CredentialStoreError::Missing)
+    }
+
+    fn delete(&self) -> Result<(), CredentialStoreError> {
+        self.fail()?;
+        *self
+            .key
+            .lock()
+            .expect("o mutex da chave de teste não pode envenenar") = None;
+        Ok(())
+    }
 }
 
 impl From<crate::config::Configuration> for PersistedConfig {
@@ -303,5 +737,50 @@ mod tests {
         let config = try_load_config_file_at(&path.0).expect("arquivo válido deve carregar");
 
         assert_eq!(config.target_url, "http://alvo.local");
+    }
+
+    #[test]
+    fn in_memory_store_covers_set_status_and_remove() {
+        let store = InMemoryCredentialStore::new();
+        assert_eq!(store.status(), ApiKeyStatus::Missing);
+
+        store
+            .save("chave-de-teste")
+            .expect("a gravação deve funcionar");
+        assert_eq!(
+            store.status(),
+            ApiKeyStatus::Available("chave-de-teste".to_string())
+        );
+
+        store.delete().expect("a remoção deve funcionar");
+        assert_eq!(store.status(), ApiKeyStatus::Missing);
+        store
+            .delete()
+            .expect("remover uma chave ausente precisa ser idempotente");
+    }
+
+    #[test]
+    fn a_locked_store_is_reported_as_locked_not_missing() {
+        let store = InMemoryCredentialStore::with_failure(CredentialStoreError::Locked(
+            "o cofre de segredos do sistema está bloqueado".to_string(),
+        ));
+
+        assert_eq!(
+            store.status(),
+            ApiKeyStatus::Locked("o cofre de segredos do sistema está bloqueado".to_string())
+        );
+        assert!(store
+            .save("chave-de-teste")
+            .unwrap_err()
+            .to_string()
+            .contains("bloqueado"));
+    }
+
+    #[test]
+    fn an_empty_stored_key_counts_as_missing() {
+        let store = InMemoryCredentialStore::new();
+        store.save("   ").expect("a gravação deve funcionar");
+
+        assert_eq!(store.status(), ApiKeyStatus::Missing);
     }
 }

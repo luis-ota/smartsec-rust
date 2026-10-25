@@ -45,8 +45,8 @@ está classificada. O agente aponta onde corrigir e nunca reclassifica
 | Ferramenta | O que faz |
 |---|---|
 | `list_dir` | Lista um diretório dentro do projeto, com `/` nos subdiretórios, até 200 entradas |
-| `read_file` | Lê um arquivo de texto com numeração de linha, até 64 KiB |
-| `search_code` | Busca textual no projeto, ignorando build, binários e arquivos grandes |
+| `read_file` | Lê um arquivo de texto com numeração de linha, até 64 KiB; aceita `offset`/`limit` e devolve `continue com offset=N` |
+| `search_code` | Busca textual priorizando código/configuração e ignorando build, agentes (`.ai`/`.claude`), binários e arquivos grandes |
 | `run_command` | **Desabilitado por padrão.** Sem shell, com allowlist explícita |
 
 `run_command` nasce recusada porque o pipeline nunca concede allowlist. Com a
@@ -65,9 +65,27 @@ habilite-o explicitamente antes de executar
 | `max_search_results` | 50 | Uma busca não pode varrer o projeto inteiro |
 | `max_list_entries` | 200 | `list_dir` na raiz de um projeto com `target/` devolveu 19.788 bytes num payload e o provedor remoto respondeu 413 |
 | `max_tool_output_bytes` | 16 KiB | Nenhuma chamada devolve um payload maior que o orçamento do provedor |
-| `max_iterations` | 12 por achado | O modelo não pode explorar indefinidamente |
+| `max_iterations` | 5 por achado | O modelo não pode explorar indefinidamente |
 | `analysis_timeout_secs` | 45 s por achado | RNF04. Um achado caro não pode atrasar a varredura inteira |
 | `command_timeout_secs` | 10 s | Comando travado é interrompido com `kill_on_drop` |
+| `max_total_tool_calls` | 120 por fase | O teto por achado não impedia 1.970 chamadas em 184 achados |
+| `scan_timeout_secs` | 180 s por fase | Impede que a soma dos achados estoure o tempo do scan |
+
+## Agrupamento, cache e cancelamento
+
+Antes de abrir um laço, os achados são agrupados por `(ferramenta, regra/título,
+host)`: 160 backups iguais do Nikto viram um grupo, e a localização do
+representante é propagada para todos os membros com os índices originais. O teto
+é de 25 grupos; achados já localizados, Low/Info genéricos e o excedente ficam
+fora do laço com motivo registrado.
+
+`read_file`, `search_code` e `list_dir` passam por um cache por scan (64
+entradas). Um índice local de diretórios e entrypoints entra no prompt, sem LLM,
+para reduzir `list_dir` repetido. O `ControlChannel` chega ao laço via
+`CodeAgentContext::control`: `cancelled()` é observado durante a espera do
+provedor e antes/depois de cada ferramenta. Ao cancelar, os achados restantes
+recebem `cancelado pelo usuário` e o relatório parcial é devolvido; o orçamento
+global corta a fase com `BudgetExhausted` e o mesmo formato parcial.
 
 Todo corte é declarado: a saída volta para o modelo com uma linha de aviso, e o
 `summary` do `ToolCallRecord` começa com `saída truncada · `, para que a TUI e o

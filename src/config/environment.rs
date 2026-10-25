@@ -18,6 +18,7 @@ pub struct LocalEndpoint {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum KeyringAvailability {
     Available,
     Unavailable(String),
@@ -75,8 +76,8 @@ impl EnvironmentReport {
     fn keyring_finding(&self) -> EnvironmentFinding {
         match &self.keyring {
             KeyringAvailability::Available => EnvironmentFinding {
-                title: "Cofre de segredos disponível".to_string(),
-                detail: "a chave do provedor remoto pode ser gravada no keyring do sistema, nunca no arquivo de configuração".to_string(),
+                title: "Armazenamento de credenciais disponível".to_string(),
+                detail: "a chave do provedor remoto é gravada em ~/.config/smartsec/auth.json (0600), como OpenCode/Codex; nunca no TOML".to_string(),
                 level: FindingLevel::Info,
             },
             KeyringAvailability::Unavailable(reason) => EnvironmentFinding {
@@ -174,23 +175,15 @@ impl SystemOnboardingProbe {
     }
 
     async fn detect_keyring(&self) -> KeyringAvailability {
-        // `NoEntry` significa que o serviço existe e só não há chave ainda: o
-        // cofre está disponível, que é o que a tela precisa saber.
-        match keyring::Entry::new(
-            crate::config::persistence::KEYRING_SERVICE,
-            crate::config::persistence::KEYRING_USERNAME,
-        ) {
-            Ok(entry) => match entry.get_password() {
-                Ok(_) | Err(keyring::Error::NoEntry) => KeyringAvailability::Available,
-                Err(error) => KeyringAvailability::Unavailable(error.to_string()),
-            },
-            Err(error) => KeyringAvailability::Unavailable(error.to_string()),
-        }
+        // O SmartSec persiste a chave em arquivo 0600 (auth.json), como
+        // OpenCode/Codex/Claude Code. O cofre do sistema não é mais requisito.
+        KeyringAvailability::Available
     }
 
     async fn detect_podman(&self) -> PodmanMode {
         let output = tokio::process::Command::new("podman")
             .args(["info", "--format", "{{.Host.Security.Rootless}}"])
+            .env_remove("SMARTSEC_API_KEY")
             .output()
             .await;
         match output {

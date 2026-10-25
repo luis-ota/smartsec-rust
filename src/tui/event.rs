@@ -1,5 +1,6 @@
 use crate::config::execution_type::ExecutionType;
 use crate::config::llm_config::LlmProviderKind;
+use crate::domain::Severity;
 use crate::tui::commands::command_items;
 use crate::tui::interaction::{FocusTarget, SemanticAction};
 use crate::tui::state::{AppState, AppStep, RunEvent, SettingsField};
@@ -26,6 +27,13 @@ pub fn handle_events(app: &mut AppState) -> std::io::Result<bool> {
 }
 
 fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
+    if matches!(key.code, KeyCode::Char('t') | KeyCode::Char('T'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        app.mouse_capture = !app.mouse_capture;
+        return false;
+    }
+
     if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
         && key.modifiers.contains(KeyModifiers::CONTROL)
     {
@@ -42,10 +50,6 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
 
     if key.code == KeyCode::F(1) {
         return dispatch_action(app, SemanticAction::OpenHelp);
-    }
-
-    if key.code == KeyCode::F(2) {
-        return dispatch_action(app, SemanticAction::OpenTraceability);
     }
 
     // Atalhos de pausa, retomada e cancelamento durante a execução. Fica antes
@@ -65,12 +69,15 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
         }
     }
 
-    if app.show_trace_overlay {
-        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return dispatch_action(app, SemanticAction::OpenCommandPalette);
-        }
-        return key_action(app, key).is_some_and(|action| dispatch_action(app, action));
+    // Depois do scan a revisão da atividade da IA é o que sobra para auditar o
+    // que a IA decidiu; o mesmo atalho da Execução precisa funcionar aqui.
+    if app.step == AppStep::Results
+        && !app.has_blocking_layer()
+        && matches!(key.code, KeyCode::Char('i') | KeyCode::Char('I'))
+    {
+        return dispatch_action(app, SemanticAction::OpenAiTimeline);
     }
+
     if app.show_report_viewer {
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return dispatch_action(app, SemanticAction::OpenCommandPalette);
@@ -80,6 +87,9 @@ fn handle_key(app: &mut AppState, key: KeyEvent) -> bool {
     if app.show_ai_timeline {
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return dispatch_action(app, SemanticAction::OpenCommandPalette);
+        }
+        if ai_timeline_page_key(app, key.code) {
+            return false;
         }
         return key_action(app, key).is_some_and(|action| dispatch_action(app, action));
     }
@@ -122,17 +132,21 @@ fn execution_toggle_pause(app: &AppState) -> SemanticAction {
 }
 
 fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
-    if app.show_trace_overlay {
-        return match key.code {
-            KeyCode::Esc | KeyCode::Enter => Some(SemanticAction::Back),
-            _ => None,
-        };
-    }
     if app.show_ai_timeline {
+        if app.ai_timeline_detail_open {
+            return match key.code {
+                KeyCode::Esc => Some(SemanticAction::Back),
+                KeyCode::Enter | KeyCode::Char(' ') => Some(SemanticAction::Back),
+                KeyCode::Up | KeyCode::Char('k') => Some(SemanticAction::MoveUp),
+                KeyCode::Down | KeyCode::Char('j') => Some(SemanticAction::MoveDown),
+                _ => None,
+            };
+        }
         return match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') => Some(SemanticAction::Back),
-            KeyCode::Up => Some(SemanticAction::MoveUp),
-            KeyCode::Down => Some(SemanticAction::MoveDown),
+            KeyCode::Esc => Some(SemanticAction::Back),
+            KeyCode::Enter | KeyCode::Char(' ') => Some(SemanticAction::Activate),
+            KeyCode::Up | KeyCode::Char('k') => Some(SemanticAction::MoveUp),
+            KeyCode::Down | KeyCode::Char('j') => Some(SemanticAction::MoveDown),
             _ => None,
         };
     }
@@ -191,6 +205,27 @@ fn key_action(app: &AppState, key: KeyEvent) -> Option<SemanticAction> {
         }
         _ => None,
     }
+}
+
+/// Teclas de página e extremos do painel da IA. Ficam fora do `key_action`
+/// porque dependem do modo (lista ou detalhe) e não têm ação semântica própria.
+fn ai_timeline_page_key(app: &mut AppState, code: KeyCode) -> bool {
+    match code {
+        KeyCode::PageUp if app.ai_timeline_detail_open => {
+            app.ai_timeline_scroll_detail(false, 10);
+        }
+        KeyCode::PageDown if app.ai_timeline_detail_open => {
+            app.ai_timeline_scroll_detail(true, 10);
+        }
+        KeyCode::Home if app.ai_timeline_detail_open => app.ai_timeline_detail_home(),
+        KeyCode::End if app.ai_timeline_detail_open => app.ai_timeline_detail_end(),
+        KeyCode::PageUp => app.ai_timeline_move_selection(false, 10),
+        KeyCode::PageDown => app.ai_timeline_move_selection(true, 10),
+        KeyCode::Home => app.ai_timeline_select_first(),
+        KeyCode::End => app.ai_timeline_select_last(),
+        _ => return false,
+    }
+    true
 }
 
 fn accepts_text(app: &AppState) -> bool {
@@ -254,6 +289,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
                 app.focus
             };
             if !from_onboarding {
+                app.reload_api_key_from_store();
                 app.reset_settings_draft();
             }
             app.settings_editing = None;
@@ -276,6 +312,7 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::ResumeRun => resume_execution(app),
         SemanticAction::CancelRun => cancel_execution(app),
         SemanticAction::OpenVulnerability(index) => open_vulnerability(app, index),
+        SemanticAction::FilterSeverity(severity) => filter_severity(app, severity),
         SemanticAction::ExportMarkdown => export_markdown(app),
         SemanticAction::ShowDidactic => {
             app.didactic_return_focus = app.focus;
@@ -313,8 +350,8 @@ pub(crate) fn dispatch_action(app: &mut AppState, action: SemanticAction) -> boo
         SemanticAction::OpenHelp => open_help(app),
         SemanticAction::OpenHistory => app.open_history(),
         SemanticAction::OpenHistoryRecord(index) => app.open_history_record(index),
+        SemanticAction::OpenRecentScan(index) => open_recent_scan(app, index),
         SemanticAction::OpenReportViewer => open_report_viewer(app),
-        SemanticAction::OpenTraceability => open_traceability(app),
         SemanticAction::OpenCommandPalette => open_command_palette(app),
         SemanticAction::ExecuteCommand(index) => return execute_command(app, index),
         SemanticAction::OpenAiTimeline => open_ai_timeline(app),
@@ -337,10 +374,28 @@ fn start_rag_explanation(app: &mut AppState) {
     let Some(index) = app.result_detail_vuln else {
         return;
     };
-    if app.rag_pending.is_some() {
+    // A explicação da IA é lida na tela "Explicação educacional"; o detalhe fica
+    // só com a evidência e a correção no código.
+    app.didactic_return_focus = FocusTarget::ResultsDetail;
+    app.show_didactic = true;
+    app.didactic_scroll = 0;
+    app.focus = FocusTarget::DidacticContent;
+    if app
+        .rag_results
+        .get(&index)
+        .is_some_and(crate::cyberrag::service::ExplanationResult::approved)
+        || app.rag_pending.is_some()
+    {
         return;
     }
-    let Some(finding) = app.orchestrator.findings.get(index).cloned() else {
+    // `result_detail_vuln` é o índice da lista **ordenada** exibida na tela;
+    // usar `orchestrator.findings[index]` aqui pegava outro achado e explicava
+    // o item errado. A lista ordenada é a fonte do índice de detalhe.
+    let Some(finding) = app
+        .vulnerabilities()
+        .get(index)
+        .map(|finding| (*finding).clone())
+    else {
         return;
     };
 
@@ -356,7 +411,8 @@ fn start_rag_explanation(app: &mut AppState) {
         let agent = crate::ai::agent::AIAgent::from_config(&llm);
         let model = agent.model.clone();
         let label = agent.configured_provider_label();
-        let allowed = agent.allows_target_data();
+        let block_reason = agent.target_data_block_reason();
+        let allowed = block_reason.is_none();
         let corpus = crate::cyberrag::corpus::Corpus::shared();
         let ontology = crate::cyberrag::ontology::Ontology::shared();
         let result = crate::cyberrag::service::ExplanationService::new()
@@ -366,6 +422,7 @@ fn start_rag_explanation(app: &mut AppState) {
                     model: &model,
                     provider_label: &label,
                     target_data_allowed: allowed,
+                    target_data_block_reason: block_reason.as_deref(),
                     embedding_model: &embedding_model,
                     corpus,
                     ontology,
@@ -391,9 +448,6 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
     if app.show_ai_timeline {
         return vec![FocusTarget::AiTimelineClose];
     }
-    if app.show_trace_overlay {
-        return vec![FocusTarget::TraceClose];
-    }
     if app.show_report_viewer {
         return vec![FocusTarget::ReportClose];
     }
@@ -415,16 +469,34 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
         return order;
     }
     if app.show_didactic {
-        return vec![FocusTarget::DidacticContent, FocusTarget::DidacticBack];
+        let mut order = vec![FocusTarget::DidacticContent];
+        if let Some(index) = app.result_detail_vuln {
+            if app.rag_pending.is_none()
+                && !app
+                    .rag_results
+                    .get(&index)
+                    .is_some_and(crate::cyberrag::service::ExplanationResult::approved)
+            {
+                order.push(FocusTarget::DidacticExplain);
+            }
+        }
+        order.push(FocusTarget::DidacticBack);
+        return order;
     }
     match app.step {
-        AppStep::Splash => vec![
-            FocusTarget::SplashTarget,
-            FocusTarget::SplashAuto,
-            FocusTarget::SplashAssisted,
-            FocusTarget::SplashSettings,
-            FocusTarget::SplashStart,
-        ],
+        AppStep::Splash => {
+            let mut order = vec![
+                FocusTarget::SplashTarget,
+                FocusTarget::SplashAuto,
+                FocusTarget::SplashAssisted,
+                FocusTarget::SplashSettings,
+            ];
+            if !app.history.records.is_empty() {
+                order.push(FocusTarget::SplashRecent);
+            }
+            order.push(FocusTarget::SplashStart);
+            order
+        }
         AppStep::ToolSelect => vec![
             FocusTarget::ToolList,
             FocusTarget::ToolBack,
@@ -441,14 +513,12 @@ fn focus_order(app: &AppState) -> Vec<FocusTarget> {
                 FocusTarget::ResultsDetail,
                 FocusTarget::ResultsBack,
                 FocusTarget::ResultsExplain,
-                FocusTarget::ResultsDidactic,
             ]
         }
         AppStep::Results => vec![
             FocusTarget::ResultsList,
             FocusTarget::ResultsNewScan,
             FocusTarget::ResultsExport,
-            FocusTarget::ResultsDidactic,
         ],
         AppStep::History => {
             if app.history_detail.is_some() {
@@ -475,13 +545,18 @@ fn move_focus(app: &mut AppState, forward: bool) {
 }
 
 fn move_vertical(app: &mut AppState, down: bool) {
-    // O painel é modal: as setas rolam a atividade mesmo se a conclusão do
-    // scan moveu o foco da tela por baixo.
+    // O painel é modal: as setas movem a seleção da lista (ou rolam o detalhe)
+    // mesmo se a conclusão do scan moveu o foco da tela por baixo.
     if app.show_ai_timeline {
-        scroll(app, down, 1);
+        if app.ai_timeline_detail_open {
+            app.ai_timeline_scroll_detail(down, 1);
+        } else {
+            app.ai_timeline_move_selection(down, 1);
+        }
         return;
     }
     match app.focus {
+        FocusTarget::SplashRecent => move_recent_cursor(app, down),
         FocusTarget::ToolList => move_tool_cursor(app, down),
         FocusTarget::ResultsList if app.result_detail_vuln.is_none() => {
             move_result_cursor(app, down)
@@ -572,17 +647,35 @@ fn move_settings_field(
 }
 
 fn activate_focus(app: &mut AppState) {
+    if app.show_ai_timeline {
+        if app.ai_timeline_detail_open {
+            app.ai_timeline_close_detail();
+        } else {
+            app.ai_timeline_open_detail();
+        }
+        return;
+    }
     let action = match app.focus {
         FocusTarget::SplashTarget | FocusTarget::SplashStart => SemanticAction::StartScan,
         FocusTarget::SplashAuto => SemanticAction::SetMode(ExecutionType::Auto),
         FocusTarget::SplashAssisted => SemanticAction::SetMode(ExecutionType::Assisted),
         FocusTarget::SplashSettings => SemanticAction::OpenSettings,
+        FocusTarget::SplashRecent => {
+            let global = app
+                .recent_scan_indices()
+                .get(app.splash_recent_cursor)
+                .copied()
+                .unwrap_or(0);
+            SemanticAction::OpenRecentScan(global)
+        }
         FocusTarget::ToolList => SemanticAction::ToggleTool(app.tool_cursor),
         FocusTarget::ToolBack
-        | FocusTarget::AnalysisCancel
         | FocusTarget::ResultsBack
         | FocusTarget::DidacticBack
         | FocusTarget::HistoryBack => SemanticAction::Back,
+        // O botão Cancelar da Análise é cancelamento, não "voltar": voltar
+        // deixaria o laço do agente rodando sem tela que o acompanhe.
+        FocusTarget::AnalysisCancel => SemanticAction::CancelRun,
         FocusTarget::ToolRun => SemanticAction::RunTools,
         FocusTarget::ExecutionPause if !app.exec_cancelled => execution_toggle_pause(app),
         FocusTarget::ExecutionPause => return,
@@ -597,7 +690,7 @@ fn activate_focus(app: &mut AppState) {
         FocusTarget::ResultsNewScan => SemanticAction::NewScan,
         FocusTarget::ResultsExport => SemanticAction::ExportMarkdown,
         FocusTarget::ResultsExplain => SemanticAction::ExplainFinding,
-        FocusTarget::ResultsDidactic => SemanticAction::ShowDidactic,
+        FocusTarget::DidacticExplain => SemanticAction::ExplainFinding,
         FocusTarget::SettingsField(field) => {
             activate_settings_field(app, field);
             return;
@@ -617,7 +710,6 @@ fn activate_focus(app: &mut AppState) {
         }
         FocusTarget::HelpClose => SemanticAction::Back,
         FocusTarget::ReportClose => SemanticAction::Back,
-        FocusTarget::TraceClose => SemanticAction::Back,
         FocusTarget::CommandList => SemanticAction::ExecuteCommand(app.command_cursor),
         FocusTarget::AiTimelineClose => SemanticAction::Back,
     };
@@ -630,12 +722,12 @@ fn go_back(app: &mut AppState) -> bool {
         return false;
     }
     if app.show_ai_timeline {
+        if app.ai_timeline_detail_open {
+            app.ai_timeline_close_detail();
+            return false;
+        }
         app.show_ai_timeline = false;
-        app.focus = app.overlay_return_focus;
-        return false;
-    }
-    if app.show_trace_overlay {
-        app.show_trace_overlay = false;
+        app.ai_timeline_close_detail();
         app.focus = app.overlay_return_focus;
         return false;
     }
@@ -673,6 +765,7 @@ fn go_back(app: &mut AppState) -> bool {
     }
     if app.result_detail_vuln.is_some() {
         app.result_detail_vuln = None;
+        app.detail_code_preview = None;
         app.detail_scroll = 0;
         app.detail_max_scroll = 0;
         app.focus = FocusTarget::ResultsList;
@@ -687,9 +780,9 @@ fn go_back(app: &mut AppState) -> bool {
             app.focus = FocusTarget::ToolList;
         }
         AppStep::Analysis => {
+            // `esc` na Análise cancela o laço; a tela só muda quando a task
+            // encerra e envia `Completed`.
             app.cancel_run();
-            app.step = AppStep::ToolSelect;
-            app.focus = FocusTarget::ToolList;
         }
         AppStep::Results => new_scan(app),
         AppStep::History => {
@@ -763,18 +856,51 @@ fn ensure_tool_visible(app: &mut AppState) {
     }
 }
 
-fn move_result_cursor(app: &mut AppState, down: bool) {
-    let count = app.vulnerabilities().len();
+fn move_recent_cursor(app: &mut AppState, down: bool) {
+    let count = app.recent_scan_indices().len();
     if count == 0 {
+        app.splash_recent_cursor = 0;
+        return;
+    }
+    app.splash_recent_cursor = if down {
+        (app.splash_recent_cursor + 1).min(count - 1)
+    } else {
+        app.splash_recent_cursor.saturating_sub(1)
+    };
+}
+
+fn open_recent_scan(app: &mut AppState, index: usize) {
+    if let Some(position) = app
+        .recent_scan_indices()
+        .iter()
+        .position(|global| *global == index)
+    {
+        app.splash_recent_cursor = position;
+    }
+    if let Err(error) = app.replay_history_record(index) {
+        app.history_error = Some(format!(
+            "Não foi possível abrir a execução do histórico: {error:#}"
+        ));
+    }
+}
+
+fn move_result_cursor(app: &mut AppState, down: bool) {
+    let visible = app.visible_vulnerability_indices();
+    if visible.is_empty() {
         app.result_cursor = 0;
         app.result_scroll = 0;
         return;
     }
-    if down {
-        app.result_cursor = (app.result_cursor + 1).min(count - 1);
+    let position = visible
+        .iter()
+        .position(|index| *index == app.result_cursor)
+        .unwrap_or(0);
+    let next = if down {
+        (position + 1).min(visible.len() - 1)
     } else {
-        app.result_cursor = app.result_cursor.saturating_sub(1);
-    }
+        position.saturating_sub(1)
+    };
+    app.result_cursor = visible[next];
 }
 
 fn open_vulnerability(app: &mut AppState, index: usize) {
@@ -783,8 +909,23 @@ fn open_vulnerability(app: &mut AppState, index: usize) {
         app.result_detail_vuln = Some(index);
         app.detail_scroll = 0;
         app.detail_max_scroll = 0;
+        app.load_detail_preview(index);
         app.focus = FocusTarget::ResultsDetail;
     }
+}
+
+fn filter_severity(app: &mut AppState, severity: Severity) {
+    app.severity_filter = if app.severity_filter == Some(severity) {
+        None
+    } else {
+        Some(severity)
+    };
+    app.result_cursor = app
+        .visible_vulnerability_indices()
+        .first()
+        .copied()
+        .unwrap_or(0);
+    app.result_scroll = 0;
 }
 
 fn scroll(app: &mut AppState, down: bool, amount: usize) {
@@ -794,19 +935,12 @@ fn scroll(app: &mut AppState, down: bool, amount: usize) {
         }
         return;
     }
-    if app.show_trace_overlay {
-        return;
-    }
     if app.show_ai_timeline {
-        let max_scroll = app.ai_timeline_max_scroll;
-        app.ai_timeline_scroll = if down {
-            app.ai_timeline_scroll
-                .saturating_add(amount)
-                .min(max_scroll)
+        if app.ai_timeline_detail_open {
+            app.ai_timeline_scroll_detail(down, amount);
         } else {
-            app.ai_timeline_scroll.saturating_sub(amount)
-        };
-        app.ai_timeline_follow = app.ai_timeline_scroll >= max_scroll;
+            app.ai_timeline_scroll_list(down, amount);
+        }
         return;
     }
     if app.show_report_viewer {
@@ -925,29 +1059,9 @@ fn open_help(app: &mut AppState) {
     }
     app.show_command_palette = false;
     app.show_report_viewer = false;
-    app.show_trace_overlay = false;
     app.show_ai_timeline = false;
     app.show_help_overlay = true;
     app.focus = FocusTarget::HelpClose;
-}
-
-fn open_traceability(app: &mut AppState) {
-    if app.show_trace_overlay {
-        return;
-    }
-    if !app.show_help_overlay
-        && !app.show_command_palette
-        && !app.show_report_viewer
-        && !app.show_ai_timeline
-    {
-        app.overlay_return_focus = app.focus;
-    }
-    app.show_help_overlay = false;
-    app.show_command_palette = false;
-    app.show_report_viewer = false;
-    app.show_ai_timeline = false;
-    app.show_trace_overlay = true;
-    app.focus = FocusTarget::TraceClose;
 }
 
 fn open_report_viewer(app: &mut AppState) {
@@ -957,7 +1071,6 @@ fn open_report_viewer(app: &mut AppState) {
     app.overlay_return_focus = app.focus;
     app.show_help_overlay = false;
     app.show_command_palette = false;
-    app.show_trace_overlay = false;
     app.report_content = app
         .exported_report_path
         .as_ref()
@@ -975,7 +1088,6 @@ fn open_command_palette(app: &mut AppState) {
     }
     app.show_help_overlay = false;
     app.show_report_viewer = false;
-    app.show_trace_overlay = false;
     app.show_ai_timeline = false;
     app.show_command_palette = true;
     app.command_cursor = 0;
@@ -994,7 +1106,17 @@ fn open_ai_timeline(app: &mut AppState) {
     app.show_help_overlay = false;
     app.show_command_palette = false;
     app.show_report_viewer = false;
-    app.show_trace_overlay = false;
+    app.ai_timeline_detail_open = false;
+    app.ai_timeline_detail_scroll = 0;
+    app.ai_timeline_detail_max_scroll = 0;
+    let length = app.ai_timeline.len();
+    if length == 0 {
+        app.ai_timeline_selected = 0;
+    } else if app.ai_timeline_follow || app.ai_timeline_selected >= length {
+        // Primeira abertura (e retorno ao fim): o evento mais recente é o que
+        // interessa; depois que o usuário escolhe outro, a seleção é preservada.
+        app.ai_timeline_selected = length - 1;
+    }
     app.show_ai_timeline = true;
     app.focus = FocusTarget::AiTimelineClose;
 }
@@ -1035,7 +1157,13 @@ fn resume_execution(app: &mut AppState) {
 }
 
 fn cancel_execution(app: &mut AppState) {
-    if matches!(app.step, AppStep::Execution | AppStep::Analysis) {
+    if app.step == AppStep::Analysis {
+        // A tela permanece em "cancelando…" até o `Completed` da task; trocar
+        // de tela aqui esconderia as chamadas que ainda estão em curso.
+        app.cancel_run();
+        return;
+    }
+    if app.step == AppStep::Execution {
         app.cancel_run();
         app.step = AppStep::ToolSelect;
         app.focus = FocusTarget::ToolList;
@@ -1086,6 +1214,14 @@ fn export_markdown(app: &mut AppState) {
 fn new_scan(app: &mut AppState) {
     app.step = AppStep::Splash;
     app.result_detail_vuln = None;
+    app.severity_filter = None;
+    app.result_cursor = 0;
+    app.result_scroll = 0;
+    app.run_started_at = None;
+    app.scan_started_at_wall = None;
+    app.scan_completed_at_wall = None;
+    app.detail_code_preview = None;
+    app.results_project_dir = None;
     app.detail_scroll = 0;
     app.detail_max_scroll = 0;
     app.show_didactic = false;
@@ -1096,6 +1232,7 @@ fn new_scan(app: &mut AppState) {
     app.report_content = String::new();
     app.report_scroll = 0;
     app.report_max_scroll = 0;
+    app.history_refresh_pending = true;
     app.focus = FocusTarget::SplashTarget;
 }
 
@@ -1552,21 +1689,6 @@ mod tests {
     }
 
     #[test]
-    fn traceability_overlay_opens_with_f2_and_closes_restoring_focus() {
-        let mut app = app();
-        app.step = AppStep::Results;
-        app.focus = FocusTarget::ResultsList;
-
-        assert!(!press(&mut app, KeyCode::F(2)));
-        assert!(app.show_trace_overlay);
-        assert_eq!(app.focus, FocusTarget::TraceClose);
-
-        assert!(!press(&mut app, KeyCode::Esc));
-        assert!(!app.show_trace_overlay);
-        assert_eq!(app.focus, FocusTarget::ResultsList);
-    }
-
-    #[test]
     fn ai_timeline_opens_by_key_and_closes_with_escape() {
         let mut app = app();
         app.step = AppStep::Execution;
@@ -1604,7 +1726,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_timeline_scroll_stops_following_and_resumes_at_the_end() {
+    fn ai_timeline_opens_on_the_last_event_and_pauses_follow_after_interaction() {
         let mut app = app();
         app.step = AppStep::Execution;
         app.focus = FocusTarget::ExecutionLogs;
@@ -1618,6 +1740,7 @@ mod tests {
         press(&mut app, KeyCode::Char('i'));
         render_app(&mut app, 80, 24);
         assert!(app.ai_timeline_follow);
+        assert_eq!(app.ai_timeline_selected, 29);
         assert_eq!(app.ai_timeline_scroll, app.ai_timeline_max_scroll);
         assert!(
             app.ai_timeline_max_scroll > 0,
@@ -1625,9 +1748,11 @@ mod tests {
         );
 
         press(&mut app, KeyCode::Up);
-        assert!(!app.ai_timeline_follow, "rolar para cima desliga o follow");
-        let scrolled = app.ai_timeline_scroll;
-        assert!(scrolled < app.ai_timeline_max_scroll);
+        assert!(
+            !app.ai_timeline_follow,
+            "mover a seleção para cima pausa o follow"
+        );
+        assert_eq!(app.ai_timeline_selected, 28);
 
         app.push_ai_timeline(
             crate::tui::state::AiTimelineOrigin::Ai,
@@ -1635,14 +1760,209 @@ mod tests {
         );
         render_app(&mut app, 80, 24);
         assert_eq!(
-            app.ai_timeline_scroll, scrolled,
+            app.ai_timeline_selected, 28,
             "com leitura manual o painel não salta para o fim"
         );
+        assert!(!app.ai_timeline_follow);
 
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.ai_timeline_scroll, app.ai_timeline_max_scroll);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.ai_timeline_selected, 30);
         assert!(app.ai_timeline_follow, "voltar ao fim religa o follow");
+
+        app.push_ai_timeline(
+            crate::tui::state::AiTimelineOrigin::Ai,
+            "mais um evento".to_string(),
+        );
+        render_app(&mut app, 80, 24);
+        assert_eq!(app.ai_timeline_selected, 31);
+        assert_eq!(app.ai_timeline_scroll, app.ai_timeline_max_scroll);
+    }
+
+    #[test]
+    fn ai_timeline_navigation_moves_selection_and_pages() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        for index in 0..30 {
+            app.push_ai_timeline(
+                crate::tui::state::AiTimelineOrigin::Code,
+                format!("evento {index}"),
+            );
+        }
+        press(&mut app, KeyCode::Char('i'));
+        render_app(&mut app, 80, 24);
+
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.ai_timeline_selected, 0);
+        assert_eq!(app.ai_timeline_scroll, 0);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.ai_timeline_selected, 1);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.ai_timeline_selected, 2);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.ai_timeline_selected, 1);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.ai_timeline_selected, 0);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.ai_timeline_selected, 0);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.ai_timeline_selected, 10);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.ai_timeline_selected, 20);
+        render_app(&mut app, 80, 24);
+        assert!(
+            app.ai_timeline_scroll > 0,
+            "a seleção fora da janela rola a lista"
+        );
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.ai_timeline_selected, 29);
+        assert_eq!(app.ai_timeline_scroll, app.ai_timeline_max_scroll);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.ai_timeline_selected, 29, "não passa do último evento");
+    }
+
+    #[test]
+    fn ai_timeline_enter_opens_the_detail_and_escape_walks_back() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        for index in 0..30 {
+            app.push_ai_timeline(
+                crate::tui::state::AiTimelineOrigin::Planning,
+                format!(
+                    "evento {index}\n{}",
+                    (0..40)
+                        .map(|line| format!("linha de evidência {line:02}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            );
+        }
+        press(&mut app, KeyCode::Char('i'));
+        render_app(&mut app, 80, 24);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.ai_timeline_detail_open);
+        assert!(!app.ai_timeline_follow, "abrir o detalhe congela a seleção");
+        render_app(&mut app, 80, 24);
+        assert!(app.ai_timeline_detail_max_scroll > 0);
+        assert_eq!(app.ai_timeline_detail_scroll, 0);
+
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.ai_timeline_detail_scroll, 10);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.ai_timeline_detail_scroll, 11);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.ai_timeline_detail_scroll, 1);
+        press(&mut app, KeyCode::End);
+        assert_eq!(
+            app.ai_timeline_detail_scroll,
+            app.ai_timeline_detail_max_scroll
+        );
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.ai_timeline_detail_scroll, 0);
+
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.ai_timeline_detail_open);
+        assert!(
+            app.show_ai_timeline,
+            "esc no detalhe volta à lista, sem fechar o painel"
+        );
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_ai_timeline);
+        assert_eq!(app.focus, FocusTarget::ExecutionLogs);
+    }
+
+    #[test]
+    fn ai_timeline_mouse_wheel_scrolls_the_list_and_the_detail() {
+        let mut app = app();
+        app.step = AppStep::Execution;
+        app.focus = FocusTarget::ExecutionLogs;
+        for index in 0..30 {
+            app.push_ai_timeline(
+                crate::tui::state::AiTimelineOrigin::Ai,
+                format!(
+                    "evento {index}\n{}",
+                    (0..40)
+                        .map(|line| format!("linha de evidência {line:02}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ),
+            );
+        }
+        press(&mut app, KeyCode::Char('i'));
+        render_app(&mut app, 80, 24);
+        assert!(app.ai_timeline_follow);
+        let bottom = app.ai_timeline_scroll;
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 40,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(!app.ai_timeline_follow, "a roda pausa o follow");
+        assert!(app.ai_timeline_scroll < bottom);
+        assert!(
+            app.ai_timeline_selected >= app.ai_timeline_scroll,
+            "a seleção continua dentro da janela"
+        );
+
+        for _ in 0..20 {
+            handle_mouse(
+                &mut app,
+                MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: 40,
+                    row: 10,
+                    modifiers: KeyModifiers::NONE,
+                },
+            );
+        }
+        render_app(&mut app, 80, 24);
+        assert_eq!(app.ai_timeline_scroll, app.ai_timeline_max_scroll);
+        assert!(app.ai_timeline_follow);
+
+        press(&mut app, KeyCode::Enter);
+        render_app(&mut app, 80, 24);
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 40,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(
+            app.ai_timeline_detail_scroll > 0,
+            "no detalhe a roda rola o texto completo"
+        );
+    }
+
+    #[test]
+    fn ai_timeline_opens_from_results_with_i() {
+        let mut app = app();
+        app.step = AppStep::Results;
+        app.focus = FocusTarget::ResultsList;
+        for index in 0..3 {
+            app.push_ai_timeline(
+                crate::tui::state::AiTimelineOrigin::Ai,
+                format!("evento {index}"),
+            );
+        }
+
+        assert!(!press(&mut app, KeyCode::Char('i')));
+        assert!(app.show_ai_timeline);
+        assert_eq!(app.focus, FocusTarget::AiTimelineClose);
+        assert_eq!(app.overlay_return_focus, FocusTarget::ResultsList);
+        assert_eq!(app.ai_timeline_selected, 2);
+
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(!app.show_ai_timeline);
+        assert_eq!(app.focus, FocusTarget::ResultsList);
     }
 
     #[test]
@@ -2026,6 +2346,26 @@ mod tests {
     }
 
     #[test]
+    fn the_analysis_cancel_button_cancels_without_leaving_the_screen() {
+        let mut app = app();
+        app.step = AppStep::Analysis;
+        app.focus = FocusTarget::AnalysisCancel;
+
+        dispatch_action(&mut app, SemanticAction::Activate);
+
+        assert!(app.exec_cancelled);
+        assert!(app.orchestrator.is_cancelled());
+        assert_eq!(app.step, AppStep::Analysis);
+        assert_eq!(
+            app.analysis_phase,
+            crate::tui::state::AnalysisPhase::Cancelling
+        );
+        if let Some(path) = app.audit_log_path.clone() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
     fn pause_and_cancel_shortcuts_are_ignored_inside_overlays() {
         let mut app = app();
         app.step = AppStep::Execution;
@@ -2323,8 +2663,16 @@ mod tests {
         );
         dispatch_action(&mut app, SemanticAction::Back);
         app.step_tick().await;
-        assert_eq!(app.step, AppStep::ToolSelect);
-        assert_eq!(app.focus, FocusTarget::ToolList);
+        assert_eq!(
+            app.step,
+            AppStep::Analysis,
+            "com a task viva, a tela permanece em cancelando…"
+        );
+        assert_eq!(
+            app.analysis_phase,
+            crate::tui::state::AnalysisPhase::Cancelling
+        );
+        assert!(app.exec_cancelled);
         if let Some(path) = app.audit_log_path.clone() {
             let _ = std::fs::remove_file(path);
         }
@@ -2852,5 +3200,17 @@ mod tests {
 
         assert!(!handle_resize(&mut app));
         assert_eq!(app.mouse_position, None);
+    }
+
+    #[test]
+    fn ctrl_t_toggles_mouse_capture() {
+        let mut app = app();
+        let key = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+
+        assert!(app.mouse_capture);
+        assert!(!handle_key(&mut app, key));
+        assert!(!app.mouse_capture);
+        assert!(!handle_key(&mut app, key));
+        assert!(app.mouse_capture);
     }
 }

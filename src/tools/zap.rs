@@ -17,8 +17,11 @@ pub const ZAP_MAX_HEAP: &str = "1024m";
 
 /// tmpfs obrigatória em `HOME` do container: sem ela o ZAP aborta antes do
 /// primeiro job com `The home path is not writable: /home/zap/.ZAP/` e status 1,
-/// porque o executor monta o container com `--read-only`.
-pub const ZAP_HOME_TMPFS: &str = "/home/zap:rw,noexec,nosuid,nodev,size=512m";
+/// porque o executor monta o container com `--read-only`. O tamanho de 1 GiB
+/// cobre a sessão e os add-ons: com 512 MiB, uma varredura real do Juice Shop
+/// encheu `/home/zap` (session ~346 MiB + addOnData ~127 MiB) e o log4j passou
+/// a falhar com `No space left on device`.
+pub const ZAP_HOME_TMPFS: &str = "/home/zap:rw,noexec,nosuid,nodev,size=1024m";
 
 /// Caminho, dentro do container, do diretório montado com o plano de automação,
 /// em **somente leitura** como os templates do Nuclei.
@@ -43,20 +46,51 @@ pub const ZAP_REPORT_FILE: &str = "zap-report.json";
 /// validada executando o container contra um alvo local:
 ///
 /// - `env.contexts` define o contexto `default` com o alvo como URL semente e
-///   `includePaths: .*`, `excludePaths: []` para a varredura não escapar do alvo.
-/// - o job `spider` percorre o alvo; `user: ""` impede reaproveitar credenciais.
+///   `includePaths` ancorado no alvo, `excludePaths: []` para a varredura não
+///   escapar do alvo autorizado.
+/// - o job `spider` percorre o alvo; `user: ""` impede reaproveitar credenciais
+///   e `maxDuration: 3` impede que o rastreamento de links consuma o timeout de
+///   15 min em alvos grandes (o Juice Shop tem centenas de rotas).
+/// - `spiderAjax` complementa o spider em SPAs (o Juice Shop é Angular) usando o
+///   Firefox headless da imagem; os limites de profundidade/duração evitam que
+///   ele consuma o timeout de 15 min. `activeScan` fica fora por padrão: é
+///   ataque ativo e exige opt-in explícito.
 /// - `passiveScan-wait` vai sem parâmetros: `maxTime` **não** é reconhecido pela
 ///   2.16 e produziria `Unrecognised parameter for job passiveScan-wait`.
 /// - o job `report` usa `template: traditional-json`, que exclui cabeçalhos e
 ///   corpos de requisição/resposta (ao contrário dos templates `*-plus`), então
 ///   nenhum corpo HTTP chega ao achado.
 pub fn automation_plan(target: &str) -> String {
+    let scope = yaml_scalar(&scope_regex(target));
     format!(
-        "---\nenv:\n  contexts:\n    - name: default\n      urls:\n        - {target}\n      includePaths:\n        - .*\n      excludePaths: []\n  vars: {{}}\njobs:\n  - type: spider\n    parameters:\n      context: default\n      user: \"\"\n  - type: passiveScan-wait\n    parameters: {{}}\n  - type: report\n    parameters:\n      template: traditional-json\n      reportDir: {output_dir}\n      reportFile: {report_file}\n",
+        "---\nenv:\n  contexts:\n    - name: default\n      urls:\n        - {target}\n      includePaths:\n        - {scope}\n      excludePaths: []\n  vars: {{}}\njobs:\n  - type: spider\n    parameters:\n      context: default\n      user: \"\"\n      maxDuration: 3\n  - type: spiderAjax\n    parameters:\n      context: default\n      user: \"\"\n      maxDuration: 3\n      maxCrawlDepth: 5\n      numberOfBrowsers: 1\n      inScopeOnly: true\n  - type: passiveScan-wait\n    parameters: {{}}\n  - type: report\n    parameters:\n      template: traditional-json\n      reportDir: {output_dir}\n      reportFile: {report_file}\n",
         target = yaml_scalar(target),
+        scope = scope,
         output_dir = ZAP_OUTPUT_DIR,
         report_file = ZAP_REPORT_FILE.trim_end_matches(".json"),
     )
+}
+
+/// Regex de escopo do contexto do ZAP.
+///
+/// `includePaths: .*` fazia o spider seguir links externos (Google, OWASP,
+/// Microsoft) e o relatório resultante era tratado como se fosse do alvo. O
+/// escopo agora ancora no alvo autorizado; os metacaracteres são escapados para
+/// que `.` e `:` não virem curinga.
+fn scope_regex(target: &str) -> String {
+    let mut escaped = String::with_capacity(target.len() + 3);
+    escaped.push('^');
+    for character in target.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push_str(".*");
+    escaped
 }
 
 /// Argumentos do container para a varredura DAST com relatório JSON.
@@ -158,11 +192,18 @@ mod tests {
     fn monta_o_plano_de_automacao_com_o_alvo_e_sem_parametros_invalidos() {
         let plan = automation_plan(TARGET);
 
-        // O alvo é o contexto semente do plano.
+        // O alvo é o contexto semente do plano e o escopo é ancorado nele.
         assert!(plan.contains("'http://169.254.1.2:3000'"), "{plan}");
         assert!(plan.contains("- name: default"), "{plan}");
-        // Os três jobs validados na execução real.
+        assert!(
+            plan.contains("includePaths:\n        - '^http://169\\.254\\.1\\.2:3000.*'"),
+            "{plan}"
+        );
+        // Os jobs validados na execução real; o spider também precisa de
+        // maxDuration para não consumir o timeout em alvos com muitas rotas.
         assert!(plan.contains("- type: spider"), "{plan}");
+        assert!(plan.contains("- type: spiderAjax"), "{plan}");
+        assert_eq!(plan.matches("maxDuration: 3").count(), 2, "{plan}");
         assert!(plan.contains("- type: passiveScan-wait"), "{plan}");
         assert!(plan.contains("- type: report"), "{plan}");
         // `maxTime` e `delay` ficam fora do plano validado no container.
@@ -187,8 +228,8 @@ mod tests {
             plan.lines()
                 .filter(|line| line.trim_start().starts_with("- type:"))
                 .count(),
-            3,
-            "o plano precisa ter exatamente os três jobs: {plan}"
+            4,
+            "o plano precisa ter exatamente os quatro jobs: {plan}"
         );
     }
 

@@ -159,7 +159,7 @@ fn zap_is_selectable_in_the_headless_run_and_records_image_and_version() {
     );
     // A tmpfs de HOME exigida pelo ZAP e o limite de memória de DAST.
     assert!(
-        calls.contains("--tmpfs /home/zap:rw,noexec,nosuid,nodev,size=512m"),
+        calls.contains("--tmpfs /home/zap:rw,noexec,nosuid,nodev,size=1024m"),
         "{calls}"
     );
     assert!(calls.contains("--memory 1536m"), "{calls}");

@@ -201,6 +201,23 @@ impl ControlChannel {
         self.reason.lock().ok().and_then(|stored| stored.clone())
     }
 
+    /// Aguarda até o cancelamento ser solicitado.
+    ///
+    /// O `watch` entrega o estado corrente na assinatura, então um cancelamento
+    /// pedido antes desta espera resolve imediatamente: nenhuma ordem se perde
+    /// entre a montagem do `select!` e o primeiro `poll`.
+    pub async fn cancelled(&self) {
+        let mut receiver = self.subscribe();
+        loop {
+            if *receiver.borrow_and_update() == RunControl::Cancelled {
+                return;
+            }
+            if receiver.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// Mantém o pipeline aguardando enquanto a execução estiver pausada.
     ///
     /// O cancelamento tem precedência sobre a pausa: ao chegar durante uma
@@ -419,6 +436,27 @@ mod tests {
                 .unwrap(),
             RunControl::Cancelled
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_wakes_a_waiter_and_resolves_immediately_when_already_cancelled() {
+        let control = ControlChannel::new();
+        let waiter = control.clone();
+        let handle = tokio::spawn(async move { waiter.cancelled().await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!handle.is_finished(), "sem cancelamento a espera continua");
+
+        control.cancel();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("o cancelamento precisa acordar a espera")
+            .unwrap();
+
+        // Uma espera criada depois do cancelamento não pode ficar presa: o
+        // `select!` do laço do agente depende de o estado já cancelado resolver.
+        tokio::time::timeout(Duration::from_secs(1), control.cancelled())
+            .await
+            .expect("o estado já cancelado resolve na hora");
     }
 
     #[test]

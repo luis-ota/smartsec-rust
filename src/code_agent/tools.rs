@@ -7,8 +7,10 @@ use crate::code_agent::workspace::{SearchHit, Workspace, WorkspaceError, TRUNCAT
 use crate::code_agent::CodeAgentLimits;
 use crate::utils::redaction::sanitize_text;
 use serde_json::{json, Value};
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// Nome de `list_dir` no protocolo de tool calling.
@@ -64,6 +66,54 @@ pub struct LocalToolRegistry {
     workspace: Workspace,
     limits: CodeAgentLimits,
     command_allowlist: Vec<String>,
+    cache: Mutex<ToolCache>,
+}
+
+/// Cache por scan das leituras, buscas e listagens.
+///
+/// Sem ele, cada achado relê o mesmo `server.ts` e repete a mesma busca vazia:
+/// a fase medida gastou 1.417 `list_dir` e leu o mesmo arquivo 55 vezes.
+struct ToolCache {
+    entries: HashMap<String, ToolCallResult>,
+    order: VecDeque<String>,
+    hits: usize,
+}
+
+impl ToolCache {
+    const CAPACITY: usize = 64;
+
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            hits: 0,
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<ToolCallResult> {
+        let cached = self.entries.get(key).cloned();
+        if cached.is_some() {
+            self.hits += 1;
+        }
+        cached
+    }
+
+    fn insert(&mut self, key: String, result: ToolCallResult) {
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            self.entries.entry(key.clone())
+        {
+            entry.insert(result);
+            return;
+        }
+        while self.entries.len() >= Self::CAPACITY {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, result);
+    }
 }
 
 impl LocalToolRegistry {
@@ -81,7 +131,20 @@ impl LocalToolRegistry {
             workspace,
             limits,
             command_allowlist,
+            cache: Mutex::new(ToolCache::new()),
         }
+    }
+
+    /// Quantas chamadas foram respondidas pelo cache nesta fase.
+    ///
+    /// Observável nos testes e disponível para diagnóstico; o fluxo não altera
+    /// o resultado por causa dela.
+    #[allow(dead_code)]
+    pub fn cache_hits(&self) -> usize {
+        self.cache
+            .lock()
+            .map(|cache| cache.hits)
+            .unwrap_or_default()
     }
 
     pub fn workspace(&self) -> &Workspace {
@@ -109,7 +172,9 @@ impl LocalToolRegistry {
             ToolSpec {
                 name: READ_FILE.to_owned(),
                 description: format!(
-                    "Lê um arquivo de texto do projeto com numeração de linha, limitado a {} bytes.",
+                    "Lê um arquivo de texto do projeto com numeração de linha, limitado a {} bytes. \
+                     Use \"offset\" (linha inicial, 1-based) e \"limit\" (máximo de linhas) para \
+                     continuar de onde a leitura anterior parou.",
                     self.limits.max_file_bytes
                 ),
                 parameters: json!({
@@ -118,6 +183,14 @@ impl LocalToolRegistry {
                         "path": {
                             "type": "string",
                             "description": "Caminho relativo à raiz do projeto."
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Linha inicial, começando em 1; omitido lê desde o começo."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Máximo de linhas a devolver; omitido usa o teto de bytes."
                         }
                     },
                     "required": ["path"]
@@ -126,7 +199,9 @@ impl LocalToolRegistry {
             ToolSpec {
                 name: SEARCH_CODE.to_owned(),
                 description: format!(
-                    "Busca textual (sem diferenciar maiúsculas) no projeto, ignorando diretórios de build, arquivos binários e arquivos maiores que {} bytes; devolve no máximo {} resultados.",
+                    "Busca textual (sem diferenciar maiúsculas) no projeto, ignorando diretórios de build, \
+                     agentes (.ai/.claude), arquivos binários e arquivos maiores que {} bytes; prioriza \
+                     código e configuração e devolve no máximo {} resultados.",
                     self.limits.max_file_bytes, self.limits.max_search_results
                 ),
                 parameters: json!({
@@ -169,9 +244,64 @@ impl LocalToolRegistry {
         ]
     }
 
-    /// Executa uma ferramenta pelo nome com os argumentos informados.
-    pub async fn call(&self, name: &str, arguments: &Value) -> Result<ToolCallResult, ToolError> {
+    /// Chave estável de cache por ferramenta e argumentos efetivos.
+    ///
+    /// `run_command` fica fora: o resultado depende do ambiente e não é leitura.
+    fn cache_key(&self, name: &str, arguments: &Value) -> Option<String> {
         match name {
+            LIST_DIR => Some(format!(
+                "list_dir|{}",
+                arguments.get("path").and_then(Value::as_str).unwrap_or("")
+            )),
+            READ_FILE => Some(format!(
+                "read_file|{}|{}|{}",
+                arguments.get("path").and_then(Value::as_str).unwrap_or(""),
+                arguments
+                    .get("offset")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1)
+                    .max(1),
+                arguments
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .map(|limit| limit.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            )),
+            SEARCH_CODE => {
+                let term = arguments
+                    .get("term")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                let requested = arguments
+                    .get("max_results")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as usize)
+                    .unwrap_or(self.limits.max_search_results);
+                Some(format!(
+                    "search_code|{term}|{}",
+                    requested.clamp(1, self.limits.max_search_results)
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Executa uma ferramenta pelo nome com os argumentos informados.
+    ///
+    /// Leituras, buscas e listagens passam por um cache por scan: o mesmo
+    /// arquivo ou termo não é relido para cada achado.
+    pub async fn call(&self, name: &str, arguments: &Value) -> Result<ToolCallResult, ToolError> {
+        let cache_key = self.cache_key(name, arguments);
+        if let Some(key) = &cache_key {
+            if let Ok(mut cache) = self.cache.lock() {
+                if let Some(cached) = cache.get(key) {
+                    return Ok(cached);
+                }
+            }
+        }
+        let result = match name {
             LIST_DIR => self.call_list_dir(arguments),
             READ_FILE => self.call_read_file(arguments),
             SEARCH_CODE => self.call_search_code(arguments),
@@ -179,7 +309,13 @@ impl LocalToolRegistry {
             other => Err(ToolError::UnknownTool(format!(
                 "ferramenta desconhecida: \"{other}\"; consulte specs() para ver as ferramentas disponíveis"
             ))),
+        };
+        if let (Some(key), Ok(result)) = (cache_key, &result) {
+            if let Ok(mut cache) = self.cache.lock() {
+                cache.insert(key, result.clone());
+            }
         }
+        result
     }
 
     fn call_list_dir(&self, arguments: &Value) -> Result<ToolCallResult, ToolError> {
@@ -216,15 +352,78 @@ impl LocalToolRegistry {
 
     fn call_read_file(&self, arguments: &Value) -> Result<ToolCallResult, ToolError> {
         let path = required_string(READ_FILE, arguments, "path")?;
+        let offset = optional_usize(READ_FILE, arguments, "offset")?
+            .unwrap_or(1)
+            .max(1);
+        let limit = optional_usize(READ_FILE, arguments, "limit")?.filter(|limit| *limit > 0);
         let text = self
             .workspace
             .read_text(path, Some(self.limits.max_file_bytes))
             .map_err(|error| workspace_failure(READ_FILE, error))?;
-        let (output, capped) = limit_bytes(&number_lines(&text), self.limits.max_tool_output_bytes);
+        let file_was_truncated = text.contains(TRUNCATION_MARKER);
+        let mut lines: Vec<&str> = text.lines().collect();
+        if lines
+            .last()
+            .is_some_and(|line| line.starts_with(TRUNCATION_MARKER))
+        {
+            lines.pop();
+        }
+        let start = offset - 1;
+        if start >= lines.len() {
+            let total = lines.len();
+            return Ok(ToolCallResult {
+                tool: READ_FILE.to_owned(),
+                output: format!(
+                    "o arquivo \"{path}\" tem {total} linha(s); o offset {offset} está além do fim"
+                ),
+                truncated: file_was_truncated,
+            });
+        }
+        let max_bytes = self.limits.max_tool_output_bytes;
+        let max_lines = limit.unwrap_or(usize::MAX);
+        let mut shown: Vec<String> = Vec::new();
+        let mut used = 0usize;
+        let mut next_offset = None;
+        for (index, content) in lines.iter().enumerate().skip(start) {
+            if shown.len() >= max_lines {
+                next_offset = Some(index + 1);
+                break;
+            }
+            let numbered = format!("{:>5} | {content}", index + 1);
+            let extra = numbered.len() + usize::from(!shown.is_empty());
+            if used + extra > max_bytes {
+                if shown.is_empty() {
+                    let (numbered, _) = limit_bytes(&numbered, max_bytes);
+                    shown.push(numbered);
+                    next_offset = Some(index + 1);
+                } else {
+                    next_offset = Some(index + 1);
+                }
+                break;
+            }
+            used += extra;
+            shown.push(numbered);
+        }
+        let mut output = shown.join("\n");
+        let mut truncated = next_offset.is_some();
+        if let Some(next) = next_offset {
+            output.push_str(&format!(
+                "\n[... saída truncada: exibidas {} de {} linha(s); continue com offset={next}]",
+                shown.len(),
+                lines.len()
+            ));
+        }
+        if file_was_truncated {
+            truncated = true;
+            output.push_str(&format!(
+                "\n{TRUNCATION_MARKER} arquivo maior que {} bytes; leitura limitada pelo workspace]",
+                self.limits.max_file_bytes
+            ));
+        }
         Ok(ToolCallResult {
             tool: READ_FILE.to_owned(),
             output,
-            truncated: text.contains(TRUNCATION_MARKER) || capped,
+            truncated,
         })
     }
 
@@ -282,6 +481,7 @@ impl LocalToolRegistry {
         let mut command = tokio::process::Command::new(program);
         command
             .args(args)
+            .env_remove("SMARTSEC_API_KEY")
             .current_dir(self.workspace.root())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -344,6 +544,20 @@ fn required_string<'a>(tool: &str, arguments: &'a Value, key: &str) -> Result<&'
     }
 }
 
+fn optional_usize(tool: &str, arguments: &Value, key: &str) -> Result<Option<usize>, ToolError> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(|value| Some(value as usize))
+            .ok_or_else(|| {
+                ToolError::InvalidArguments(format!(
+                    "a ferramenta \"{tool}\" exige que \"{key}\" seja um inteiro positivo"
+                ))
+            }),
+    }
+}
+
 fn parse_args(arguments: &Value) -> Result<Vec<String>, ToolError> {
     match arguments.get("args") {
         None | Some(Value::Null) => Ok(Vec::new()),
@@ -377,14 +591,6 @@ fn workspace_failure(tool: &str, error: WorkspaceError) -> ToolError {
 
 fn format_hit(hit: &SearchHit) -> String {
     format!("{}:{}: {}", hit.path, hit.line, hit.text)
-}
-
-fn number_lines(text: &str) -> String {
-    text.lines()
-        .enumerate()
-        .map(|(index, line)| format!("{:>5} | {line}", index + 1))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn limit_bytes(text: &str, max_bytes: usize) -> (String, bool) {
@@ -461,6 +667,63 @@ mod tests {
         let mut lines = result.output.lines();
         assert_eq!(lines.next().unwrap(), "    1 | def login(user):");
         assert!(result.output.contains("    4 | "));
+    }
+
+    /// O contrato antigo continua: sem `offset`, a leitura começa na linha 1.
+    /// Com `offset`/`limit`, a resposta pagina e diz qual offset continua.
+    #[tokio::test]
+    async fn read_file_pages_with_offset_and_limit() {
+        let result = registry(Vec::new())
+            .call(
+                READ_FILE,
+                &json!({"path": "src/app.py", "offset": 3, "limit": 1}),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.output.contains("    3 | "), "{}", result.output);
+        assert!(!result.output.contains("    1 | "), "{}", result.output);
+        assert!(
+            result.output.contains("continue com offset=4"),
+            "{}",
+            result.output
+        );
+        assert!(result.truncated);
+
+        let beyond = registry(Vec::new())
+            .call(READ_FILE, &json!({"path": "src/app.py", "offset": 99}))
+            .await
+            .unwrap();
+        assert!(beyond.output.contains("além do fim"), "{}", beyond.output);
+        assert!(!beyond.truncated);
+    }
+
+    /// A segunda leitura e a segunda busca iguais são servidas pelo cache do
+    /// scan: não há nova ida ao disco.
+    #[tokio::test]
+    async fn repeated_reads_and_searches_use_the_scan_cache() {
+        let registry = registry(Vec::new());
+
+        let first = registry
+            .call(READ_FILE, &json!({"path": "src/app.py"}))
+            .await
+            .unwrap();
+        let second = registry
+            .call(READ_FILE, &json!({"path": "src/app.py"}))
+            .await
+            .unwrap();
+        assert_eq!(first, second);
+
+        let _ = registry
+            .call(SEARCH_CODE, &json!({"term": "login"}))
+            .await
+            .unwrap();
+        let _ = registry
+            .call(SEARCH_CODE, &json!({"term": "LOGIN"}))
+            .await
+            .unwrap();
+
+        assert_eq!(registry.cache_hits(), 2);
     }
 
     #[tokio::test]

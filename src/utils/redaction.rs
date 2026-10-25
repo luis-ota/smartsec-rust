@@ -1,13 +1,17 @@
 use serde_json::Value;
 
 const SENSITIVE_KEYS: &[&str] = &[
+    "access-key-id",
     "api-key",
     "apikey",
     "authorization",
+    "client-secret",
     "cookie",
     "password",
+    "private-key",
     "proxy-authorization",
     "secret",
+    "secret-access-key",
     "set-cookie",
     "token",
 ];
@@ -202,6 +206,144 @@ fn normalize_key(value: &str) -> String {
     value.to_ascii_lowercase().replace(['_', ' '], "-")
 }
 
+/// Sanitiza uma linha de código para a prévia local da TUI.
+///
+/// Preserva recuo, sintaxe e nomes de variáveis; mascara apenas valores de
+/// chaves sensíveis e credenciais em URLs. Não é usado em logs nem no prompt.
+pub fn sanitize_code_line(value: &str) -> String {
+    let clean: String = value
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\t')
+        .collect::<String>()
+        .replace('\t', "    ");
+    let mut output = String::with_capacity(clean.len());
+    let mut rest = clean.as_str();
+    while !rest.is_empty() {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (token, tail) = rest.split_at(end);
+        let (prefix, candidate, suffix) = split_url_token(token);
+        if candidate.starts_with("http://") || candidate.starts_with("https://") {
+            output.push_str(prefix);
+            output.push_str(&sanitize_url(candidate));
+            output.push_str(suffix);
+        } else {
+            output.push_str(token);
+        }
+        let whitespace_end = tail
+            .find(|character: char| !character.is_whitespace())
+            .unwrap_or(tail.len());
+        output.push_str(&tail[..whitespace_end]);
+        rest = &tail[whitespace_end..];
+    }
+    mask_code_assignment(&output)
+}
+
+/// Sanitiza texto corrido gerado pela IA.
+///
+/// `sanitize_text` redige a linha inteira ao encontrar "token" ou
+/// "authorization", o que apagava explicações legítimas sobre cabeçalhos. Aqui
+/// só o valor depois de `chave=`/`chave:` é mascarado; a prosa permanece.
+pub fn sanitize_prose(value: &str) -> String {
+    value
+        .lines()
+        .map(sanitize_prose_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn sanitize_prose_line(line: &str) -> String {
+    let clean: String = line
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\t')
+        .collect();
+    let mut output = String::new();
+    let mut rest = clean.as_str();
+    let mut redact_next = 0usize;
+    while !rest.is_empty() {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (token, tail) = rest.split_at(end);
+        let whitespace_end = tail
+            .find(|character: char| !character.is_whitespace())
+            .unwrap_or(tail.len());
+        if redact_next > 0 {
+            output.push_str("[REDACTED]");
+            redact_next -= 1;
+        } else if let Some((key, _)) = token.split_once(['=', ':']) {
+            let key = key.trim();
+            if is_sensitive_key(key) {
+                let separator = &token[key.len()..key.len() + 1];
+                output.push_str(key);
+                output.push_str(separator);
+                output.push_str("[REDACTED]");
+                if key.eq_ignore_ascii_case("authorization") {
+                    redact_next = 2;
+                }
+            } else {
+                output.push_str(token);
+            }
+        } else {
+            output.push_str(token);
+        }
+        output.push_str(&tail[..whitespace_end]);
+        rest = &tail[whitespace_end..];
+    }
+    sanitize_urls_preserving_spaces(&output)
+}
+
+fn sanitize_urls_preserving_spaces(value: &str) -> String {
+    let mut output = String::new();
+    let mut rest = value;
+    while !rest.is_empty() {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (token, tail) = rest.split_at(end);
+        let (prefix, candidate, suffix) = split_url_token(token);
+        if candidate.starts_with("http://") || candidate.starts_with("https://") {
+            output.push_str(prefix);
+            output.push_str(&sanitize_url(candidate));
+            output.push_str(suffix);
+        } else {
+            output.push_str(token);
+        }
+        let whitespace_end = tail
+            .find(|character: char| !character.is_whitespace())
+            .unwrap_or(tail.len());
+        output.push_str(&tail[..whitespace_end]);
+        rest = &tail[whitespace_end..];
+    }
+    output
+}
+
+fn mask_code_assignment(line: &str) -> String {
+    let Some(separator) = line.find(['=', ':']) else {
+        return line.to_string();
+    };
+    let identifier = line[..separator]
+        .trim_end()
+        .rsplit(|character: char| {
+            !(character.is_alphanumeric() || character == '_' || character == '-')
+        })
+        .next()
+        .unwrap_or("");
+    if !is_sensitive_key(identifier) {
+        return line.to_string();
+    }
+    let after = &line[separator + 1..];
+    let value_start = after.len() - after.trim_start().len();
+    let value = &after[value_start..];
+    let prefix_end = separator + 1 + value_start;
+    if let Some(quote @ ('"' | '\'')) = value.chars().next() {
+        if let Some(close) = value[1..].rfind(quote) {
+            return format!(
+                "{}[REDACTED]{}{}",
+                &line[..prefix_end + quote.len_utf8()],
+                quote,
+                &value[close + 2..]
+            );
+        }
+    }
+    format!("{}[REDACTED]", &line[..prefix_end])
+}
+
 fn is_sensitive_key(key: &str) -> bool {
     let key = normalize_key(key);
     SENSITIVE_KEYS
@@ -232,6 +374,20 @@ mod tests {
         assert!(!sanitized.contains(":\"secret\""));
         assert!(!sanitized.contains("Bearer secret"));
         assert!(!sanitized.contains("?token="));
+    }
+
+    #[test]
+    fn masks_aws_access_key_and_secret_in_code_previews() {
+        for line in [
+            "AWS_ACCESS_KEY_ID = \"AKIAQ7Z3X5V2N4M6P8R2\"",
+            "AWS_SECRET_ACCESS_KEY = \"kR9mQ2xT7vL4pN8sW3yB6cF1hJ5dG0zA\"",
+        ] {
+            let sanitized = sanitize_code_line(line);
+            assert!(
+                !sanitized.contains("AKIAQ7Z3") && !sanitized.contains("kR9mQ2xT"),
+                "{sanitized}"
+            );
+        }
     }
 
     #[test]
@@ -298,5 +454,37 @@ mod tests {
             "[REDACTED]"
         );
         assert_eq!(sanitize_text("resultado seguro"), "resultado seguro");
+    }
+
+    #[test]
+    fn prose_keeps_the_words_and_redacts_only_values() {
+        let sanitized = sanitize_prose(
+            "O cabeçalho Authorization: Bearer abc123 deve ser configurado. Use token=segredo no header.",
+        );
+
+        assert!(!sanitized.contains("abc123"), "{sanitized}");
+        assert!(!sanitized.contains("segredo"), "{sanitized}");
+        assert!(sanitized.contains("Authorization"), "{sanitized}");
+        assert!(sanitized.contains("[REDACTED]"), "{sanitized}");
+        assert_eq!(
+            sanitize_prose("O token JWT deve ser validado antes do uso."),
+            "O token JWT deve ser validado antes do uso."
+        );
+    }
+
+    #[test]
+    fn code_preview_keeps_indentation_and_hides_only_values() {
+        assert_eq!(
+            sanitize_code_line("    let password = \"segredo\";"),
+            "    let password = \"[REDACTED]\";"
+        );
+        assert_eq!(
+            sanitize_code_line("    let request = client.get(url);"),
+            "    let request = client.get(url);"
+        );
+        assert_eq!(
+            sanitize_code_line("    let url = \"http://user:pass@host/p?token=segredo\";"),
+            "    let url = \"http://host/p\";"
+        );
     }
 }

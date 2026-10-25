@@ -41,9 +41,18 @@ ontologia do SmartSec são autorais.
    tripla inexistente reprova; após um retry corretivo, a explicação é
    **recusada** com motivo — "não consegui explicar isto com segurança" — em
    vez de ser exibida como confiável.
-4. **Avaliação** — fora do escopo desta entrega. Se realizada, será feita
-   **no corpus do SmartSec**, e os números **não serão comparáveis** aos do
-   artigo (BERTScore/METEOR/ROUGE de lá não são resultado deste trabalho).
+4. **Avaliação** — o harness `rag_eval_real_openai` roda no corpus do
+   SmartSec; os números **não são comparáveis** aos do artigo
+   (BERTScore/METEOR/ROUGE de lá não são resultado deste trabalho).
+
+### Cabeçalhos específicos
+
+Quando o achado cita um cabeçalho (por exemplo, `permissions-policy`), o
+corpus fornece um **guia por cabeçalho**: efeito próprio, o que ele **não**
+mitiga, valor recomendado e como verificar. O prompt recebe esse guia e o
+exemplo corrigido usa o mesmo cabeçalho do achado. Sem isso, um corpus
+genérico de "cabeçalho ausente" fazia o modelo atribuir XSS/clickjacking a
+Permissions-Policy, COOP ou COEP — que têm outros efeitos.
 
 ## Adaptações em relação ao artigo (e por quê)
 
@@ -51,8 +60,8 @@ ontologia do SmartSec são autorais.
 |---|---|---|
 | Validação por ontologia | Juiz-LLM com a ontologia como rubrica textual, devolvendo `(Pass/Not Pass, score)`; veredito seco e, no código publicado, nem lido (`answer_filter` inerte) | Validação **simbólica determinística** das afirmações contra triplas locais, com retry corretivo e recusa registrada |
 | Recuperação | Contriever (dual-encoder denso), documentos = pergunta+resposta de um KB de Q/A de curso, k=1 | BM25 lexical offline (default) e embeddings via provedor quando configurado; documentos são unidades de conhecimento de vulnerabilidade; top-k configurável |
-| Corpus | 2.823 pares Q/A sintéticos gerados por in-context learning, para perguntas de aluno | 20 classes de fraqueza (CWE) com padrão seguro e exemplos vulnerável/corrigido por linguagem, autorais, voltados a explicar **achados** |
-| Ontologia | 26 triplas / 7 relações destiladas de AISecKG | 86 triplas / 3 relações autorais, versionadas no próprio repositório |
+| Corpus | 2.823 pares Q/A sintéticos gerados por in-context learning, para perguntas de aluno | 21 classes de fraqueza (CWE) com padrão seguro e exemplos vulnerável/corrigido por linguagem, autorais, voltados a explicar **achados** |
+| Ontologia | 26 triplas / 7 relações destiladas de AISecKG | 90 triplas / 3 relações autorais, versionadas no próprio repositório |
 | Recusa | "Not Pass" seco (sem UX); sem caminho de recusa descrito na interface | Tela mostra a recusa com o motivo; a trilha e o log estruturado registram o veredito |
 
 ## Limitações (reais, declaradas)
@@ -60,7 +69,7 @@ ontologia do SmartSec são autorais.
 - **A cobertura da ontologia é finita e pequena.** Passar na validação é um
   **filtro grosso de pertinência**, não prova de correção: uma explicação pode
   citar apenas triplas existentes e ainda estar errada. O artigo-base tem 26
-  triplas; esta implementação tem 86 — mais cobertura, mesma natureza grosseira.
+  triplas; esta implementação tem 90 — mais cobertura, mesma natureza grosseira.
 - O juiz-LLM do artigo mede sobretudo **domínio**, não veracidade; a adaptação
   simbólica troca essa fragilidade por **rigidez**: paráfrases legítimas que não
   casem com o vocabulário são recusadas (recusar demais é aceitável; inventar

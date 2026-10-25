@@ -16,18 +16,19 @@ pub fn render(app: &mut AppState, frame: &mut Frame, area: Rect) {
         .saturating_mul(100)
         .checked_div(total)
         .unwrap_or(0) as u16;
+    let elapsed = app.run_elapsed_label();
     let status = if app.exec_cancelled {
-        "Execução cancelada; retornando às ferramentas".to_string()
+        format!("Cancelada; voltando às ferramentas · {elapsed}")
     } else if app.run_control_label() == "pausado" {
-        format!("Execução PAUSADA · {completed}/{total} concluídas · p retoma")
+        format!("Execução PAUSADA · {completed}/{total} · {elapsed} · p retoma")
     } else if total > 0 && completed == total {
         format!(
-            "Ferramentas concluídas · preparando análise da IA {} · {}s",
+            "Ferramentas concluídas · IA {} · {}s · {elapsed}",
             app.spinner_char(),
             app.analysis_wait_secs
         )
     } else {
-        format!("Executando varredura · {completed}/{total} concluídas · {percent}%")
+        format!("Executando varredura · {completed}/{total} · {percent}% · {elapsed}")
     };
     let shell = chrome::render_shell(app, frame, area, "Execução", &status);
     let progress_height = (total as u16).saturating_add(2).clamp(3, 6);

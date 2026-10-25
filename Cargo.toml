@@ -30,8 +30,4 @@ quick-xml = { version = "0.38", features = ["serialize"] }
 # zero dependência de sistema de docs/PLANO_DE_DISTRIBUICAO.md.
 printpdf = { version = "0.12", default-features = false }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-keyring = "3"
