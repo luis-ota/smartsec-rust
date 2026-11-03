@@ -264,11 +264,18 @@ explicar_pre_requisitos() {
 # ── Binario ─────────────────────────────────────────────────────────────────
 
 resolver_binario_fonte() {
-    local raiz release debug
+    local raiz release debug script_dir
     raiz="$(raiz_do_repo)"
     if [ -n "$BINARIO_FONTE" ]; then
         [ -x "$BINARIO_FONTE" ] || die "binario invalido: $BINARIO_FONTE"
         printf '%s\n' "$BINARIO_FONTE"
+        return 0
+    fi
+    # No tarball da release, install.sh e smartsec ficam lado a lado. Sem esta
+    # checagem, `./install.sh` sem --bin tentava compilar e falhava.
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    if [ -x "$script_dir/$COMANDO" ]; then
+        printf '%s\n' "$script_dir/$COMANDO"
         return 0
     fi
     release="$raiz/target/release/$COMANDO"
