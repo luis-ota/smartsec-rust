@@ -141,7 +141,7 @@ Variaveis de ambiente:
   SMARTSEC_BASE_URL     outra origem de release (testes locais)
   SMARTSEC_KEEP_TEMP=1  preserva a pasta temporaria do download
 
-Opcoes (use `sh -s -- <opcao>` com curl):
+Opcoes (use 'sh -s -- <opcao>' com curl):
   --check              so verifica os pre-requisitos de runtime, sem instalar
   --prefix <DIR>       mesmo efeito de SMARTSEC_INSTALL_DIR
   --self-test          testa a logica de deteccao do proprio script
@@ -149,7 +149,7 @@ Opcoes (use `sh -s -- <opcao>` com curl):
   -V, --version        versao do bootstrap
 
 O download e conferido contra o SHA256SUMS da release. Para inspecionar antes
-de executar: baixe este arquivo, leia e rode `sh install.sh`.
+de executar: baixe este arquivo, leia e rode 'sh install.sh'.
 EOF
 }
 
