@@ -15,6 +15,13 @@ checa Podman rootless, o backend de rede `pasta` e os templates do Nuclei
 antes do primeiro scan. Versao fixa: `SMARTSEC_VERSION=v0.2.0`; destino:
 `SMARTSEC_INSTALL_DIR=~/.local/bin`.
 
+Se faltar Podman, `pasta` ou os templates, em terminal interativo o instalador
+pergunta se pode instalar com `sudo`. Em automacao, use:
+
+```bash
+curl -fsSL https://github.com/luis-ota/smartsec-rust/releases/latest/download/install.sh | sh -s -- --install-deps
+```
+
 Compilando do codigo (desenvolvimento):
 
 ```bash

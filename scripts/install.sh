@@ -11,11 +11,15 @@ readonly VERSAO_SCRIPTO="1.0.0"
 readonly COMANDO="smartsec"
 readonly REPO_NUCLEI="https://github.com/projectdiscovery/nuclei-templates"
 readonly COMMIT_NUCLEI="b98e6097cb84e73e7a480436062d685a8f898824"
+readonly REPO_PASTA="https://passt.top/passt"
+readonly COMMIT_PASTA="f8df3f1b228fe19a74a269334fdfe6cc7d0605ce"
 
 MODO_DRY_RUN=0
 MODO_SO_CHECAGEM=0
 MODO_COMPILAR=0
 MODO_TESTE=0
+MODO_DEPENDENCIAS=0
+MODO_SEM_DEPENDENCIAS=0
 BINARIO_FONTE=""
 PASTA_ALVO=""
 
@@ -261,6 +265,136 @@ explicar_pre_requisitos() {
     log "  Ou aponte nuclei_templates_path no smartsec.toml para outra pasta."
 }
 
+# ── Dependencias de runtime ─────────────────────────────────────────────────
+
+como_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+instalar_pacotes() {
+    local familia
+    familia="$(detectar_familia_distro)"
+    log "  pacotes      instalando dependencias de runtime ($familia)"
+    case "$familia" in
+        debian)
+            como_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq ||
+                die "apt-get update falhou"
+            como_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                podman passt uidmap build-essential git ||
+                die "nao foi possivel instalar podman/passt/uidmap/build-essential/git"
+            ;;
+        rhel)
+            como_root dnf install -y podman passt gcc make git ||
+                die "nao foi possivel instalar podman/passt/gcc/make/git"
+            ;;
+        arch)
+            como_root pacman -Sy --needed --noconfirm podman passt base-devel git ||
+                die "nao foi possivel instalar podman/passt/base-devel/git"
+            ;;
+        suse)
+            como_root zypper --non-interactive install podman passt gcc make git ||
+                die "nao foi possivel instalar podman/passt/gcc/make/git"
+            ;;
+        *)
+            die "distribuicao sem instalador automatico; instale Podman, pasta e git manualmente"
+            ;;
+    esac
+}
+
+instalar_pasta_fonte() {
+    local tmp
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/smartsec-pasta.XXXXXX")"
+    log "  pasta        pacote antigo; compilando o commit $COMMIT_PASTA"
+    local tentativa
+    for tentativa in 1 2 3; do
+        if GIT_TERMINAL_PROMPT=0 git clone --quiet "$REPO_PASTA" "$tmp/passt"; then
+            break
+        fi
+        rm -rf "$tmp/passt"
+        sleep 2
+    done
+    [ -d "$tmp/passt/.git" ] || { rm -rf "$tmp"; erro "nao foi possivel clonar $REPO_PASTA"; return 1; }
+    git -C "$tmp/passt" checkout --quiet "$COMMIT_PASTA" ||
+        { rm -rf "$tmp"; erro "nao foi possivel usar o commit $COMMIT_PASTA"; return 1; }
+    make -C "$tmp/passt" --silent pasta ||
+        { rm -rf "$tmp"; erro "falha ao compilar o pasta"; return 1; }
+    como_root install -m 0755 "$tmp/passt/passt" /usr/local/bin/pasta ||
+        { rm -rf "$tmp"; erro "falha ao instalar /usr/local/bin/pasta"; return 1; }
+    rm -rf "$tmp"
+    hash -r 2>/dev/null || true
+}
+
+instalar_templates_nuclei() {
+    local destino tmp anterior
+    destino="$(caminho_templates)"
+    tmp="${destino}.tmp.$$"
+    rm -rf "$tmp"
+    log "  templates    baixando no commit $COMMIT_NUCLEI"
+    git clone --quiet "$REPO_NUCLEI" "$tmp" ||
+        { rm -rf "$tmp"; die "nao foi possivel clonar $REPO_NUCLEI"; }
+    git -C "$tmp" checkout --quiet "$COMMIT_NUCLEI" ||
+        { rm -rf "$tmp"; die "nao foi possivel usar o commit $COMMIT_NUCLEI"; }
+    if [ -e "$destino" ]; then
+        anterior="${destino}.old.$(date +%Y%m%d%H%M%S)"
+        mv "$destino" "$anterior" ||
+            { rm -rf "$tmp"; die "nao foi possivel preservar $destino"; }
+    fi
+    mv "$tmp" "$destino" || die "nao foi possivel gravar $destino"
+}
+
+instalar_dependencias() {
+    local usuario
+    usuario="$(id -un)"
+    if [ "$(status_podman)" != "ok" ] ||
+        [ "$(status_pasta)" != "ok" ] ||
+        ! command -v git >/dev/null 2>&1; then
+        instalar_pacotes
+    fi
+
+    if [ "$(status_podman)" != "ok" ] && [ "$(id -u)" != "0" ]; then
+        if ! grep -q "^${usuario}:" /etc/subuid 2>/dev/null ||
+            ! grep -q "^${usuario}:" /etc/subgid 2>/dev/null; then
+            log "  rootless     adicionando /etc/subuid e /etc/subgid para $usuario"
+            como_root usermod --add-subuids 100000-165535 \
+                --add-subgids 100000-165535 "$usuario" ||
+                aviso "nao foi possivel adicionar subuid/subgid"
+        fi
+        podman system migrate >/dev/null 2>&1 || true
+    fi
+
+    if [ "$(status_pasta)" != "ok" ]; then
+        if ! instalar_pasta_fonte; then
+            aviso "o pasta nao foi instalado automaticamente; o scan vai falhar ate ele existir"
+        fi
+    fi
+
+    if [ "$(status_templates)" != "ok" ]; then
+        instalar_templates_nuclei
+    fi
+}
+
+confirmar_dependencias() {
+    local resposta
+    if [ "$MODO_DEPENDENCIAS" -eq 1 ]; then
+        return 0
+    fi
+    if [ "$MODO_SEM_DEPENDENCIAS" -eq 1 ]; then
+        return 1
+    fi
+    # `curl | sh` deixa o stdin no fim do script; o prompt precisa do terminal.
+    [ -r /dev/tty ] || return 1
+    printf '\nDependencias ausentes. Instalar automaticamente com sudo? [S/n] ' >/dev/tty
+    IFS= read -r resposta </dev/tty || true
+    case "$resposta" in
+        "" | s | S | y | Y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # ── Binario ─────────────────────────────────────────────────────────────────
 
 resolver_binario_fonte() {
@@ -408,16 +542,22 @@ Opcoes:
   --build          Compila a partir do codigo em vez de usar o binario pronto.
   --bin <ARQUIVO>  Instala um binario ja compilado.
   --prefix <DIR>   Destino da instalacao (padrao: \$XDG_BIN_HOME ou ~/.local/bin).
+  --install-deps   Instala dependencias ausentes sem perguntar (Podman, pasta, templates).
+  --no-install-deps  Nunca tenta instalar dependencias; apenas orienta.
   --self-test      Roda os testes da logica de deteccao.
   -h, --help       Esta ajuda.
   -V, --version    Versao do instalador.
+
+Em terminal interativo, se faltar Podman/pasta/templates, o instalador pergunta
+se pode instalar. Em automacao use --install-deps.
 
 Depois de instalado:
   $COMANDO --version
   $COMANDO scan --target https://exemplo.com
 
 O binario sozinho nao basta: o runtime exige Podman rootless, o backend de
-rede pasta e os templates do Nuclei. O script reporta o que falta.
+rede pasta e os templates do Nuclei. O instalador tenta resolver isso e, se
+nao puder, mostra o comando exato.
 EOF
 }
 
@@ -427,6 +567,8 @@ main() {
             --dry-run) MODO_DRY_RUN=1 ;;
             --check) MODO_SO_CHECAGEM=1 ;;
             --build) MODO_COMPILAR=1 ;;
+            --install-deps) MODO_DEPENDENCIAS=1 ;;
+            --no-install-deps) MODO_SEM_DEPENDENCIAS=1 ;;
             --self-test) MODO_TESTE=1 ;;
             --bin)
                 [ $# -ge 2 ] || die "--bin exige um caminho"
@@ -462,6 +604,14 @@ main() {
     fi
 
     levantar_pre_requisitos
+
+    if [ "$PRE_REQUISITOS_PENDENTES" -gt 0 ] &&
+        [ "$MODO_SO_CHECAGEM" -eq 0 ] &&
+        [ "$MODO_DRY_RUN" -eq 0 ] &&
+        confirmar_dependencias; then
+        instalar_dependencias
+        levantar_pre_requisitos
+    fi
 
     if [ "$PRE_REQUISITOS_PENDENTES" -gt 0 ]; then
         explicar_pre_requisitos
