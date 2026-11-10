@@ -74,6 +74,8 @@ export PATH="$HOME/.local/bin:$PATH"
 | `--build` | Compila a partir do codigo em vez de usar um binario pronto |
 | `--bin <ARQUIVO>` | Instala um binario ja compilado (artefato de release) |
 | `--prefix <DIR>` | Destino da instalacao, no lugar de `~/.local/bin` |
+| `--install-deps` | Instala dependencias ausentes sem perguntar (Podman, pasta, templates) |
+| `--no-install-deps` | Nunca tenta instalar dependencias; apenas orienta |
 | `--self-test` | Roda os testes da logica de deteccao do proprio script |
 | `--help`, `--version` | Ajuda e versao do instalador |
 

@@ -18,6 +18,8 @@ PREFIXO="${SMARTSEC_INSTALL_DIR:-}"
 SO_CHECAGEM=0
 MANTER_TEMP=0
 MODO_TESTE=0
+MODO_DEPENDENCIAS=0
+MODO_SEM_DEPENDENCIAS=0
 
 # glibc do runner de release (Ubuntu 22.04). Distros mais antigas compilam do
 # codigo; ver docs/INSTALACAO.md.
@@ -141,15 +143,17 @@ Variaveis de ambiente:
   SMARTSEC_BASE_URL     outra origem de release (testes locais)
   SMARTSEC_KEEP_TEMP=1  preserva a pasta temporaria do download
 
-Opcoes (use `sh -s -- <opcao>` com curl):
+Opcoes (use 'sh -s -- <opcao>' com curl):
   --check              so verifica os pre-requisitos de runtime, sem instalar
   --prefix <DIR>       mesmo efeito de SMARTSEC_INSTALL_DIR
+  --install-deps       instala dependencias ausentes sem perguntar
+  --no-install-deps    nao tenta instalar dependencias
   --self-test          testa a logica de deteccao do proprio script
   -h, --help           esta ajuda
   -V, --version        versao do bootstrap
 
 O download e conferido contra o SHA256SUMS da release. Para inspecionar antes
-de executar: baixe este arquivo, leia e rode `sh install.sh`.
+de executar: baixe este arquivo, leia e rode 'sh install.sh'.
 EOF
 }
 
@@ -157,6 +161,8 @@ main() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --check) SO_CHECAGEM=1 ;;
+            --install-deps) MODO_DEPENDENCIAS=1 ;;
+            --no-install-deps) MODO_SEM_DEPENDENCIAS=1 ;;
             --prefix)
                 [ $# -ge 2 ] || die "--prefix exige um diretorio"
                 PREFIXO="$2"
@@ -228,6 +234,12 @@ main() {
     set -- --bin "$work/smartsec"
     if [ -n "$PREFIXO" ]; then
         set -- "$@" --prefix "$PREFIXO"
+    fi
+    if [ "$MODO_DEPENDENCIAS" -eq 1 ]; then
+        set -- "$@" --install-deps
+    fi
+    if [ "$MODO_SEM_DEPENDENCIAS" -eq 1 ]; then
+        set -- "$@" --no-install-deps
     fi
     if [ "$SO_CHECAGEM" -eq 1 ]; then
         set -- "$@" --check
