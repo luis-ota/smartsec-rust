@@ -46,6 +46,7 @@ fn chrono_like_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SecurityToolRunner: Send + Sync {
     #[allow(dead_code)]

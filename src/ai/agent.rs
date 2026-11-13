@@ -197,20 +197,7 @@ impl AIAgent {
     }
 
     pub(crate) fn validated_guidance(raw: &str) -> Option<String> {
-        let lower = raw.to_lowercase();
-        let severity_terms = [
-            "critical",
-            "high",
-            "medium",
-            "low",
-            "severity",
-            "crític",
-            "critico",
-            "crítico",
-            "gravidade",
-            "severidade",
-        ];
-        if severity_terms.iter().any(|term| lower.contains(term)) {
+        if mentions_severity(&raw.to_lowercase()) {
             return None;
         }
         Self::validated_portuguese(raw)
@@ -380,12 +367,42 @@ where
     }
 }
 
+/// Termos de severidade em inglês valem só como palavra inteira: "low" não pode
+/// casar em "below" ou "allow", nem "high" em "highlight".
+fn mentions_severity(lower: &str) -> bool {
+    const WORDS: &[&str] = &["critical", "high", "medium", "low", "severity"];
+    const STEMS: &[&str] = &["crític", "critic", "gravidade", "severidade"];
+    lower
+        .split(|c: char| !c.is_alphabetic())
+        .any(|token| WORDS.contains(&token) || STEMS.iter().any(|stem| token.starts_with(stem)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::vulnerability::FindingSource;
     use crate::domain::Severity;
     use async_trait::async_trait;
+
+    #[test]
+    fn guidance_accepts_english_substrings_inside_portuguese_words() {
+        let raw = "Valide a porta 3000: o firewall deve allow somente o follow-up do serviço, \
+                   e a regra below do grupo não precisa de highlight.";
+        assert!(AIAgent::validated_guidance(raw).is_some());
+    }
+
+    #[test]
+    fn guidance_rejects_severity_words_as_whole_words() {
+        for raw in [
+            "Revise o achado, que é critical para o ambiente.",
+            "Confirme o risco high e aplique o firewall.",
+            "A severidade do achado permanece a do scanner.",
+            "Valide o achado de gravidade informativa.",
+            "Trate o item como crítico e valide a porta.",
+        ] {
+            assert!(AIAgent::validated_guidance(raw).is_none(), "{raw}");
+        }
+    }
 
     struct FailingProvider;
 

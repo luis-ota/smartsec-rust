@@ -128,6 +128,7 @@ pub enum ConnectionCheck {
 /// Fonte das respostas de ambiente e do teste de conexão.
 ///
 /// A implementação real fala com a máquina; a de teste devolve valores prontos.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait OnboardingProbe: Send + Sync {
     async fn environment(&self) -> EnvironmentReport;
