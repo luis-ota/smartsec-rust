@@ -1,6 +1,8 @@
 use crate::llm::tool_calling::{ToolTurn, ToolTurnRequest};
 use async_trait::async_trait;
 
+// async_trait repete #[must_use] já presente no Future devolvido; o clippy novo reporta isso.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     async fn execute_prompt(&self, prompt: &str, model: &str) -> Result<String, anyhow::Error>;
