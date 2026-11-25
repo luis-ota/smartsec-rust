@@ -33,51 +33,45 @@ env:
 
 jobs:
   binarios:
-    name: Binario ${{ matrix.alvo }}
-    runs-on: ${{ matrix.runner }}
+    name: Binary ${{ matrix.alvo }}
+    runs-on: instabox-medium
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux e o alvo do TCC: e onde o Podman rootless e o `pasta` foram
-          # validados. O `.deb` sai do mesmo binario, sem rebuild.
-          #
-          # O runner 22.04 fixa o baseline de glibc em 2.35 (Debian 12+, Fedora
-          # 36+, Arch): o pacote roda na maquina de terceiros, nao so na de dev.
+          # Both targets are built inside Ubuntu 22.04 containers to keep the glibc 2.35 baseline.
           - alvo: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
             deb: true
-          # O aarch64 roda NATIVO no runner ARM: cross-compilar exigiria os
-          # índices apt binary-arm64, que só existem em ports.ubuntu.com e
-          # quebravam o setup dos espelhos amd64 do runner.
+          # The aarch64 container runs under QEMU on the AMD64 instabox runner.
           - alvo: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04-arm
             deb: false
     steps:
-      - name: Obter o codigo
+      - name: Get code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Instalar libdbus-1-dev
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+
+      - name: Build release binary
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends "$SMARTSEC_PACOTE_LIBDBUS"
-
-      - name: Fixar a toolchain Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable (2026-09-03)
-        with:
-          toolchain: ${{ env.SMARTSEC_TOOLCHAIN }}
-
-      - name: Cache do cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: smartsec-release-${{ matrix.alvo }}
-
-      - name: Compilar o binario release
-        run: |
-          set -euo pipefail
-          cargo build -j 1 --release --locked --target "${{ matrix.alvo }}" --bin smartsec
+          platform=linux/amd64
+          if [ "${{ matrix.alvo }}" = "aarch64-unknown-linux-gnu" ]; then
+            platform=linux/arm64
+          fi
+          docker run --rm --platform "$platform" \
+            -v "$PWD:/work" -w /work \
+            ubuntu:22.04 bash -c '
+              set -euo pipefail
+              apt-get update
+              apt-get install -y --no-install-recommends ca-certificates curl git build-essential libdbus-1-dev pkg-config
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$2"
+              cargo build -j 1 --release --locked --target "$1" --bin smartsec
+            ' _ "${{ matrix.alvo }}" "${{ env.SMARTSEC_TOOLCHAIN }}"
+          sudo chown -R "$USER:$USER" target
           ls -lh "target/${{ matrix.alvo }}/release/smartsec"
 
       - name: Verificar o binario gerado
@@ -163,9 +157,9 @@ jobs:
           if-no-files-found: error
 
   publicar:
-    name: Publicar a release
+    name: Publish release
     needs: binarios
-    runs-on: ubuntu-22.04
+    runs-on: instabox-medium
     timeout-minutes: 20
     steps:
       # O checkout precisa vir ANTES do download: com `clean: true` ele esvazia
