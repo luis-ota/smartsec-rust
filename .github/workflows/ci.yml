@@ -86,9 +86,9 @@ env:
 jobs:
   qualidade:
     name: Formatação, clippy e testes
-    runs-on: ubuntu-24.04
-    # Imagem fixada, não `ubuntu-latest`: o runner é parte do ambiente de
-    # validação do TCC e não pode mudar de underlie sem registro.
+    runs-on: instabox-medium
+    # instabox-medium is a fresh Ubuntu 24.04 VM; the toolchain and system
+    # dependencies stay pinned below so the validation environment is reproducible.
     timeout-minutes: 60
     steps:
       - name: Obter o código
@@ -177,7 +177,7 @@ jobs:
 
   varredura:
     name: Varredura headless do alvo autorizado
-    runs-on: ubuntu-24.04
+    runs-on: instabox-medium
     timeout-minutes: 45
     steps:
       - name: Obter o código
